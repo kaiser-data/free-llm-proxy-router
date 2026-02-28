@@ -1,0 +1,21 @@
+# Adaptive strategy signals
+# These weights control how the adaptive strategy combines signals.
+# Values are relative weights (higher = more influence).
+
+weights:
+  reliability: 3.0    # Provider EMA success rate (most important)
+  speed: 0.5          # Provider known throughput score
+  tier: 1.0           # Model parameter tier preference
+
+# Provider tier overrides for adaptive strategy
+provider_speed_tier:
+  cerebras: 1
+  groq: 2
+  gemini: 3
+  openrouter: 4
+  mistral: 5
+  together: 5
+  deepseek: 6
+  cohere: 6
+  nvidia-nim: 5
+  huggingface: 8

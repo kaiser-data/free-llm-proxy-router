@@ -1,0 +1,154 @@
+// picoclaw-proxy: OpenAI-compatible proxy with intelligent routing and fallback.
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
+	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
+	"github.com/kaiser-data/picoclaw-free-llm/pkg/models"
+	"github.com/kaiser-data/picoclaw-free-llm/pkg/proxy"
+	"github.com/kaiser-data/picoclaw-free-llm/pkg/ratelimit"
+	"github.com/kaiser-data/picoclaw-free-llm/pkg/reliability"
+	"github.com/kaiser-data/picoclaw-free-llm/pkg/strategy"
+)
+
+var (
+	cfgFile  string
+	port     int
+	stratName string
+)
+
+func main() {
+	root := &cobra.Command{
+		Use:   "picoclaw-proxy",
+		Short: "OpenAI-compatible proxy for free LLM providers",
+		RunE:  runProxy,
+	}
+	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and ~/.picoclaw-free-llm/)")
+	root.Flags().IntVarP(&port, "port", "p", 0, "override proxy port (default from config: 8080)")
+	root.Flags().StringVarP(&stratName, "strategy", "s", "", "override strategy name")
+
+	if err := root.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func runProxy(cmd *cobra.Command, args []string) error {
+	// Load configuration
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if port > 0 {
+		cfg.Proxy.Port = port
+	}
+	if stratName != "" {
+		cfg.Proxy.Strategy = stratName
+	}
+
+	// Load model catalog
+	cat, err := catalog.Load(cfg.Catalog.Path)
+	if err != nil {
+		return fmt.Errorf("loading catalog: %w", err)
+	}
+	freeCount := len(cat.FreeEntries())
+	log.Printf("catalog: %d free model(s) loaded from %s", freeCount, cfg.Catalog.Path)
+	if freeCount == 0 {
+		log.Printf("warning: catalog is empty — run 'picoclaw-scan update' to discover free models")
+	}
+
+	// Check catalog staleness
+	if catalog.IsStale(cfg.Catalog.Path, time.Duration(cfg.Catalog.MaxAgeHours)*time.Hour) {
+		log.Printf("warning: catalog is older than %dh — consider running 'picoclaw-scan update'",
+			cfg.Catalog.MaxAgeHours)
+	}
+
+	// Load capability/family YAML data if present
+	if err := models.LoadFamilies("configs/families.yaml"); err != nil {
+		log.Printf("families.yaml not found or invalid: %v (family detection disabled)", err)
+	}
+	if err := models.LoadCapabilities("configs/capabilities.yaml"); err != nil {
+		log.Printf("capabilities.yaml not found or invalid: %v (capability detection disabled)", err)
+	}
+
+	// Set up rate limiters
+	rateLimiter := ratelimit.NewGlobalTracker()
+	geminiTracker := ratelimit.NewGeminiTracker()
+
+	// Load persisted rate-limit usage
+	usagePath := "~/.picoclaw-free-llm/usage.json"
+	if _, err := ratelimit.LoadUsage(usagePath); err != nil {
+		log.Printf("usage.json not found (starting fresh): %v", err)
+	}
+
+	// Set up reliability tracker
+	reliabilityTracker := reliability.New()
+	relPath := "~/.picoclaw-free-llm/reliability.json"
+	if err := reliability.Load(reliabilityTracker, relPath); err != nil {
+		log.Printf("reliability.json not found (starting fresh): %v", err)
+	}
+
+	// Set up strategy registry
+	similarFamily := ""
+	if cfg.Proxy.Similar != nil {
+		similarFamily = cfg.Proxy.Similar["model_family"]
+	}
+	geminiPreferred := ""
+	for _, p := range cfg.Providers {
+		if p.ID == "gemini" {
+			geminiPreferred = p.PreferredVolumeModel
+		}
+	}
+	fanOut := 3
+	if cfg.Proxy.StrategyOverrides != nil {
+		if pOv, ok := cfg.Proxy.StrategyOverrides["parallel"]; ok {
+			if fo, ok := pOv["fan_out"].(int); ok {
+				fanOut = fo
+			}
+		}
+	}
+
+	stratReg := strategy.NewRegistry(reliabilityTracker, rateLimiter, similarFamily, geminiPreferred, fanOut, 5)
+
+	// Create server
+	srv := proxy.NewServer(cfg, cat, stratReg, rateLimiter, geminiTracker, reliabilityTracker)
+
+	// Watch config for hot-reload
+	stopWatch, err := config.Watch(cfgFile, func(newCfg *config.Config) {
+		srv.UpdateConfig(newCfg)
+		log.Printf("proxy: config hot-reloaded")
+	})
+	if err != nil {
+		log.Printf("config watch error (hot-reload disabled): %v", err)
+	} else {
+		defer stopWatch()
+	}
+
+	// Handle graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Printf("proxy: shutting down...")
+		// Save reliability stats on shutdown
+		if err := reliability.Save(reliabilityTracker, relPath); err != nil {
+			log.Printf("saving reliability: %v", err)
+		}
+		cancel()
+	}()
+
+	return srv.Start(ctx)
+}

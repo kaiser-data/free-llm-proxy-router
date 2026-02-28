@@ -1,0 +1,71 @@
+- id: llama-3.1
+  names: ["llama-3.1", "llama3.1"]
+  description: "Meta LLaMA 3.1 family"
+
+- id: llama-3.2
+  names: ["llama-3.2", "llama3.2"]
+  description: "Meta LLaMA 3.2 family"
+
+- id: llama-3.3
+  names: ["llama-3.3", "llama3.3"]
+  description: "Meta LLaMA 3.3 family"
+
+- id: llama-3
+  names: ["llama-3", "llama3", "llama3-"]
+  description: "Meta LLaMA 3 family"
+
+- id: gemma-2
+  names: ["gemma-2", "gemma2"]
+  description: "Google Gemma 2 family"
+
+- id: gemma-3
+  names: ["gemma-3", "gemma3"]
+  description: "Google Gemma 3 family"
+
+- id: gemini-2.0-flash
+  names: ["gemini-2.0-flash", "gemini-2-flash"]
+  description: "Google Gemini 2.0 Flash family"
+
+- id: gemini-1.5-flash
+  names: ["gemini-1.5-flash", "gemini-1-5-flash"]
+  description: "Google Gemini 1.5 Flash family"
+
+- id: mistral-7b
+  names: ["mistral-7b", "mistral7b"]
+  description: "Mistral 7B family"
+
+- id: mixtral-8x7b
+  names: ["mixtral-8x7b", "mixtral8x7b"]
+  description: "Mistral MoE 8x7B family"
+
+- id: mixtral-8x22b
+  names: ["mixtral-8x22b", "mixtral8x22b"]
+  description: "Mistral MoE 8x22B family"
+
+- id: qwen-2.5
+  names: ["qwen-2.5", "qwen2.5", "qwq"]
+  description: "Alibaba Qwen 2.5 family"
+
+- id: deepseek-r1
+  names: ["deepseek-r1", "deepseek_r1"]
+  description: "DeepSeek R1 reasoning model"
+
+- id: deepseek-v3
+  names: ["deepseek-v3", "deepseek_v3"]
+  description: "DeepSeek V3 family"
+
+- id: phi-3
+  names: ["phi-3", "phi3"]
+  description: "Microsoft Phi-3 family"
+
+- id: phi-4
+  names: ["phi-4", "phi4"]
+  description: "Microsoft Phi-4 family"
+
+- id: command-r
+  names: ["command-r", "command_r"]
+  description: "Cohere Command-R family"
+
+- id: smollm
+  names: ["smollm", "smol-lm"]
+  description: "HuggingFace SmolLM family"

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build all binaries
+        run: make build
+
+      - name: Run unit tests
+        run: go test ./... -count=1 -timeout 60s
+
+      - name: Check binary sizes
+        run: |
+          for bin in bin/picoclaw-*; do
+            size=$(stat -c%s "$bin")
+            maxsize=$((10 * 1024 * 1024))  # 10MB
+            echo "$bin: $(numfmt --to=iec $size)"
+            if [ "$size" -gt "$maxsize" ]; then
+              echo "ERROR: $bin exceeds 10MB limit ($size bytes)"
+              exit 1
+            fi
+          done

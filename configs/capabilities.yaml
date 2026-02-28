@@ -1,0 +1,20 @@
+- capability: vision
+  keywords: ["vision", "visual", "vl", "multimodal", "image", "vlm", "11b-vision", "90b-vision"]
+
+- capability: code
+  keywords: ["coder", "code", "codestral", "deepseek-coder", "starcoder", "codegen", "qwen-coder", "instruct-code"]
+
+- capability: reasoning
+  keywords: ["r1", "reasoning", "think", "qwq", "o1", "thinking"]
+
+- capability: long_context
+  keywords: ["128k", "200k", "1m", "long-context", "longctx", "longcontext", "128000", "200000", "1000000", "1048576"]
+
+- capability: audio
+  keywords: ["whisper", "audio", "speech", "transcription", "tts", "asr"]
+
+- capability: json_mode
+  keywords: ["json", "structured-output"]
+
+- capability: function_calling
+  keywords: ["tools", "function-calling", "tool-use", "function_calling"]
