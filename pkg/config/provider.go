@@ -74,6 +74,18 @@ type DiscoveryConfig struct {
 	HubAPIFilters string `mapstructure:"hub_api_filters"`
 }
 
+// ResolvedAPIKey returns the bare API key (no header name, no prefix).
+// Useful for providers that pass the key as a query parameter (e.g. Gemini).
+// Lookup order: real env var → dotenv file → literal api_key field.
+func (p *ProviderConfig) ResolvedAPIKey() string {
+	if p.APIKeyEnv != "" {
+		if v := lookupEnv(p.APIKeyEnv); v != "" {
+			return v
+		}
+	}
+	return p.APIKey
+}
+
 // ResolvedAuth returns the effective API key and auth header values.
 // The env var takes precedence over the literal key.
 func (p *ProviderConfig) ResolvedAuth() (header, value string) {

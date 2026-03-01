@@ -137,7 +137,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		resp, err := fc.callProvider(ctx, *providerCfg, body)
 		attempt++
 
-		if err != nil || resp.StatusCode >= 500 {
+		if err != nil || resp.StatusCode != http.StatusOK {
 			// HuggingFace 503+loading: wait and retry SAME provider
 			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
 				if waitMs := parseHFLoadingWait(resp.Body); waitMs > 0 {
@@ -150,18 +150,22 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					}
 				}
 			}
-			log.Printf("fallback: %s/%s failed (%v) — continuing", r.ProviderID, r.ModelID, err)
-			fc.ReliabilityTracker.Record(r.ProviderID, false)
+			// 429: rate limited — back off before trying next provider
 			if resp != nil && resp.StatusCode == 429 {
-				// Flag for reverification on unexpected 429
 				fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 				info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
-				waitDur := info.WaitDuration()
-				if waitDur > 0 {
+				if waitDur := info.WaitDuration(); waitDur > 0 {
 					log.Printf("fallback: rate limited on %s — waiting %v", r.ProviderID, waitDur)
 					time.Sleep(waitDur)
 				}
 			}
+			log.Printf("fallback: %s/%s status %d — continuing", r.ProviderID, r.ModelID, func() int {
+				if resp != nil {
+					return resp.StatusCode
+				}
+				return 0
+			}())
+			fc.ReliabilityTracker.Record(r.ProviderID, false)
 			continue
 		}
 
@@ -198,11 +202,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 }
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
-	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/v1/chat/completions"
-	// Gemini OpenAI-compat endpoint includes "openai/" in path
-	if cfg.ID == "gemini" && !strings.Contains(cfg.BaseURL, "openai") {
-		endpoint = strings.TrimRight(cfg.BaseURL, "/") + "/v1/chat/completions"
-	}
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 
 	data, err := json.Marshal(body)
 	if err != nil {

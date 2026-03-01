@@ -54,13 +54,9 @@ func (s *GeminiScanner) ScanFreeModels(ctx context.Context, cfg config.ProviderC
 		discoveryURL = cfg.Discovery.ModelsEndpoint
 	}
 
-	// Gemini uses x-goog-api-key, not Authorization: Bearer
-	apiKey := cfg.APIKey
-	if cfg.APIKeyEnv != "" {
-		if v := resolveEnv(cfg.APIKeyEnv); v != "" {
-			apiKey = v
-		}
-	}
+	// Gemini uses x-goog-api-key passed as a query param, not Authorization: Bearer.
+	// Use ResolvedAPIKey so dotenv-loaded values are picked up.
+	apiKey := cfg.ResolvedAPIKey()
 
 	var allModels []geminiModel
 	pageToken := ""

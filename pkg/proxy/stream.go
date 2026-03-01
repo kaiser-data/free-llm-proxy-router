@@ -23,7 +23,7 @@ type StreamProxy struct {
 // Forward proxies a streaming chat-completions request to the given provider.
 // It streams SSE chunks from the provider directly to w.
 func (sp *StreamProxy) Forward(ctx context.Context, w http.ResponseWriter, cfg config.ProviderConfig, body map[string]any) error {
-	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/v1/chat/completions"
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 
 	// Ensure stream is set
 	body = copyMap(body)

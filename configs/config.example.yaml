@@ -55,7 +55,7 @@ providers:
       HTTP-Referer: "https://github.com/kaiser-data/picoclaw-free-llm"
       X-Title: "PicoClaw Free LLM"
     discovery:
-      models_endpoint: "/v1/models"
+      models_endpoint: "/models"
       free_detect_field: "pricing.prompt"
       free_detect_value: "0"
       free_markers: [":free"]

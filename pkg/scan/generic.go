@@ -76,7 +76,7 @@ type genericModelsResponse struct {
 func (s *GenericScanner) ScanFreeModels(ctx context.Context, cfg config.ProviderConfig) ([]catalog.CatalogEntry, error) {
 	endpoint := cfg.Discovery.ModelsEndpoint
 	if endpoint == "" {
-		endpoint = "/v1/models"
+		endpoint = "/models"
 	}
 	url := strings.TrimRight(cfg.BaseURL, "/") + endpoint
 

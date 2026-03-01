@@ -30,7 +30,7 @@ type ProbeResult struct {
 
 // Probe sends a minimal request to verify a model's free access status.
 func (p *Prober) Probe(ctx context.Context, entry catalog.CatalogEntry, cfg config.ProviderConfig) ProbeResult {
-	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/v1/chat/completions"
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 
 	payload := map[string]any{
 		"model":      entry.ModelID,
