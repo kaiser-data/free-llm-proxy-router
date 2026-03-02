@@ -119,6 +119,7 @@ All providers have recharging free limits — no one-time trial credits, no cred
 | **HuggingFace** | 300 calls/hour | hourly |
 | **Mistral AI** | 2 RPM | per minute |
 | **Cohere** | 1000 req/month | monthly |
+| **NVIDIA NIM** | Free credits, 40 RPM, 200+ models | monthly |
 | **Ollama** | Unlimited | local, no key |
 
 ## Configuration
