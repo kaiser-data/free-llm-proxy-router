@@ -48,6 +48,9 @@ func updateCmd() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 
+			// Load existing catalog to preserve blocklist across scans.
+			existing, _ := catalog.Load(cfg.Catalog.Path)
+
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
@@ -56,6 +59,12 @@ func updateCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("scanning providers: %w", err)
 			}
+
+			// Carry forward the blocklist from the previous catalog.
+			if existing != nil {
+				cat.Blocklist = existing.Blocklist
+			}
+			cat.FilterBlocklisted()
 
 			// Correlate cross-provider families
 			correlated := scan.Correlate(cat.Entries)

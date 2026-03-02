@@ -24,6 +24,38 @@ type Catalog struct {
 	Version   int            `json:"version"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	Entries   []CatalogEntry `json:"entries"`
+	// Blocklist contains "provider_id/model_id" pairs that are permanently excluded.
+	// Models on this list are removed after every scan (non-existent, chat-incompatible, etc).
+	Blocklist []string `json:"blocklist,omitempty"`
+}
+
+// FilterBlocklisted removes any entry whose "provider_id/model_id" appears in Blocklist.
+func (c *Catalog) FilterBlocklisted() {
+	if len(c.Blocklist) == 0 {
+		return
+	}
+	blocked := make(map[string]struct{}, len(c.Blocklist))
+	for _, b := range c.Blocklist {
+		blocked[b] = struct{}{}
+	}
+	var kept []CatalogEntry
+	for _, e := range c.Entries {
+		if _, bad := blocked[e.ProviderID+"/"+e.ModelID]; !bad {
+			kept = append(kept, e)
+		}
+	}
+	c.Entries = kept
+}
+
+// Block adds a "provider_id/model_id" key to the blocklist if not already present.
+func (c *Catalog) Block(providerID, modelID string) {
+	key := providerID + "/" + modelID
+	for _, b := range c.Blocklist {
+		if b == key {
+			return
+		}
+	}
+	c.Blocklist = append(c.Blocklist, key)
 }
 
 // ByProvider returns all entries for the given provider.

@@ -71,18 +71,14 @@ providers:
     enabled: true
     priority: 2
     timeout: "15s"
-    native_features:
-      service_tier: "auto"
     discovery:
-      models_endpoint: "/openai/v1/models"
+      models_endpoint: "/models"
       all_free: true
     rate_limit_notes: "Per-model limits. x-ratelimit-reset-* uses Go duration strings (e.g. '1m0s'). No Retry-After header."
 
   - id: gemini
     name: "Google AI Studio"
-    base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
-    auth_header: "x-goog-api-key"
-    auth_prefix: ""
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
     api_key_env: "GEMINI_API_KEY"
     enabled: true
     priority: 3
@@ -151,7 +147,7 @@ providers:
 
   - id: huggingface
     name: "Hugging Face Inference"
-    base_url: "https://api-inference.huggingface.co/v1"
+    base_url: "https://router.huggingface.co/v1"
     api_key_env: "HF_API_KEY"
     enabled: false
     priority: 10

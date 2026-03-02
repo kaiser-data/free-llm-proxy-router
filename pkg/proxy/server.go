@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -156,12 +157,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Select strategy
+	// Select strategy: model field may be a strategy name, a provider/model ID, or "auto"/"".
 	stratName := cfg.Proxy.Strategy
 	if req.Model != "" && req.Model != "auto" {
-		// Specific model requested — use it directly
-		s.serveDirectModel(w, r, cfg, req, raw)
-		return
+		// Check if the model field is a known strategy name.
+		if _, errLookup := s.strategyReg.Get(req.Model); errLookup == nil {
+			stratName = req.Model
+		} else {
+			// Specific model requested — route directly.
+			s.serveDirectModel(w, r, cfg, req, raw)
+			return
+		}
 	}
 
 	strat, err := s.strategyReg.Get(stratName)
@@ -230,19 +236,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveDirectModel routes a request with a specific model ID to the right provider.
+// Accepts both "model-id" and "provider/model-id" formats.
 func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *config.Config, req Request, raw map[string]any) {
-	// Find a provider that has this model in the catalog
+	// Parse optional "provider/model" prefix
+	targetProvider := ""
+	targetModel := req.Model
+	if idx := strings.IndexByte(req.Model, '/'); idx >= 0 {
+		targetProvider = req.Model[:idx]
+		targetModel = req.Model[idx+1:]
+	}
+
 	cat := s.catalog.Load()
 	for _, e := range cat.Entries {
-		if e.ModelID == req.Model && e.IsFree {
+		if e.ModelID == targetModel && e.IsFree &&
+			(targetProvider == "" || e.ProviderID == targetProvider) {
 			provCfg := findProviderCfg(cfg, e.ProviderID)
 			if provCfg == nil {
 				continue
 			}
 			body := copyMap(raw)
-			if e.ProviderID == "groq" {
-				body = BuildGroqRequest(body)
-			}
+			body["model"] = e.ModelID // strip provider prefix before sending to API
 			chain := &FallbackChain{
 				Cfg:                cfg,
 				Strategy:           nil, // not used for direct routing
@@ -304,12 +317,9 @@ func findProviderCfg(cfg *config.Config, providerID string) *config.ProviderConf
 	return nil
 }
 
-func buildStreamBody(raw map[string]any, modelID, providerID string) map[string]any {
+func buildStreamBody(raw map[string]any, modelID, _ string) map[string]any {
 	body := copyMap(raw)
 	body["model"] = modelID
 	body["stream"] = true
-	if providerID == "groq" {
-		body["service_tier"] = "auto"
-	}
 	return body
 }

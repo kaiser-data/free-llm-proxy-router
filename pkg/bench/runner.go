@@ -83,7 +83,7 @@ func (r *Runner) Run(ctx context.Context) ([]BenchMetrics, error) {
 }
 
 func (r *Runner) benchOne(ctx context.Context, cfg config.ProviderConfig, modelID, stratName string, prompt BenchPrompt) BenchMetrics {
-	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/v1/chat/completions"
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 
 	payload := map[string]any{
 		"model":      modelID,

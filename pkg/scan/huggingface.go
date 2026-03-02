@@ -47,12 +47,7 @@ func (s *HuggingFaceScanner) ScanFreeModels(ctx context.Context, cfg config.Prov
 	}
 	url := hfHubBase + "?" + filters
 
-	apiKey := cfg.APIKey
-	if cfg.APIKeyEnv != "" {
-		if v := resolveEnv(cfg.APIKeyEnv); v != "" {
-			apiKey = v
-		}
-	}
+	apiKey := cfg.ResolvedAPIKey()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
