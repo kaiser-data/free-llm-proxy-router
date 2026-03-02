@@ -1,6 +1,6 @@
 # picoclaw-free-llm
 
-An OpenAI-compatible local proxy that routes LLM requests across free-tier providers — Groq, Gemini, OpenRouter, Cerebras, Mistral, NVIDIA NIM, HuggingFace and more — with automatic fallback, rate-limit awareness, and 13 routing strategies.
+An OpenAI-compatible local proxy that routes LLM requests across free-tier providers — Groq, Gemini, OpenRouter, GitHub Models, Cerebras, Mistral, HuggingFace and more — with automatic fallback, rate-limit recovery, and 13 routing strategies.
 
 ## What it does
 
@@ -45,6 +45,7 @@ At minimum you need one key. Easiest to get (no credit card):
 | **Groq** | https://console.groq.com/keys | Fast inference, all models free |
 | **Gemini** | https://aistudio.google.com/app/apikey | 1500 req/day, 1M context |
 | **OpenRouter** | https://openrouter.ai/settings/keys | 50+ free models via one key |
+| **GitHub Models** | https://github.com/settings/tokens | Any GitHub PAT, vision models included |
 
 ### 3. Discover free models
 
@@ -97,26 +98,28 @@ Pass any strategy name as the `model` field, or set a default in `config.yaml`:
 Every request runs through a 5-step fallback:
 
 1. **OpenRouter** with `models[]` array — native multi-model fallback in one request
-2. **Groq** with `service_tier: auto`
+2. **Groq** — fast inference, free tier, per-model RPM/RPD limits
 3. **Gemini** (4-dimensional rate limit check: RPM/TPM/RPD/IPM)
 4. **Remaining ranked providers** (by strategy)
 5. **OpenRouter `openrouter/free`** — ultimate fallback router
 
+Rate-limited providers (429) are put on a cooldown automatically and skipped until the window resets — no blocking, no sleep.
+
 ## Supported providers
 
-| Provider | Type | Notes |
-|----------|------|-------|
-| OpenRouter | Free | 50+ models, native fallback, `:free` suffix detection |
-| Groq | Free | All models free, per-model RPM/RPD limits |
-| Google AI Studio | Free | Gemini models, 1500 RPD, resets midnight PT |
-| Mistral AI | Free | 2 RPM free tier |
-| Cerebras | Free | Hardware-accelerated, RPS limits |
-| NVIDIA NIM | Credits | 40 RPM, free credits on signup |
-| HuggingFace | Free | 300 calls/hour, warm models only |
-| Together AI | Credits | Free $1 credit on signup |
-| DeepSeek | Credits | R1 reasoning model, free credits |
-| Cohere | Free | 1000 req/month |
-| Ollama | Local | No key needed, runs models locally |
+All providers have recharging free limits — no one-time trial credits, no credit card required.
+
+| Provider | Free limit | Resets |
+|----------|------------|--------|
+| **OpenRouter** | 50+ free models (pricing == $0) | always free |
+| **Groq** | Per-model RPM/RPD | daily |
+| **Google AI Studio** | 1500 req/day, 1M token context | midnight PT |
+| **GitHub Models** | 150–500 req/day (low/high tier) | daily |
+| **Cerebras** | Per-second RPS limits | continuously |
+| **HuggingFace** | 300 calls/hour | hourly |
+| **Mistral AI** | 2 RPM | per minute |
+| **Cohere** | 1000 req/month | monthly |
+| **Ollama** | Unlimited | local, no key |
 
 ## Configuration
 
@@ -179,6 +182,12 @@ make build
 ```
 
 Tests cover: 30+ model name classifier cases, all 10 provider rate-limit header extractors, all 13 strategy `Rank()` methods.
+
+## Acknowledgments
+
+Provider rate limit data, free tier detection, and free-tier change tracking informed by:
+
+- **[cheahjs/free-llm-api-resources](https://github.com/cheahjs/free-llm-api-resources)** — comprehensive community-maintained reference for free LLM API tiers, rate limits, and supported models across all major providers. The live limits comment in `config.yaml` links back to this resource.
 
 ## License
 

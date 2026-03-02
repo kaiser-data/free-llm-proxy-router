@@ -108,7 +108,13 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			continue
 		}
 
-		// Cerebras pre-emptive check
+		// Skip any provider currently on rate-limit cooldown.
+		if fc.RateLimiter.IsOnCooldown(r.ProviderID) {
+			log.Printf("fallback: %s on cooldown — skipping", r.ProviderID)
+			continue
+		}
+
+		// Cerebras pre-emptive check (RPS-level, finer than cooldown)
 		if r.ProviderID == "cerebras" {
 			tracker := fc.RateLimiter.Provider("cerebras")
 			if !tracker.CanRequest(r.ModelID, 0, 0) {
@@ -138,7 +144,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		attempt++
 
 		if err != nil || resp.StatusCode != http.StatusOK {
-			// HuggingFace 503+loading: wait and retry SAME provider
+			// HuggingFace 503+loading: wait and retry SAME provider (cold start)
 			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
 				if waitMs := parseHFLoadingWait(resp.Body); waitMs > 0 {
 					log.Printf("fallback: huggingface model loading, waiting %dms", waitMs)
@@ -150,14 +156,15 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					}
 				}
 			}
-			// 429: rate limited — back off before trying next provider
+			// 429: record a cooldown for this provider so future requests skip it
+			// until the rate limit window resets. Do NOT sleep here — move on immediately.
 			if resp != nil && resp.StatusCode == 429 {
 				fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 				info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
-				if waitDur := info.WaitDuration(); waitDur > 0 {
-					log.Printf("fallback: rate limited on %s — waiting %v", r.ProviderID, waitDur)
-					time.Sleep(waitDur)
-				}
+				waitDur := info.WaitDuration()
+				until := time.Now().Add(waitDur)
+				fc.RateLimiter.SetCooldown(r.ProviderID, until)
+				log.Printf("fallback: %s rate limited — cooldown until %s", r.ProviderID, until.Format("15:04:05"))
 			}
 			log.Printf("fallback: %s/%s status %d — continuing", r.ProviderID, r.ModelID, func() int {
 				if resp != nil {

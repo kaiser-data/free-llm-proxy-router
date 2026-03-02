@@ -149,13 +149,17 @@ func (t *ProviderTracker) getOrCreate(m map[string]*Window, key string, size tim
 
 // GlobalTracker holds per-provider trackers, keyed by provider ID.
 type GlobalTracker struct {
-	mu       sync.RWMutex
-	trackers map[string]*ProviderTracker
+	mu        sync.RWMutex
+	trackers  map[string]*ProviderTracker
+	cooldowns map[string]time.Time // provider_id → earliest time to retry
 }
 
 // NewGlobalTracker creates an empty GlobalTracker.
 func NewGlobalTracker() *GlobalTracker {
-	return &GlobalTracker{trackers: make(map[string]*ProviderTracker)}
+	return &GlobalTracker{
+		trackers:  make(map[string]*ProviderTracker),
+		cooldowns: make(map[string]time.Time),
+	}
 }
 
 // Provider returns the ProviderTracker for the given provider, creating it if needed.
@@ -174,4 +178,41 @@ func (g *GlobalTracker) Provider(providerID string) *ProviderTracker {
 	t = NewProviderTracker()
 	g.trackers[providerID] = t
 	return t
+}
+
+// SetCooldown records that a provider is rate-limited until the given time.
+// Subsequent IsOnCooldown checks will return true until that time passes.
+func (g *GlobalTracker) SetCooldown(providerID string, until time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// Only extend cooldown, never shorten it.
+	if existing, ok := g.cooldowns[providerID]; !ok || until.After(existing) {
+		g.cooldowns[providerID] = until
+	}
+}
+
+// IsOnCooldown returns true if the provider is still within its rate-limit cooldown window.
+func (g *GlobalTracker) IsOnCooldown(providerID string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	until, ok := g.cooldowns[providerID]
+	return ok && time.Now().Before(until)
+}
+
+// EarliestRecovery returns the earliest time any currently-cooled-down provider will recover.
+// Returns zero time if no cooldowns are active.
+func (g *GlobalTracker) EarliestRecovery() time.Time {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	var earliest time.Time
+	now := time.Now()
+	for _, until := range g.cooldowns {
+		if until.Before(now) {
+			continue
+		}
+		if earliest.IsZero() || until.Before(earliest) {
+			earliest = until
+		}
+	}
+	return earliest
 }

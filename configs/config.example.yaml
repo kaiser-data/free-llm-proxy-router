@@ -106,23 +106,17 @@ providers:
     timeout: "15s"
     rate_limit_notes: "RPS limits (not RPM). x-ratelimit-reset-tokens is fractional float seconds. Space requests 100ms."
 
-  - id: together
-    name: "Together AI"
-    base_url: "https://api.together.xyz/v1"
-    api_key_env: "TOGETHER_API_KEY"
+  - id: github-models
+    name: "GitHub Models"
+    base_url: "https://models.inference.ai.azure.com"
+    api_key_env: "GITHUB_TOKEN"
     enabled: false
     priority: 6
     timeout: "30s"
-    tier_type: "credit"
-
-  - id: deepseek
-    name: "DeepSeek"
-    base_url: "https://api.deepseek.com/v1"
-    api_key_env: "DEEPSEEK_API_KEY"
-    enabled: false
-    priority: 7
-    timeout: "60s"
-    tier_type: "credit"
+    rate_limit_notes: "Free plan: 15 low/medium + 8 high req/min; 150/500 req/day. Pro: 20/10 req/min; 300/1000 req/day."
+    discovery:
+      models_endpoint: "https://models.github.ai/catalog/models"
+      all_free: true
 
   - id: cohere
     name: "Cohere"
@@ -134,16 +128,6 @@ providers:
     extra_headers:
       Cohere-Version: "2022-12-06"
     rate_limit_notes: "1000 req/MONTH (not per day). Monthly reset."
-
-  - id: nvidia-nim
-    name: "NVIDIA NIM"
-    base_url: "https://integrate.api.nvidia.com/v1"
-    api_key_env: "NVIDIA_API_KEY"
-    enabled: false
-    priority: 9
-    timeout: "30s"
-    tier_type: "credit"
-    rate_limit_notes: "40 RPM hard limit regardless of credits."
 
   - id: huggingface
     name: "Hugging Face Inference"

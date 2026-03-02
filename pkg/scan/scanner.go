@@ -71,6 +71,8 @@ func (d *Dispatcher) scannerFor(providerID string) ProviderScanner {
 		return &GeminiScanner{Client: d.client}
 	case "huggingface":
 		return &HuggingFaceScanner{Client: d.client}
+	case "github-models":
+		return &GitHubScanner{Client: d.client}
 	default:
 		return &GenericScanner{Client: d.client}
 	}
