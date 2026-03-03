@@ -186,29 +186,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		HTTPClient:         &http.Client{Timeout: 120 * time.Second},
 	}
 
-	if req.Stream {
-		// For streaming, we need to use the first ranked model
-		freeEntries := cat.FreeEntries()
-		stratReq := strategy.Request{
-			Messages:  req.Messages,
-			MaxTokens: req.MaxTokens,
-			Stream:    true,
-			Model:     req.Model,
-		}
-		ranked := strat.Rank(stratReq, freeEntries, nil)
-		if len(ranked) > 0 {
-			provCfg := findProviderCfg(cfg, ranked[0].ProviderID)
-			if provCfg != nil {
-				streamBody := buildStreamBody(raw, ranked[0].ModelID, ranked[0].ProviderID)
-				if err := s.streamProxy.Forward(r.Context(), w, *provCfg, streamBody); err != nil {
-					log.Printf("stream error: %v", err)
-					http.Error(w, `{"error":"stream failed"}`, http.StatusBadGateway)
-				}
-				return
-			}
-		}
-	}
-
+	// Always use the fallback chain regardless of stream flag.
+	// Streaming is stripped from provider requests in buildBody so the chain
+	// always receives buffered JSON — this is required for fallback to work.
+	// Clients receive a valid non-streaming JSON response in all cases.
 	resp, err := chain.Execute(r.Context(), req)
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)

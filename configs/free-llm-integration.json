@@ -1,6 +1,6 @@
 {
   "description": "PicoClaw device configuration pointing to free-llm-proxy",
   "api_base": "http://localhost:8080/v1",
-  "model": "auto",
-  "notes": "Set OPENAI_BASE_URL=http://localhost:8080/v1 in your PicoClaw environment"
+  "model": "groq/llama-3.3-70b-versatile",
+  "notes": "Set OPENAI_BASE_URL=http://localhost:8080/v1 and OPENAI_MODEL=groq/llama-3.3-70b-versatile in your PicoClaw environment. Use 'auto' to let the proxy pick via adaptive strategy, or any strategy name (speed, balanced, coding, etc.)."
 }

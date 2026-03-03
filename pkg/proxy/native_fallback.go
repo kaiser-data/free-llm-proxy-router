@@ -23,6 +23,7 @@ func BuildOpenRouterRequest(req map[string]any, freeModels []string) map[string]
 	body := copyMap(req)
 	body["model"] = freeModels[0]
 	body["models"] = freeModels // OpenRouter tries these in order
+	delete(body, "stream")      // non-streaming so fallback chain can parse the JSON response
 	return body
 }
 
@@ -31,7 +32,8 @@ func BuildOpenRouterRequest(req map[string]any, freeModels []string) map[string]
 func OpenRouterFreeRouterRequest(req map[string]any) map[string]any {
 	body := copyMap(req)
 	body["model"] = "openrouter/free"
-	delete(body, "models") // clear any previous models[] array
+	delete(body, "models")  // clear any previous models[] array
+	delete(body, "stream")  // non-streaming for consistent JSON response
 	return body
 }
 

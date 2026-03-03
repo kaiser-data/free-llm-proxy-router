@@ -92,50 +92,59 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		}
 	}
 
-	// Step 2–4: Try each ranked provider
+	// Step 2–4: Try one model per provider in ranked order.
+	//
+	// Key invariant: once a provider returns any error, ALL remaining entries
+	// for that provider are skipped immediately. This prevents a large provider
+	// (e.g. NVIDIA NIM with 172 models) from exhausting maxAttempts before
+	// faster, more reliable providers (Groq, Cerebras, Gemini) are even tried.
 	attempt := 0
+	failedProviders := make(map[string]bool)
 	for _, r := range ranked {
 		if attempt >= maxAttempts {
 			break
 		}
-		providerCfg := fc.findProvider(r.ProviderID)
-		if providerCfg == nil {
+		// Skip OpenRouter entries — already tried above via models[] array.
+		if r.ProviderID == "openrouter" {
+			continue
+		}
+		// Skip providers that already returned an error this request.
+		if failedProviders[r.ProviderID] {
 			continue
 		}
 
-		// Skip OpenRouter entries (already tried above)
-		if r.ProviderID == "openrouter" {
+		providerCfg := fc.findProvider(r.ProviderID)
+		if providerCfg == nil {
 			continue
 		}
 
 		// Skip any provider currently on rate-limit cooldown.
 		if fc.RateLimiter.IsOnCooldown(r.ProviderID) {
 			log.Printf("fallback: %s on cooldown — skipping", r.ProviderID)
+			failedProviders[r.ProviderID] = true
 			continue
 		}
 
-		// Cerebras pre-emptive check (RPS-level, finer than cooldown)
+		// Cerebras pre-emptive check (RPS-level, finer than cooldown).
 		if r.ProviderID == "cerebras" {
 			tracker := fc.RateLimiter.Provider("cerebras")
 			if !tracker.CanRequest(r.ModelID, 0, 0) {
 				log.Printf("fallback: cerebras pre-emptive skip (rate limited)")
+				failedProviders[r.ProviderID] = true
 				continue
 			}
-		}
-
-		// Gemini 4-dimensional rate check
-		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
-			if !fc.GeminiTracker.CanRequest(r.ModelID, stratReq.EstimatedPromptTokens) {
-				log.Printf("fallback: gemini %s rate limited — skipping", r.ModelID)
-				continue
-			}
-		}
-
-		// Enforce Cerebras request spacing
-		if r.ProviderID == "cerebras" {
 			spacingMs := fc.Cfg.Fallback.CerebrasRequestSpacingMs
 			if spacingMs > 0 {
 				time.Sleep(time.Duration(spacingMs) * time.Millisecond)
+			}
+		}
+
+		// Gemini 4-dimensional rate check.
+		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
+			if !fc.GeminiTracker.CanRequest(r.ModelID, stratReq.EstimatedPromptTokens) {
+				log.Printf("fallback: gemini %s rate limited — skipping", r.ModelID)
+				failedProviders[r.ProviderID] = true
+				continue
 			}
 		}
 
@@ -144,7 +153,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		attempt++
 
 		if err != nil || resp.StatusCode != http.StatusOK {
-			// HuggingFace 503+loading: wait and retry SAME provider (cold start)
+			// HuggingFace 503+loading: wait and retry SAME provider (cold start).
 			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
 				if waitMs := parseHFLoadingWait(resp.Body); waitMs > 0 {
 					log.Printf("fallback: huggingface model loading, waiting %dms", waitMs)
@@ -156,8 +165,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					}
 				}
 			}
-			// 429: record a cooldown for this provider so future requests skip it
-			// until the rate limit window resets. Do NOT sleep here — move on immediately.
+			// 429: put provider on cooldown; future requests skip it until window resets.
 			if resp != nil && resp.StatusCode == 429 {
 				fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 				info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
@@ -166,26 +174,25 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 				fc.RateLimiter.SetCooldown(r.ProviderID, until)
 				log.Printf("fallback: %s rate limited — cooldown until %s", r.ProviderID, until.Format("15:04:05"))
 			}
-			log.Printf("fallback: %s/%s status %d — continuing", r.ProviderID, r.ModelID, func() int {
-				if resp != nil {
-					return resp.StatusCode
-				}
-				return 0
-			}())
+			statusCode := 0
+			if resp != nil {
+				statusCode = resp.StatusCode
+			}
+			log.Printf("fallback: %s/%s status %d — skipping provider", r.ProviderID, r.ModelID, statusCode)
 			fc.ReliabilityTracker.Record(r.ProviderID, false)
+			failedProviders[r.ProviderID] = true // don't try other models from this provider
 			continue
 		}
 
-		// Record Cerebras remaining-requests for pre-emption
+		// Success path.
 		if r.ProviderID == "cerebras" {
 			info := ratelimit.ExtractRateLimitInfo("cerebras", resp.Header, resp.Body)
 			if info.RemainingRequests >= 0 && info.RemainingRequests < 2 {
 				tracker := fc.RateLimiter.Provider("cerebras")
 				tracker.PreemptiveSlowdown(info.WaitDuration())
 			}
-			_ = fc.GeminiTracker // reference to suppress unused warning
+			_ = fc.GeminiTracker
 		}
-
 		fc.ReliabilityTracker.Record(r.ProviderID, true)
 		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
 			fc.GeminiTracker.RecordRequest(r.ModelID, stratReq.EstimatedPromptTokens)
@@ -282,6 +289,7 @@ func (fc *FallbackChain) collectProviderModels(providerID string, ranked []strat
 func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelID string) map[string]any {
 	body := copyMap(raw)
 	body["model"] = modelID
+	delete(body, "stream") // always non-streaming to providers; fallback requires buffered JSON
 	if providerID == "groq" {
 		body = BuildGroqRequest(body)
 	}
