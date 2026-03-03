@@ -74,6 +74,10 @@ func updateCmd() *cobra.Command {
 				return fmt.Errorf("saving catalog: %w", err)
 			}
 			log.Printf("scan: wrote %d entries to %s", len(cat.Entries), cfg.Catalog.Path)
+
+			if err := catalog.PushAfterScan(cfg.Catalog.Path, catalog.GitSyncConfig(cfg.Catalog.GitSync)); err != nil {
+				log.Printf("gitsync: push failed (non-fatal): %v", err)
+			}
 			return nil
 		},
 	}

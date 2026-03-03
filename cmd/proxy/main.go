@@ -123,6 +123,25 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	// Create server
 	srv := proxy.NewServer(cfg, cat, stratReg, rateLimiter, geminiTracker, reliabilityTracker)
 
+	// Handle graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Watch catalog file for hot-reload (triggered by git-sync pull or manual update).
+	stopCatalogWatch, err := catalog.Watch(cfg.Catalog.Path, func(newCat *catalog.Catalog) {
+		srv.UpdateCatalog(newCat)
+		log.Printf("catalog: hot-reloaded (%d models)", len(newCat.FreeEntries()))
+	})
+	if err != nil {
+		log.Printf("catalog watch error (hot-reload disabled): %v", err)
+	} else {
+		defer stopCatalogWatch()
+	}
+
+	// Start catalog git-sync auto-pull if configured.
+	catalog.StartAutoPull(ctx, cfg.Catalog.Path,
+		catalog.GitSyncConfig(cfg.Catalog.GitSync))
+
 	// Watch config for hot-reload
 	stopWatch, err := config.Watch(cfgFile, func(newCfg *config.Config) {
 		srv.UpdateConfig(newCfg)
@@ -133,10 +152,6 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	} else {
 		defer stopWatch()
 	}
-
-	// Handle graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)

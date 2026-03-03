@@ -42,6 +42,24 @@ catalog:
   max_age_hours: 24
   auto_scan_on_start: false
 
+  # Git-sync: share the catalog across machines via a git repo.
+  #
+  # Scanner machine  →  picoclaw-scan update  (auto_push: true commits+pushes data/catalog.json)
+  # Other machines   →  picoclaw-proxy        (fetches remote_url every pull_interval, hot-reloads)
+  #
+  git_sync:
+    enabled: false
+
+    # Push side — set on the machine that runs picoclaw-scan update:
+    repo_path: ""                     # path to local git repo (default: ".")
+    catalog_in_repo: "data/catalog.json"
+    auto_push: false
+
+    # Pull side — set on all proxy instances:
+    pull_interval: "1h"               # how often to fetch; 0 = disabled
+    remote_url: ""                    # raw GitHub URL, e.g.:
+                                      #   https://raw.githubusercontent.com/you/repo/main/data/catalog.json
+
 providers:
 
   - id: openrouter

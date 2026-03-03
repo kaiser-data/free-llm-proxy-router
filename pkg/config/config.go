@@ -39,10 +39,22 @@ type ProxyConfig struct {
 
 // CatalogConfig holds paths and staleness settings for the local model catalog.
 type CatalogConfig struct {
-	Path         string `mapstructure:"path"`
-	EnrichedPath string `mapstructure:"enriched_path"`
-	MaxAgeHours  int    `mapstructure:"max_age_hours"`
-	AutoScanOnStart bool `mapstructure:"auto_scan_on_start"`
+	Path            string        `mapstructure:"path"`
+	EnrichedPath    string        `mapstructure:"enriched_path"`
+	MaxAgeHours     int           `mapstructure:"max_age_hours"`
+	AutoScanOnStart bool          `mapstructure:"auto_scan_on_start"`
+	GitSync         GitSyncConfig `mapstructure:"git_sync"`
+}
+
+// GitSyncConfig controls catalog synchronisation via git or a raw remote URL.
+// See pkg/catalog/gitsync.go for full documentation.
+type GitSyncConfig struct {
+	Enabled       bool   `mapstructure:"enabled"`
+	RepoPath      string `mapstructure:"repo_path"`
+	CatalogInRepo string `mapstructure:"catalog_in_repo"`
+	AutoPush      bool   `mapstructure:"auto_push"`
+	PullInterval  string `mapstructure:"pull_interval"`
+	RemoteURL     string `mapstructure:"remote_url"`
 }
 
 // RefreshConfig holds the LLM-powered refresh settings.
