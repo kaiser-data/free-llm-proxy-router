@@ -298,9 +298,3 @@ func findProviderCfg(cfg *config.Config, providerID string) *config.ProviderConf
 	return nil
 }
 
-func buildStreamBody(raw map[string]any, modelID, _ string) map[string]any {
-	body := copyMap(raw)
-	body["model"] = modelID
-	body["stream"] = true
-	return body
-}

@@ -290,6 +290,32 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 	body := copyMap(raw)
 	body["model"] = modelID
 	delete(body, "stream") // always non-streaming to providers; fallback requires buffered JSON
+
+	// Apply max_tokens_cap from strategy_overrides if the strategy has one configured
+	// and the client hasn't already requested fewer tokens.
+	if fc.Strategy != nil {
+		if overrides, ok := fc.Cfg.Proxy.StrategyOverrides[fc.Strategy.Name()]; ok {
+			if capRaw, ok := overrides["max_tokens_cap"]; ok {
+				var cap int
+				switch v := capRaw.(type) {
+				case int:
+					cap = v
+				case float64:
+					cap = int(v)
+				}
+				if cap > 0 {
+					current := 0
+					if mt, ok := body["max_tokens"].(float64); ok {
+						current = int(mt)
+					}
+					if current == 0 || current > cap {
+						body["max_tokens"] = cap
+					}
+				}
+			}
+		}
+	}
+
 	if providerID == "groq" {
 		body = BuildGroqRequest(body)
 	}
