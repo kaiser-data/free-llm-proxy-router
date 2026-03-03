@@ -147,6 +147,37 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Load()
 	cat := s.catalog.Load()
 
+	// Resolve agent profile: if model field matches a named profile, apply defaults/overrides.
+	if profile, ok := cfg.Proxy.Agents[req.Model]; ok {
+		// Apply defaults — only when client did not set the key.
+		for k, v := range profile.Defaults {
+			if _, already := raw[k]; !already {
+				raw[k] = v
+			}
+		}
+		// Apply overrides — always win over client values.
+		for k, v := range profile.Overrides {
+			raw[k] = v
+		}
+		// Re-read max_tokens in case defaults/overrides changed it.
+		if mt, ok := raw["max_tokens"].(float64); ok {
+			req.MaxTokens = int(mt)
+		}
+		// Redirect routing: specific model takes precedence over strategy.
+		if profile.Model != "" {
+			req.Model = profile.Model
+			raw["model"] = profile.Model
+		} else if profile.Strategy != "" {
+			req.Model = profile.Strategy
+			raw["model"] = profile.Strategy
+		} else {
+			// No model/strategy in profile — use proxy default strategy.
+			req.Model = ""
+			raw["model"] = ""
+		}
+		log.Printf("agent profile resolved: model=%q strategy=%q", profile.Model, profile.Strategy)
+	}
+
 	// Check cache for non-streaming requests
 	if !req.Stream {
 		if cached := s.cache.Get(raw); cached != nil {

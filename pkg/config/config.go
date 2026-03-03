@@ -35,6 +35,26 @@ type ProxyConfig struct {
 
 	// Similar holds model_family for the "similar" strategy.
 	Similar map[string]string `mapstructure:"similar"`
+
+	// Agents maps profile names to per-agent routing configuration.
+	// An agent sets model: "<profile-name>" and the proxy resolves it here.
+	Agents map[string]AgentProfile `mapstructure:"agents"`
+}
+
+// AgentProfile defines routing behaviour for a named agent.
+// Agents identify themselves by sending model: "<profile-name>" in their request.
+//
+//	strategy   — which routing strategy to use (adaptive, speed, coding, …)
+//	model      — pin to a specific model (e.g. "groq/llama-3.3-70b-versatile");
+//	             takes precedence over strategy when set
+//	defaults   — parameter defaults applied when the client did not set them
+//	             (temperature, max_tokens, top_p, stop, …)
+//	overrides  — parameters always applied, overriding whatever the client sent
+type AgentProfile struct {
+	Strategy  string         `mapstructure:"strategy"`
+	Model     string         `mapstructure:"model"`
+	Defaults  map[string]any `mapstructure:"defaults"`
+	Overrides map[string]any `mapstructure:"overrides"`
 }
 
 // CatalogConfig holds paths and staleness settings for the local model catalog.

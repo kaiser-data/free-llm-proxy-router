@@ -21,6 +21,43 @@ proxy:
   similar:
     model_family: "llama-3.1-70b"
 
+  # Agent profiles: let named AI agents use different routing strategies.
+  # An agent sends model: "<profile-name>" to select a profile.
+  #
+  #   strategy  — which routing strategy to use (overrides proxy.strategy)
+  #   model     — pin to a specific model (takes precedence over strategy)
+  #   defaults  — applied only when the client did not already set the key
+  #   overrides — always applied, overriding whatever the client sent
+  #
+  # Usage: set OPENAI_MODEL=<profile-name> in your agent's environment.
+  agents:
+    # Fast code assistant: coding strategy, low temperature
+    coding:
+      strategy: "coding"
+      defaults:
+        temperature: 0.2
+        max_tokens: 8192
+
+    # High-throughput summariser: Gemini Flash-Lite (millions of tokens/day free)
+    summariser:
+      strategy: "volume"
+      overrides:
+        max_tokens: 512
+        temperature: 0.3
+
+    # Pinned model for tasks that need consistency
+    reliable:
+      model: "groq/llama-3.3-70b-versatile"
+      defaults:
+        temperature: 0.7
+        max_tokens: 4096
+
+    # Agent that needs long context windows
+    long-context:
+      strategy: "long_context"
+      defaults:
+        temperature: 0.5
+
 fallback:
   retry_on_429: true
   retry_on_5xx: true
