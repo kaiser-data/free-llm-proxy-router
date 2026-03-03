@@ -56,7 +56,7 @@ catalog:
     auto_push: false
 
     # Pull side — set on all proxy instances:
-    pull_interval: "1h"               # how often to fetch; 0 = disabled
+    pull_interval: "168h"             # how often to fetch; "168h" = weekly; 0 = disabled
     remote_url: ""                    # raw GitHub URL, e.g.:
                                       #   https://raw.githubusercontent.com/you/repo/main/data/catalog.json
 
