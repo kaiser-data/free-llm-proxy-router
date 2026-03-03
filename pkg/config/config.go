@@ -50,11 +50,14 @@ type CatalogConfig struct {
 // See pkg/catalog/gitsync.go for full documentation.
 type GitSyncConfig struct {
 	Enabled       bool   `mapstructure:"enabled"`
+	// Scanner role (one machine only):
 	RepoPath      string `mapstructure:"repo_path"`
 	CatalogInRepo string `mapstructure:"catalog_in_repo"`
 	AutoPush      bool   `mapstructure:"auto_push"`
-	PullInterval  string `mapstructure:"pull_interval"`
-	RemoteURL     string `mapstructure:"remote_url"`
+	ScanInterval  string `mapstructure:"scan_interval"`
+	// Replica role (all other machines):
+	RemoteURL    string `mapstructure:"remote_url"`
+	PullInterval string `mapstructure:"pull_interval"`
 }
 
 // RefreshConfig holds the LLM-powered refresh settings.

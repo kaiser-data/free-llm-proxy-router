@@ -18,6 +18,7 @@ import (
 	"github.com/kaiser-data/picoclaw-free-llm/pkg/proxy"
 	"github.com/kaiser-data/picoclaw-free-llm/pkg/ratelimit"
 	"github.com/kaiser-data/picoclaw-free-llm/pkg/reliability"
+	"github.com/kaiser-data/picoclaw-free-llm/pkg/scan"
 	"github.com/kaiser-data/picoclaw-free-llm/pkg/strategy"
 )
 
@@ -138,9 +139,23 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		defer stopCatalogWatch()
 	}
 
-	// Start catalog git-sync auto-pull if configured.
-	catalog.StartAutoPull(ctx, cfg.Catalog.Path,
-		catalog.GitSyncConfig(cfg.Catalog.GitSync))
+	// Start catalog git-sync (scanner or replica role, depending on config).
+	// scanFn is only invoked on the scanner machine; replicas leave it nil.
+	scanFn := func(scanCtx context.Context) error {
+		existing, _ := catalog.Load(cfg.Catalog.Path)
+		dispatcher := scan.NewDispatcher()
+		newCat, err := dispatcher.ScanAll(scanCtx, cfg.Providers)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			newCat.Blocklist = existing.Blocklist
+		}
+		newCat.FilterBlocklisted()
+		return catalog.Save(newCat, cfg.Catalog.Path)
+	}
+	catalog.StartSync(ctx, cfg.Catalog.Path,
+		catalog.GitSyncConfig(cfg.Catalog.GitSync), scanFn)
 
 	// Watch config for hot-reload
 	stopWatch, err := config.Watch(cfgFile, func(newCfg *config.Config) {

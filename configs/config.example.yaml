@@ -42,23 +42,31 @@ catalog:
   max_age_hours: 24
   auto_scan_on_start: false
 
-  # Git-sync: share the catalog across machines via a git repo.
+  # Git-sync: share one catalog across many proxy instances.
   #
-  # Scanner machine  →  picoclaw-scan update  (auto_push: true commits+pushes data/catalog.json)
-  # Other machines   →  picoclaw-proxy        (fetches remote_url every pull_interval, hot-reloads)
+  # Two mutually exclusive roles — configure only one per machine:
+  #
+  #   SCANNER  (one machine only)
+  #     Runs a full provider scan every scan_interval, commits data/catalog.json, pushes.
+  #     All other proxies on this machine simply proxy requests as normal.
+  #
+  #   REPLICA  (every other machine)
+  #     Fetches the raw GitHub URL every pull_interval — no scanning, no git, no API keys needed.
+  #     The proxy hot-reloads the catalog automatically when the file changes.
   #
   git_sync:
     enabled: false
 
-    # Push side — set on the machine that runs picoclaw-scan update:
-    repo_path: ""                     # path to local git repo (default: ".")
+    # --- SCANNER role (set only on one machine) ---
+    repo_path: ""                      # path to the cloned git repo (default: ".")
     catalog_in_repo: "data/catalog.json"
-    auto_push: false
+    auto_push: false                   # set true on the scanner machine
+    scan_interval: "168h"              # how often to scan; "168h" = weekly
 
-    # Pull side — set on all proxy instances:
-    pull_interval: "168h"             # how often to fetch; "168h" = weekly; 0 = disabled
-    remote_url: ""                    # raw GitHub URL, e.g.:
-                                      #   https://raw.githubusercontent.com/you/repo/main/data/catalog.json
+    # --- REPLICA role (set on all other machines) ---
+    remote_url: ""                     # raw GitHub URL, e.g.:
+                                       #   https://raw.githubusercontent.com/you/repo/main/data/catalog.json
+    pull_interval: "168h"              # how often to pull; matches scan_interval on scanner
 
 providers:
 

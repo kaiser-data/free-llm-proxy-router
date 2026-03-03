@@ -10,45 +10,155 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
-// GitSyncConfig controls catalog synchronisation via git or a raw remote URL.
+// GitSyncConfig defines one of two mutually exclusive roles:
 //
-// Push side (scanner machine):
+// SCANNER (one machine only):
 //
-//	After picoclaw-scan update, set auto_push: true to commit and push
-//	data/catalog.json to the configured git remote.
+//	auto_push: true
+//	scan_interval: "168h"     ← runs picoclaw-scan update every week, then git push
+//	repo_path: "."
+//	catalog_in_repo: "data/catalog.json"
 //
-// Pull side (proxy / other machines):
+// REPLICA (all other machines):
 //
-//	Set remote_url to the raw GitHub URL of catalog.json.  The proxy fetches
-//	it every pull_interval and writes it to catalog.path — the existing
-//	fsnotify watcher on that file triggers an automatic hot-reload.
+//	remote_url: "https://raw.githubusercontent.com/.../data/catalog.json"
+//	pull_interval: "168h"     ← fetches the URL weekly; proxy hot-reloads on change
 //
-//	Alternatively, set repo_path and the proxy will run `git pull` on that
-//	directory instead (requires git and SSH/token access on every machine).
+// Setting both auto_push and remote_url on the same machine is not supported.
 type GitSyncConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 
-	// Push settings (scanner machine)
-	RepoPath      string `mapstructure:"repo_path"`       // path to local git repo; defaults to "."
-	CatalogInRepo string `mapstructure:"catalog_in_repo"` // relative path inside repo; defaults to "data/catalog.json"
-	AutoPush      bool   `mapstructure:"auto_push"`
+	// Scanner settings — only set on the machine that runs picoclaw-scan.
+	RepoPath      string `mapstructure:"repo_path"`        // path to local git repo; defaults to "."
+	CatalogInRepo string `mapstructure:"catalog_in_repo"`  // file path inside repo; defaults to "data/catalog.json"
+	AutoPush      bool   `mapstructure:"auto_push"`        // commit+push after every scan
+	ScanInterval  string `mapstructure:"scan_interval"`    // run a full scan every N hours; e.g. "168h"
 
-	// Pull settings (proxy / other machines)
-	PullInterval string `mapstructure:"pull_interval"` // e.g. "1h", "30m"; 0 = disabled
-	RemoteURL    string `mapstructure:"remote_url"`    // raw URL to fetch catalog.json (no git needed)
+	// Replica settings — set on every other machine.
+	RemoteURL    string `mapstructure:"remote_url"`     // raw GitHub URL of data/catalog.json
+	PullInterval string `mapstructure:"pull_interval"`  // how often to fetch; e.g. "168h"
+}
+
+// ScanFunc is the callback StartSync uses to trigger a full provider scan.
+// It must save the updated catalog to localCatalogPath before returning.
+type ScanFunc func(ctx context.Context) error
+
+// StartSync starts the appropriate background goroutine based on config:
+//   - Scanner role (auto_push + scan_interval): runs scanFn every scan_interval, then pushes.
+//   - Replica role (remote_url + pull_interval): fetches remote_url every pull_interval.
+//
+// The function returns immediately. The fsnotify watcher on localCatalogPath
+// handles hot-reload whenever the file changes.
+func StartSync(ctx context.Context, localCatalogPath string, cfg GitSyncConfig, scanFn ScanFunc) {
+	if !cfg.Enabled {
+		return
+	}
+
+	if cfg.AutoPush && cfg.ScanInterval != "" {
+		startScannerLoop(ctx, localCatalogPath, cfg, scanFn)
+		return
+	}
+
+	if cfg.RemoteURL != "" && cfg.PullInterval != "" {
+		startReplicaLoop(ctx, localCatalogPath, cfg)
+		return
+	}
+
+	log.Printf("gitsync: enabled but no valid role configured — set scan_interval+auto_push (scanner) or remote_url+pull_interval (replica)")
 }
 
 // PushAfterScan copies localCatalogPath into the git repo and pushes.
-// It is a no-op when cfg.Enabled or cfg.AutoPush is false.
+// Called by picoclaw-scan after a manual `update` run when auto_push is true.
 func PushAfterScan(localCatalogPath string, cfg GitSyncConfig) error {
 	if !cfg.Enabled || !cfg.AutoPush {
 		return nil
 	}
+	return gitCommitPush(localCatalogPath, cfg)
+}
 
+// startScannerLoop runs scanFn every scan_interval, then pushes to git.
+func startScannerLoop(ctx context.Context, localCatalogPath string, cfg GitSyncConfig, scanFn ScanFunc) {
+	interval, err := time.ParseDuration(cfg.ScanInterval)
+	if err != nil || interval <= 0 {
+		log.Printf("gitsync: invalid scan_interval %q — scanner disabled", cfg.ScanInterval)
+		return
+	}
+
+	go func() {
+		// Check if catalog is already fresh enough to skip the first scan.
+		age := catalogAge(localCatalogPath)
+		firstScan := interval
+		if age >= interval {
+			firstScan = 0 // overdue — scan immediately
+		} else {
+			firstScan = interval - age
+		}
+
+		log.Printf("gitsync: scanner role — next scan in %s, then every %s", firstScan.Round(time.Minute), interval)
+
+		timer := time.NewTimer(firstScan)
+		defer timer.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				log.Printf("gitsync: starting scheduled scan...")
+				scanCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+				if err := scanFn(scanCtx); err != nil {
+					log.Printf("gitsync: scan failed: %v", err)
+				} else if err := gitCommitPush(localCatalogPath, cfg); err != nil {
+					log.Printf("gitsync: push failed: %v", err)
+				}
+				cancel()
+				timer.Reset(interval)
+			}
+		}
+	}()
+}
+
+// startReplicaLoop fetches remote_url every pull_interval.
+func startReplicaLoop(ctx context.Context, localCatalogPath string, cfg GitSyncConfig) {
+	interval, err := time.ParseDuration(cfg.PullInterval)
+	if err != nil || interval <= 0 {
+		log.Printf("gitsync: invalid pull_interval %q — replica disabled", cfg.PullInterval)
+		return
+	}
+
+	// Also check catalog age to stagger the first pull.
+	age := catalogAge(localCatalogPath)
+	firstPull := interval
+	if age >= interval {
+		firstPull = 0
+	} else {
+		firstPull = interval - age
+	}
+
+	log.Printf("gitsync: replica role — next pull in %s, then every %s", firstPull.Round(time.Minute), interval)
+
+	go func() {
+		timer := time.NewTimer(firstPull)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				if err := fetchURL(cfg.RemoteURL, localCatalogPath); err != nil {
+					log.Printf("gitsync: pull error: %v", err)
+				}
+				timer.Reset(interval)
+			}
+		}
+	}()
+}
+
+// gitCommitPush copies localCatalogPath into the repo and runs git add/commit/push.
+func gitCommitPush(localCatalogPath string, cfg GitSyncConfig) error {
 	repoPath := cfg.RepoPath
 	if repoPath == "" {
 		repoPath = "."
@@ -60,16 +170,13 @@ func PushAfterScan(localCatalogPath string, cfg GitSyncConfig) error {
 
 	dst := filepath.Join(repoPath, catalogInRepo)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("gitsync: mkdir %s: %w", filepath.Dir(dst), err)
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
 	}
 
-	// Count entries for the commit message.
 	count, _ := countEntries(localCatalogPath)
-
 	if err := copyFile(localCatalogPath, dst); err != nil {
-		return fmt.Errorf("gitsync: copy catalog: %w", err)
+		return fmt.Errorf("copy catalog: %w", err)
 	}
-	log.Printf("gitsync: copied catalog → %s (%d entries)", dst, count)
 
 	ts := time.Now().UTC().Format("2006-01-02T15:04Z")
 	msg := fmt.Sprintf("chore: catalog update %s (%d models)", ts, count)
@@ -81,74 +188,12 @@ func PushAfterScan(localCatalogPath string, cfg GitSyncConfig) error {
 	} {
 		out, err := gitCmd(repoPath, args...)
 		if err != nil {
-			return fmt.Errorf("gitsync: git %s: %w\n%s", args[0], err, out)
+			return fmt.Errorf("git %s: %w\n%s", args[0], err, out)
 		}
 		log.Printf("gitsync: git %s ok", args[0])
 	}
+	log.Printf("gitsync: pushed %d models to %s:%s", count, repoPath, catalogInRepo)
 	return nil
-}
-
-// StartAutoPull begins a background goroutine that periodically syncs the
-// catalog from a remote source.  It returns immediately.
-//
-//   - If cfg.RemoteURL is set: fetches the URL and overwrites localCatalogPath.
-//   - Otherwise if cfg.RepoPath is set: runs `git pull` in that directory then
-//     copies catalogInRepo → localCatalogPath if the file changed.
-//
-// The existing fsnotify watcher on localCatalogPath handles the hot-reload.
-func StartAutoPull(ctx context.Context, localCatalogPath string, cfg GitSyncConfig) {
-	if !cfg.Enabled {
-		return
-	}
-	interval, err := time.ParseDuration(cfg.PullInterval)
-	if err != nil || interval <= 0 {
-		return
-	}
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		log.Printf("gitsync: auto-pull every %s", interval)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := pullOnce(localCatalogPath, cfg); err != nil {
-					log.Printf("gitsync: pull error: %v", err)
-				}
-			}
-		}
-	}()
-}
-
-// pullOnce performs a single pull cycle.
-func pullOnce(localCatalogPath string, cfg GitSyncConfig) error {
-	if cfg.RemoteURL != "" {
-		return fetchURL(cfg.RemoteURL, localCatalogPath)
-	}
-
-	// git pull fallback
-	repoPath := cfg.RepoPath
-	if repoPath == "" {
-		return nil
-	}
-	catalogInRepo := cfg.CatalogInRepo
-	if catalogInRepo == "" {
-		catalogInRepo = "data/catalog.json"
-	}
-
-	out, err := gitCmd(repoPath, "pull", "--ff-only")
-	if err != nil {
-		return fmt.Errorf("git pull: %w\n%s", err, out)
-	}
-	if strings.Contains(out, "Already up to date") {
-		return nil
-	}
-	log.Printf("gitsync: git pull: %s", strings.TrimSpace(out))
-
-	src := filepath.Join(repoPath, catalogInRepo)
-	return copyFile(src, localCatalogPath)
 }
 
 // fetchURL downloads url and atomically replaces localPath.
@@ -162,7 +207,6 @@ func fetchURL(url, localPath string) error {
 		return fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
 	}
 
-	// Write to a temp file then rename (atomic on POSIX).
 	tmp := localPath + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
@@ -179,10 +223,18 @@ func fetchURL(url, localPath string) error {
 		os.Remove(tmp)
 		return err
 	}
-
 	count, _ := countEntries(localPath)
-	log.Printf("gitsync: fetched %s → %s (%d entries)", url, localPath, count)
+	log.Printf("gitsync: pulled %d models from %s", count, url)
 	return nil
+}
+
+// catalogAge returns how long ago the catalog file was last modified.
+func catalogAge(path string) time.Duration {
+	info, err := os.Stat(expandHome(path))
+	if err != nil {
+		return 999 * time.Hour // treat missing as very old
+	}
+	return time.Since(info.ModTime())
 }
 
 // gitCmd runs a git command in dir and returns combined output.
@@ -193,7 +245,7 @@ func gitCmd(dir string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// copyFile copies src to dst, creating parent dirs as needed.
+// copyFile copies src to dst atomically.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -219,15 +271,15 @@ func copyFile(src, dst string) error {
 
 // countEntries returns the number of entries in a catalog JSON file.
 func countEntries(path string) (int, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(expandHome(path))
 	if err != nil {
 		return 0, err
 	}
-	var cat struct {
+	var c struct {
 		Entries []json.RawMessage `json:"entries"`
 	}
-	if err := json.Unmarshal(data, &cat); err != nil {
+	if err := json.Unmarshal(data, &c); err != nil {
 		return 0, err
 	}
-	return len(cat.Entries), nil
+	return len(c.Entries), nil
 }
