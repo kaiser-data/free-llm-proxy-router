@@ -140,7 +140,7 @@ func (t *GeminiTracker) getOrCreate(m map[string]*Window, key string, size time.
 }
 
 // defaultGeminiLimits returns conservative free-tier limits.
-// These are verified starting points — run picoclaw-scan to get live values.
+// These are verified starting points — run free-llm-scan to get live values.
 // Source: https://ai.google.dev/gemini-api/docs/rate-limits (2026-02-28)
 // Note: Google cut free tier quotas 50-92% on Dec 7, 2025.
 func defaultGeminiLimits() map[string]GeminiModelLimits {

@@ -9,7 +9,7 @@ import (
 )
 
 // Watch starts a file watcher on catalogPath and calls onChange whenever the
-// file is written or replaced (e.g. by git-sync, picoclaw-scan update, or a
+// file is written or replaced (e.g. by git-sync, free-llm-scan update, or a
 // manual copy).  The returned stop function cancels the watcher.
 func Watch(catalogPath string, onChange func(*Catalog)) (stop func(), err error) {
 	expanded := expandHome(catalogPath)

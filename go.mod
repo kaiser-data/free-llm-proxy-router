@@ -1,4 +1,4 @@
-module github.com/kaiser-data/picoclaw-free-llm
+module github.com/kaiser-data/free-llm-proxy-router
 
 go 1.23
 

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/models"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/models"
 )
 
 var mu sync.RWMutex

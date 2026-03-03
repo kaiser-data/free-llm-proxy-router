@@ -3,9 +3,9 @@ package strategy
 import (
 	"sort"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/models"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/reliability"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/models"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
 )
 
 // StrategyReliable sorts models by their historical EMA success rate,

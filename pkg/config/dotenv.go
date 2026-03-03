@@ -96,7 +96,7 @@ func dotenvLookup(key string) string {
 // configDir is the directory of the loaded config file (may be "").
 func defaultEnvPaths(configDir string) []string {
 	home, _ := os.UserHomeDir()
-	picoclaw := filepath.Join(home, ".picoclaw-free-llm")
+	picoclaw := filepath.Join(home, ".free-llm-proxy-router")
 
 	paths := []string{
 		// Project-local (highest priority among files)

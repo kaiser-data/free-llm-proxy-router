@@ -9,22 +9,22 @@ all: build
 
 build: ## Build all three binaries
 	@mkdir -p $(BINDIR)
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/picoclaw-proxy ./cmd/proxy
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/picoclaw-scan ./cmd/scan
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/picoclaw-bench ./cmd/bench
-	@echo "Built: $(BINDIR)/picoclaw-proxy, $(BINDIR)/picoclaw-scan, $(BINDIR)/picoclaw-bench"
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-proxy ./cmd/proxy
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-scan ./cmd/scan
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-bench ./cmd/bench
+	@echo "Built: $(BINDIR)/free-llm-proxy, $(BINDIR)/free-llm-scan, $(BINDIR)/free-llm-bench"
 
 build-proxy: ## Build only the proxy binary
 	@mkdir -p $(BINDIR)
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/picoclaw-proxy ./cmd/proxy
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-proxy ./cmd/proxy
 
 build-scan: ## Build only the scan binary
 	@mkdir -p $(BINDIR)
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/picoclaw-scan ./cmd/scan
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-scan ./cmd/scan
 
 build-bench: ## Build only the bench binary
 	@mkdir -p $(BINDIR)
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/picoclaw-bench ./cmd/bench
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-bench ./cmd/bench
 
 test: ## Run unit tests
 	$(GOCMD) test ./... -count=1

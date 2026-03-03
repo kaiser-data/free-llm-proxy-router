@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
 )
 
 // RefreshDiff is the structured output from an LLM-powered catalog refresh.

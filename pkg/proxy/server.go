@@ -11,11 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/ratelimit"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/reliability"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/strategy"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
 )
 
 // Server is the OpenAI-compatible proxy server.
@@ -91,7 +91,7 @@ func (s *Server) Start(ctx context.Context) error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("picoclaw-proxy listening on :%d (strategy: %s)", cfg.Proxy.Port, cfg.Proxy.Strategy)
+	log.Printf("free-llm-proxy listening on :%d (strategy: %s)", cfg.Proxy.Port, cfg.Proxy.Strategy)
 
 	go func() {
 		<-ctx.Done()

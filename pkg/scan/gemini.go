@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
 )
 
 // GeminiScanner discovers chat-capable free models from Google AI Studio.
@@ -147,7 +147,7 @@ func supportsGenerateContent(methods []string) bool {
 }
 
 // isGeminiPaidOnly returns true for model IDs that require billing.
-// This is a conservative heuristic; run picoclaw-scan probe to confirm.
+// This is a conservative heuristic; run free-llm-scan probe to confirm.
 func isGeminiPaidOnly(modelID string) bool {
 	lower := strings.ToLower(modelID)
 	for _, skip := range []string{"ultra", "bison", "gecko"} {

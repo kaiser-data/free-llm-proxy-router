@@ -1,4 +1,4 @@
-// picoclaw-bench: Benchmark runner for all strategies and free models.
+// free-llm-bench: Benchmark runner for all strategies and free models.
 package main
 
 import (
@@ -10,12 +10,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/bench"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/reliability"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/ratelimit"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/strategy"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/bench"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
 )
 
 var (
@@ -26,7 +26,7 @@ var (
 
 func main() {
 	root := &cobra.Command{
-		Use:   "picoclaw-bench",
+		Use:   "free-llm-bench",
 		Short: "Run benchmarks across all strategies and free models",
 		RunE:  runBench,
 	}
@@ -52,7 +52,7 @@ func runBench(cmd *cobra.Command, args []string) error {
 
 	// Build all strategies
 	relTracker := reliability.New()
-	reliability.Load(relTracker, "~/.picoclaw-free-llm/reliability.json")
+	reliability.Load(relTracker, "~/.free-llm-proxy-router/reliability.json")
 	rateLimiter := ratelimit.NewGlobalTracker()
 	stratReg := strategy.NewRegistry(relTracker, rateLimiter, "", "gemini-2.0-flash-lite", 3, 5)
 

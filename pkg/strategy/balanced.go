@@ -3,8 +3,8 @@ package strategy
 import (
 	"sort"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/models"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/models"
 )
 
 // StrategyBalanced picks models in the 14-79B effective-parameter range.

@@ -49,7 +49,7 @@ func (r *Report) WriteHuman(w io.Writer) {
 	sort.Strings(strategies)
 
 	fmt.Fprintln(w, strings.Repeat("=", 70))
-	fmt.Fprintln(w, "PicoClaw Free LLM Benchmark Report")
+	fmt.Fprintln(w, "Free LLM Proxy Router Benchmark Report")
 	fmt.Fprintln(w, strings.Repeat("=", 70))
 
 	for _, strat := range strategies {

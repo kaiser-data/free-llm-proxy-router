@@ -1,5 +1,5 @@
 {
-  "description": "PicoClaw device configuration pointing to picoclaw-proxy",
+  "description": "PicoClaw device configuration pointing to free-llm-proxy",
   "api_base": "http://localhost:8080/v1",
   "model": "auto",
   "notes": "Set OPENAI_BASE_URL=http://localhost:8080/v1 in your PicoClaw environment"

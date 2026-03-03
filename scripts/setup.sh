@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# setup.sh — Initial setup for picoclaw-free-llm
+# setup.sh — Initial setup for free-llm-proxy-router
 set -euo pipefail
 
-PICOCLAW_DIR="$HOME/.picoclaw-free-llm"
+PICOCLAW_DIR="$HOME/.free-llm-proxy-router"
 CONFIG_DIR="$(cd "$(dirname "$0")/.." && pwd)/configs"
 
-echo "=== picoclaw-free-llm setup ==="
+echo "=== free-llm-proxy-router setup ==="
 
 # Create data directory
 mkdir -p "$PICOCLAW_DIR"
@@ -35,8 +35,8 @@ echo "  export NVIDIA_API_KEY=...       # https://build.nvidia.com/settings/api-
 echo "  export HF_API_KEY=...           # https://huggingface.co/settings/tokens"
 echo ""
 echo "After setting API keys, run:"
-echo "  picoclaw-scan update   # Discover free models"
-echo "  picoclaw-proxy         # Start the proxy on port 8080"
+echo "  free-llm-scan update   # Discover free models"
+echo "  free-llm-proxy         # Start the proxy on port 8080"
 echo ""
 echo "Test with:"
 echo "  curl http://localhost:8080/v1/chat/completions \\"

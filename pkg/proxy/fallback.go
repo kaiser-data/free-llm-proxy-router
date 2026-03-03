@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/ratelimit"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/reliability"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/strategy"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
 )
 
 // FallbackChain manages the ordered provider fallback logic.

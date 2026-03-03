@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
 )
 
 // StreamProxy transparently forwards a streaming (SSE) response from a provider

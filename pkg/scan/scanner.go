@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
 )
 
 // ProviderScanner is implemented by each provider's scanner.

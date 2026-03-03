@@ -18,7 +18,7 @@ import (
 // SCANNER (one machine only):
 //
 //	auto_push: true
-//	scan_interval: "168h"     ← runs picoclaw-scan update every week, then git push
+//	scan_interval: "168h"     ← runs free-llm-scan update every week, then git push
 //	repo_path: "."
 //	catalog_in_repo: "data/catalog.json"
 //
@@ -31,7 +31,7 @@ import (
 type GitSyncConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 
-	// Scanner settings — only set on the machine that runs picoclaw-scan.
+	// Scanner settings — only set on the machine that runs free-llm-scan.
 	RepoPath      string `mapstructure:"repo_path"`        // path to local git repo; defaults to "."
 	CatalogInRepo string `mapstructure:"catalog_in_repo"`  // file path inside repo; defaults to "data/catalog.json"
 	AutoPush      bool   `mapstructure:"auto_push"`        // commit+push after every scan
@@ -71,7 +71,7 @@ func StartSync(ctx context.Context, localCatalogPath string, cfg GitSyncConfig, 
 }
 
 // PushAfterScan copies localCatalogPath into the git repo and pushes.
-// Called by picoclaw-scan after a manual `update` run when auto_push is true.
+// Called by free-llm-scan after a manual `update` run when auto_push is true.
 func PushAfterScan(localCatalogPath string, cfg GitSyncConfig) error {
 	if !cfg.Enabled || !cfg.AutoPush {
 		return nil

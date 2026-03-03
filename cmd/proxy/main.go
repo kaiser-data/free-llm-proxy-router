@@ -1,4 +1,4 @@
-// picoclaw-proxy: OpenAI-compatible proxy with intelligent routing and fallback.
+// free-llm-proxy: OpenAI-compatible proxy with intelligent routing and fallback.
 package main
 
 import (
@@ -12,14 +12,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/models"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/proxy"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/ratelimit"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/reliability"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/scan"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/strategy"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/models"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/proxy"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/scan"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
 )
 
 var (
@@ -30,11 +30,11 @@ var (
 
 func main() {
 	root := &cobra.Command{
-		Use:   "picoclaw-proxy",
+		Use:   "free-llm-proxy",
 		Short: "OpenAI-compatible proxy for free LLM providers",
 		RunE:  runProxy,
 	}
-	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and ~/.picoclaw-free-llm/)")
+	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and ~/.free-llm-proxy-router/)")
 	root.Flags().IntVarP(&port, "port", "p", 0, "override proxy port (default from config: 8080)")
 	root.Flags().StringVarP(&stratName, "strategy", "s", "", "override strategy name")
 
@@ -65,12 +65,12 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	freeCount := len(cat.FreeEntries())
 	log.Printf("catalog: %d free model(s) loaded from %s", freeCount, cfg.Catalog.Path)
 	if freeCount == 0 {
-		log.Printf("warning: catalog is empty — run 'picoclaw-scan update' to discover free models")
+		log.Printf("warning: catalog is empty — run 'free-llm-scan update' to discover free models")
 	}
 
 	// Check catalog staleness
 	if catalog.IsStale(cfg.Catalog.Path, time.Duration(cfg.Catalog.MaxAgeHours)*time.Hour) {
-		log.Printf("warning: catalog is older than %dh — consider running 'picoclaw-scan update'",
+		log.Printf("warning: catalog is older than %dh — consider running 'free-llm-scan update'",
 			cfg.Catalog.MaxAgeHours)
 	}
 
@@ -87,14 +87,14 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	geminiTracker := ratelimit.NewGeminiTracker()
 
 	// Load persisted rate-limit usage
-	usagePath := "~/.picoclaw-free-llm/usage.json"
+	usagePath := "~/.free-llm-proxy-router/usage.json"
 	if _, err := ratelimit.LoadUsage(usagePath); err != nil {
 		log.Printf("usage.json not found (starting fresh): %v", err)
 	}
 
 	// Set up reliability tracker
 	reliabilityTracker := reliability.New()
-	relPath := "~/.picoclaw-free-llm/reliability.json"
+	relPath := "~/.free-llm-proxy-router/reliability.json"
 	if err := reliability.Load(reliabilityTracker, relPath); err != nil {
 		log.Printf("reliability.json not found (starting fresh): %v", err)
 	}

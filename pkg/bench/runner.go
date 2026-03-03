@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/strategy"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
 )
 
 // BenchPrompt is a single benchmark prompt.

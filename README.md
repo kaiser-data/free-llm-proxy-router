@@ -1,4 +1,4 @@
-# picoclaw-free-llm
+# free-llm-proxy-router
 
 An OpenAI-compatible local proxy that routes LLM requests across free-tier providers — Groq, Gemini, OpenRouter, GitHub Models, Cerebras, Mistral, HuggingFace and more — with automatic fallback, rate-limit recovery, and 13 routing strategies.
 
@@ -14,17 +14,17 @@ An OpenAI-compatible local proxy that routes LLM requests across free-tier provi
 
 | Binary | Purpose |
 |--------|---------|
-| `picoclaw-proxy` | OpenAI-compatible proxy server |
-| `picoclaw-scan` | Free model discovery and catalog management |
-| `picoclaw-bench` | Benchmark all strategies across all providers |
+| `free-llm-proxy` | OpenAI-compatible proxy server |
+| `free-llm-scan` | Free model discovery and catalog management |
+| `free-llm-bench` | Benchmark all strategies across all providers |
 
 ## Quick start
 
 ### 1. Build
 
 ```bash
-git clone https://github.com/kaiser-data/picoclaw-free-llm
-cd picoclaw-free-llm
+git clone https://github.com/kaiser-data/free-llm-proxy-router
+cd free-llm-proxy-router
 
 # Requires Go 1.23+
 make build
@@ -50,14 +50,14 @@ At minimum you need one key. Easiest to get (no credit card):
 ### 3. Discover free models
 
 ```bash
-./bin/picoclaw-scan update
-# Writes ~/.picoclaw-free-llm/catalog.json
+./bin/free-llm-scan update
+# Writes ~/.free-llm-proxy-router/catalog.json
 ```
 
 ### 4. Start the proxy
 
 ```bash
-./bin/picoclaw-proxy
+./bin/free-llm-proxy
 # Listening on http://localhost:8080
 ```
 
@@ -124,7 +124,7 @@ All providers have recharging free limits — no one-time trial credits, no cred
 
 ## Configuration
 
-Config is loaded from `~/.picoclaw-free-llm/config.yaml` (created by `setup.sh`).
+Config is loaded from `~/.free-llm-proxy-router/config.yaml` (created by `setup.sh`).
 Hot-reloaded via fsnotify — no restart needed when you save the file.
 
 ```bash
@@ -146,17 +146,17 @@ catalog:
 
 ```bash
 # Scan all providers for free models
-./bin/picoclaw-scan update
+./bin/free-llm-scan update
 
 # Probe models flagged as needing reverification (got a 429)
-./bin/picoclaw-scan probe
+./bin/free-llm-scan probe
 
 # LLM-powered diff refresh (checks for free tier changes)
-./bin/picoclaw-scan refresh-llm
+./bin/free-llm-scan refresh-llm
 
 # Weekly cron refresh
 crontab -e
-# Add: 0 9 * * 1 /path/to/picoclaw-free-llm/scripts/cron-refresh.sh
+# Add: 0 9 * * 1 /path/to/free-llm-proxy-router/scripts/cron-refresh.sh
 ```
 
 ## API key files
@@ -165,7 +165,7 @@ Keys are loaded from (first match wins):
 
 1. Real environment variable (`export GROQ_API_KEY=...`)
 2. `.env` in the project directory
-3. `~/.picoclaw-free-llm/.secrets`
+3. `~/.free-llm-proxy-router/.secrets`
 
 The `.env` file is gitignored. See `.env.example` for all supported keys.
 

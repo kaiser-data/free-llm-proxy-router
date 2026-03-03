@@ -1,4 +1,4 @@
-// picoclaw-scan: Free model discovery and catalog management.
+// free-llm-scan: Free model discovery and catalog management.
 package main
 
 import (
@@ -11,16 +11,16 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/config"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/scan"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/scan"
 )
 
 var cfgFile string
 
 func main() {
 	root := &cobra.Command{
-		Use:   "picoclaw-scan",
+		Use:   "free-llm-scan",
 		Short: "Discover and manage free LLM model catalog",
 	}
 	root.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file path")

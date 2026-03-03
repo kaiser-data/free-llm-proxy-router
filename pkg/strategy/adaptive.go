@@ -4,9 +4,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/catalog"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/models"
-	"github.com/kaiser-data/picoclaw-free-llm/pkg/reliability"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/models"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
 )
 
 // StrategyAdaptive combines reliability, speed, and model tier signals.

@@ -1,6 +1,6 @@
-# picoclaw-free-llm configuration
+# free-llm-proxy-router configuration
 # IMPORTANT: Free tier limits change without notice.
-# Run: picoclaw-scan refresh-llm  to update with current limits.
+# Run: free-llm-scan refresh-llm  to update with current limits.
 # Live limits tracker: https://github.com/cheahjs/free-llm-api-resources
 
 proxy:
@@ -37,8 +37,8 @@ refresh:
   output_merge: "conservative"
 
 catalog:
-  path: "~/.picoclaw-free-llm/catalog.json"
-  enriched_path: "~/.picoclaw-free-llm/enriched.json"
+  path: "~/.free-llm-proxy-router/catalog.json"
+  enriched_path: "~/.free-llm-proxy-router/enriched.json"
   max_age_hours: 24
   auto_scan_on_start: false
 
@@ -78,8 +78,8 @@ providers:
     priority: 1   # First: native multi-model fallback via models[] array
     timeout: "30s"
     extra_headers:
-      HTTP-Referer: "https://github.com/kaiser-data/picoclaw-free-llm"
-      X-Title: "PicoClaw Free LLM"
+      HTTP-Referer: "https://github.com/kaiser-data/free-llm-proxy-router"
+      X-Title: "Free LLM Proxy Router"
     discovery:
       models_endpoint: "/models"
       free_detect_field: "pricing.prompt"
