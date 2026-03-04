@@ -51,6 +51,18 @@ func (t *Tracker) Record(providerID string, success bool) {
 	s.SuccessRate = emaAlpha*val + (1-emaAlpha)*s.SuccessRate
 }
 
+// ShouldCooldown returns true when a provider's EMA failure rate exceeds 50%
+// over at least 5 observed requests.
+func (t *Tracker) ShouldCooldown(providerID string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	s, ok := t.stats[providerID]
+	if !ok || s.TotalCalls < 5 {
+		return false
+	}
+	return s.SuccessRate < 0.5
+}
+
 // SuccessRate returns the current EMA success rate for a provider.
 // Returns defaultSuccessRate for unknown providers.
 func (t *Tracker) SuccessRate(providerID string) float64 {

@@ -188,16 +188,98 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Select strategy: model field may be a strategy name, a provider/model ID, or "auto"/"".
+	// Route: model field may be a strategy name, a specific model ID, or "auto"/"".
+	if req.Model != "" && req.Model != "auto" {
+		if _, errLookup := s.strategyReg.Get(req.Model); errLookup != nil {
+			// Not a known strategy — treat as a specific model ID.
+			s.serveDirectModel(w, r, cfg, cat, req, raw)
+			return
+		}
+		// It is a named strategy — fall through to strategy chain.
+	}
+
+	s.executeStrategyChain(w, r, cfg, cat, req, raw)
+}
+
+// serveDirectModel routes a request with a specific model ID to the right provider.
+// Accepts both "model-id" and "provider/model-id" formats.
+// If all direct-provider attempts fail, falls back to the full strategy chain.
+func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *config.Config, cat *catalog.Catalog, req Request, raw map[string]any) {
+	// Parse optional "provider/model" prefix.
+	// Pass 1 (full exact match) handles IDs like "meta-llama/llama-3.3-70b-instruct:free"
+	// where "/" is part of the model ID. Pass 2 handles "groq/llama-3.3-70b-versatile".
+	targetProvider := ""
+	targetModel := req.Model
+	if idx := strings.IndexByte(req.Model, '/'); idx >= 0 {
+		targetProvider = req.Model[:idx]
+		targetModel = req.Model[idx+1:]
+	}
+
+	chain := &FallbackChain{
+		Cfg:                cfg,
+		Strategy:           nil,
+		Catalog:            cat,
+		RateLimiter:        s.rateLimiter,
+		GeminiTracker:      s.geminiTracker,
+		ReliabilityTracker: s.reliabilityTracker,
+		HTTPClient:         &http.Client{Timeout: 120 * time.Second},
+	}
+
+	found := false
+	for _, e := range cat.Entries {
+		if !matchEntry(e, req.Model, targetProvider, targetModel) {
+			continue
+		}
+		found = true
+		provCfg := findProviderCfg(cfg, e.ProviderID)
+		if provCfg == nil {
+			continue
+		}
+		body := copyMap(raw)
+		body["model"] = e.ModelID
+		delete(body, "stream")
+		resp, err := chain.callProvider(r.Context(), *provCfg, body)
+		if err == nil && resp.StatusCode < 500 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
+			w.Write(resp.Body)
+			return
+		}
+		// Server error — try next catalog entry.
+	}
+	if !found {
+		http.Error(w, fmt.Sprintf(`{"error":"model %q not found in free catalog"}`, req.Model), http.StatusNotFound)
+		return
+	}
+	// Model found but all direct attempts failed — fall back to strategy chain.
+	log.Printf("direct route: all providers failed for %q — falling back to strategy chain", req.Model)
+	req.Model = ""
+	raw["model"] = ""
+	s.executeStrategyChain(w, r, cfg, cat, req, raw)
+}
+
+// matchEntry reports whether a catalog entry matches the requested model.
+// Pass 1: full exact string match (handles OpenRouter IDs with embedded slash).
+// Pass 2: explicit provider-prefix routing (e.g. "groq/llama-3.3-70b-versatile").
+func matchEntry(e catalog.CatalogEntry, reqModel, targetProvider, targetModel string) bool {
+	if !e.IsFree {
+		return false
+	}
+	if e.ModelID == reqModel {
+		return true
+	}
+	if targetProvider != "" && e.ProviderID == targetProvider && e.ModelID == targetModel {
+		return true
+	}
+	return false
+}
+
+// executeStrategyChain selects the appropriate strategy and runs the provider fallback chain.
+func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cfg *config.Config, cat *catalog.Catalog, req Request, raw map[string]any) {
 	stratName := cfg.Proxy.Strategy
 	if req.Model != "" && req.Model != "auto" {
-		// Check if the model field is a known strategy name.
-		if _, errLookup := s.strategyReg.Get(req.Model); errLookup == nil {
+		if _, err := s.strategyReg.Get(req.Model); err == nil {
 			stratName = req.Model
-		} else {
-			// Specific model requested — route directly.
-			s.serveDirectModel(w, r, cfg, req, raw)
-			return
 		}
 	}
 
@@ -220,7 +302,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Always use the fallback chain regardless of stream flag.
 	// Streaming is stripped from provider requests in buildBody so the chain
 	// always receives buffered JSON — this is required for fallback to work.
-	// Clients receive a valid non-streaming JSON response in all cases.
 	resp, err := chain.Execute(r.Context(), req)
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)
@@ -228,12 +309,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache successful non-streaming responses
 	if !req.Stream && resp.StatusCode == http.StatusOK {
 		s.cache.Set(raw, resp.Body)
 	}
 
-	// Forward the response
 	for k, vals := range resp.Header {
 		for _, v := range vals {
 			w.Header().Add(k, v)
@@ -245,50 +324,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(resp.Body)
-}
-
-// serveDirectModel routes a request with a specific model ID to the right provider.
-// Accepts both "model-id" and "provider/model-id" formats.
-func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *config.Config, req Request, raw map[string]any) {
-	// Parse optional "provider/model" prefix
-	targetProvider := ""
-	targetModel := req.Model
-	if idx := strings.IndexByte(req.Model, '/'); idx >= 0 {
-		targetProvider = req.Model[:idx]
-		targetModel = req.Model[idx+1:]
-	}
-
-	cat := s.catalog.Load()
-	for _, e := range cat.Entries {
-		if e.ModelID == targetModel && e.IsFree &&
-			(targetProvider == "" || e.ProviderID == targetProvider) {
-			provCfg := findProviderCfg(cfg, e.ProviderID)
-			if provCfg == nil {
-				continue
-			}
-			body := copyMap(raw)
-			body["model"] = e.ModelID // strip provider prefix before sending to API
-			chain := &FallbackChain{
-				Cfg:                cfg,
-				Strategy:           nil, // not used for direct routing
-				Catalog:            cat,
-				RateLimiter:        s.rateLimiter,
-				GeminiTracker:      s.geminiTracker,
-				ReliabilityTracker: s.reliabilityTracker,
-				HTTPClient:         &http.Client{Timeout: 120 * time.Second},
-			}
-			resp, err := chain.callProvider(r.Context(), *provCfg, body)
-			if err != nil || resp.StatusCode >= 500 {
-				break // fall through to normal routing
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(resp.StatusCode)
-			w.Write(resp.Body)
-			return
-		}
-	}
-	// Not found in catalog — return 404
-	http.Error(w, fmt.Sprintf(`{"error":"model %q not found in free catalog"}`, req.Model), http.StatusNotFound)
 }
 
 // handleModels returns the list of available free models.

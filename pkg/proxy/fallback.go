@@ -165,14 +165,24 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					}
 				}
 			}
-			// 429: put provider on cooldown; future requests skip it until window resets.
-			if resp != nil && resp.StatusCode == 429 {
-				fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
-				info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
-				waitDur := info.WaitDuration()
-				until := time.Now().Add(waitDur)
-				fc.RateLimiter.SetCooldown(r.ProviderID, until)
-				log.Printf("fallback: %s rate limited — cooldown until %s", r.ProviderID, until.Format("15:04:05"))
+			// Apply per-status cooldown logic.
+			if resp != nil {
+				switch resp.StatusCode {
+				case 429:
+					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
+					info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
+					waitDur := info.WaitDuration()
+					until := time.Now().Add(waitDur)
+					fc.RateLimiter.SetCooldown(r.ProviderID, until)
+					log.Printf("fallback: %s rate limited — cooldown until %s", r.ProviderID, until.Format("15:04:05"))
+				case 401, 403:
+					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(10*time.Minute))
+					log.Printf("fallback: %s auth error %d — cooldown 10min", r.ProviderID, resp.StatusCode)
+				case 404:
+					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
+					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(5*time.Minute))
+					log.Printf("fallback: %s model %s not found — cooldown 5min", r.ProviderID, r.ModelID)
+				}
 			}
 			statusCode := 0
 			if resp != nil {
@@ -180,6 +190,10 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			}
 			log.Printf("fallback: %s/%s status %d — skipping provider", r.ProviderID, r.ModelID, statusCode)
 			fc.ReliabilityTracker.Record(r.ProviderID, false)
+			if fc.ReliabilityTracker.ShouldCooldown(r.ProviderID) {
+				fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(30*time.Second))
+				log.Printf("fallback: %s reliability below 50%% â short cooldown", r.ProviderID)
+			}
 			failedProviders[r.ProviderID] = true // don't try other models from this provider
 			continue
 		}
