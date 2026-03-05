@@ -135,7 +135,12 @@ func catalogSummary(cat *catalog.Catalog) string {
 }
 
 func (r *LLMRefresher) callLLM(ctx context.Context, provider config.ProviderConfig, model, prompt string) (string, error) {
-	endpoint := strings.TrimRight(provider.BaseURL, "/") + "/v1/chat/completions"
+	endpoint := strings.TrimRight(provider.BaseURL, "/") + "/chat/completions"
+
+	// Strip "provider/" prefix if present (e.g. "groq/llama-3.3-70b-versatile" → "llama-3.3-70b-versatile").
+	if idx := strings.IndexByte(model, '/'); idx >= 0 {
+		model = model[idx+1:]
+	}
 
 	payload := map[string]any{
 		"model":      model,
