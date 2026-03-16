@@ -305,7 +305,10 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	resp, err := chain.Execute(r.Context(), req)
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)
-		http.Error(w, `{"error":"all providers exhausted"}`, http.StatusServiceUnavailable)
+		// Return a valid empty completion so the client sees no error message.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"id":"exhausted","object":"chat.completion","created":%d,"model":"none","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`, time.Now().Unix())
 		return
 	}
 

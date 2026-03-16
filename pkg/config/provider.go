@@ -1,5 +1,7 @@
 package config
 
+import "fmt"
+
 // ProviderConfig holds all configuration for a single provider.
 type ProviderConfig struct {
 	ID       string `mapstructure:"id"`
@@ -104,4 +106,34 @@ func (p *ProviderConfig) ResolvedAuth() (header, value string) {
 		prefix = "Bearer "
 	}
 	return h, prefix + key
+}
+
+// AllKeys returns all API keys available for this provider in priority order.
+// It auto-discovers numbered variants of the base env var up to _9:
+//
+//	GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, ...
+//
+// Add GROQ_API_KEY_2=gsk_... to .env to pool keys across multiple accounts.
+// The proxy rotates to the next slot automatically on 429.
+func (p *ProviderConfig) AllKeys() []string {
+	var keys []string
+	if p.APIKey != "" {
+		keys = append(keys, p.APIKey)
+	}
+	if p.APIKeyEnv != "" {
+		if v := lookupEnv(p.APIKeyEnv); v != "" {
+			keys = append(keys, v)
+		}
+		for i := 2; i <= 9; i++ {
+			if v := lookupEnv(fmt.Sprintf("%s_%d", p.APIKeyEnv, i)); v != "" {
+				keys = append(keys, v)
+			}
+		}
+	}
+	return keys
+}
+
+// NumKeys returns the number of API keys available for this provider.
+func (p *ProviderConfig) NumKeys() int {
+	return len(p.AllKeys())
 }

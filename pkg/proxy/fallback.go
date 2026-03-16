@@ -118,10 +118,15 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			continue
 		}
 
-		// Skip any provider currently on rate-limit cooldown.
+		// Skip any provider currently on rate-limit cooldown (auth errors).
 		if fc.RateLimiter.IsOnCooldown(r.ProviderID) {
-			log.Printf("fallback: %s on cooldown — skipping", r.ProviderID)
+			log.Printf("fallback: %s on cooldown — skipping provider", r.ProviderID)
 			failedProviders[r.ProviderID] = true
+			continue
+		}
+		// Skip this specific model if it is rate-limited, but keep trying other models.
+		if fc.RateLimiter.IsOnCooldown(r.ProviderID + "/" + r.ModelID) {
+			log.Printf("fallback: %s/%s rate-limited — skipping model", r.ProviderID, r.ModelID)
 			continue
 		}
 
@@ -149,7 +154,15 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		}
 
 		body := fc.buildBody(r.ProviderID, req.Raw, r.ModelID)
-		resp, err := fc.callProvider(ctx, *providerCfg, body)
+		// Apply active key slot when multiple API keys are configured.
+		callCfg := *providerCfg
+		if keys := providerCfg.AllKeys(); len(keys) > 1 {
+			if idx := fc.RateLimiter.CurrentKeyIndex(r.ProviderID); idx < len(keys) {
+				callCfg.APIKey = keys[idx]
+				callCfg.APIKeyEnv = ""
+			}
+		}
+		resp, err := fc.callProvider(ctx, callCfg, body)
 		attempt++
 
 		if err != nil || resp.StatusCode != http.StatusOK {
@@ -173,8 +186,15 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
 					waitDur := info.WaitDuration()
 					until := time.Now().Add(waitDur)
-					fc.RateLimiter.SetCooldown(r.ProviderID, until)
-					log.Printf("fallback: %s rate limited — cooldown until %s", r.ProviderID, until.Format("15:04:05"))
+					// Cooldown on the specific model, not the whole provider.
+					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, until)
+					// Rotate to the next API key slot if multiple keys are configured.
+					if providerCfg != nil && providerCfg.NumKeys() > 1 {
+						newIdx := fc.RateLimiter.RotateKey(r.ProviderID, providerCfg.NumKeys())
+						log.Printf("fallback: %s/%s rate limited — rotated to key slot %d", r.ProviderID, r.ModelID, newIdx+1)
+					} else {
+						log.Printf("fallback: %s/%s rate limited — cooldown until %s", r.ProviderID, r.ModelID, until.Format("15:04:05"))
+					}
 				case 401, 403:
 					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(10*time.Minute))
 					log.Printf("fallback: %s auth error %d — cooldown 10min", r.ProviderID, resp.StatusCode)

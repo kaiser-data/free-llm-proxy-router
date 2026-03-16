@@ -149,16 +149,18 @@ func (t *ProviderTracker) getOrCreate(m map[string]*Window, key string, size tim
 
 // GlobalTracker holds per-provider trackers, keyed by provider ID.
 type GlobalTracker struct {
-	mu        sync.RWMutex
-	trackers  map[string]*ProviderTracker
-	cooldowns map[string]time.Time // provider_id → earliest time to retry
+	mu         sync.RWMutex
+	trackers   map[string]*ProviderTracker
+	cooldowns  map[string]time.Time // provider_id → earliest time to retry
+	keyIndices map[string]int       // provider_id → active key index for rotation
 }
 
 // NewGlobalTracker creates an empty GlobalTracker.
 func NewGlobalTracker() *GlobalTracker {
 	return &GlobalTracker{
-		trackers:  make(map[string]*ProviderTracker),
-		cooldowns: make(map[string]time.Time),
+		trackers:   make(map[string]*ProviderTracker),
+		cooldowns:  make(map[string]time.Time),
+		keyIndices: make(map[string]int),
 	}
 }
 
@@ -215,4 +217,24 @@ func (g *GlobalTracker) EarliestRecovery() time.Time {
 		}
 	}
 	return earliest
+}
+
+// CurrentKeyIndex returns the active key index (0-based) for the provider.
+func (g *GlobalTracker) CurrentKeyIndex(providerID string) int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.keyIndices[providerID]
+}
+
+// RotateKey advances to the next key slot for the provider and returns the new index.
+// numKeys must equal ProviderConfig.NumKeys() for the provider.
+func (g *GlobalTracker) RotateKey(providerID string, numKeys int) int {
+	if numKeys <= 1 {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	next := (g.keyIndices[providerID] + 1) % numKeys
+	g.keyIndices[providerID] = next
+	return next
 }
