@@ -238,6 +238,9 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		body := copyMap(raw)
 		body["model"] = e.ModelID
 		delete(body, "stream")
+		for _, f := range anthropicOnlyFields {
+			delete(body, f)
+		}
 		resp, err := chain.callProvider(r.Context(), *provCfg, body)
 		if err == nil && resp.StatusCode < 500 {
 			w.Header().Set("Content-Type", "application/json")
