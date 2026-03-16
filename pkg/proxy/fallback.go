@@ -320,10 +320,24 @@ func (fc *FallbackChain) collectProviderModels(providerID string, ranked []strat
 	return models
 }
 
+// anthropicOnlyFields are request fields specific to the Anthropic Messages API
+// that are not part of the OpenAI spec and will cause 400 errors on other providers.
+var anthropicOnlyFields = []string{
+	"promptcachekey",
+	"prompt_cache_key",
+	"thinking",
+	"betas",
+}
+
 func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelID string) map[string]any {
 	body := copyMap(raw)
 	body["model"] = modelID
 	delete(body, "stream") // always non-streaming to providers; fallback requires buffered JSON
+
+	// Strip Anthropic-specific fields that other providers reject with 400.
+	for _, f := range anthropicOnlyFields {
+		delete(body, f)
+	}
 
 	// Apply max_tokens_cap from strategy_overrides if the strategy has one configured
 	// and the client hasn't already requested fewer tokens.
