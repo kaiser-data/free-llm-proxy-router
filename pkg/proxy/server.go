@@ -242,13 +242,13 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			delete(body, f)
 		}
 		resp, err := chain.callProvider(r.Context(), *provCfg, body)
-		if err == nil && resp.StatusCode < 500 {
+		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(resp.StatusCode)
 			w.Write(resp.Body)
 			return
 		}
-		// Server error — try next catalog entry.
+		// Any error or non-2xx — try next catalog entry.
 	}
 	if !found {
 		http.Error(w, fmt.Sprintf(`{"error":"model %q not found in free catalog"}`, req.Model), http.StatusNotFound)
