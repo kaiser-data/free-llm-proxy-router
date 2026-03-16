@@ -311,7 +311,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		// Return a valid empty completion so the client sees no error message.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"id":"exhausted","object":"chat.completion","created":%d,"model":"none","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`, time.Now().Unix())
+		fmt.Fprintf(w, `{"id":"exhausted","object":"chat.completion","created":%d,"model":"none","choices":[{"index":0,"message":{"role":"assistant","content":"I\u2019m temporarily unavailable \u2014 please try again in a moment."},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`, time.Now().Unix())
 		return
 	}
 
