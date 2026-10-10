@@ -151,3 +151,41 @@ func TestPublicAliasParsing(t *testing.T) {
 		t.Errorf("public_alias default = %q, want empty", defCfg.Models.PublicAlias)
 	}
 }
+
+// TestTimeoutDefaults verifies the backward-compatible timeout defaults: the
+// previously hardcoded 120s values become config defaults, and the stream
+// timeout inherits the provider timeout when unset (0).
+func TestTimeoutDefaults(t *testing.T) {
+	path := writeTempConfig(t, "proxy:\n  port: 9999\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Fallback.ProviderTimeoutSeconds != 120 {
+		t.Errorf("provider_timeout_seconds default = %d, want 120", cfg.Fallback.ProviderTimeoutSeconds)
+	}
+	if cfg.Fallback.StreamTimeoutSeconds != 0 {
+		t.Errorf("stream_timeout_seconds default = %d, want 0 (inherit)", cfg.Fallback.StreamTimeoutSeconds)
+	}
+	if cfg.Proxy.WriteTimeoutSeconds != 120 {
+		t.Errorf("write_timeout_seconds default = %d, want 120", cfg.Proxy.WriteTimeoutSeconds)
+	}
+}
+
+// TestTimeoutConfigParsing verifies explicit timeout values are honoured.
+func TestTimeoutConfigParsing(t *testing.T) {
+	path := writeTempConfig(t, "fallback:\n  provider_timeout_seconds: 45\n  stream_timeout_seconds: 600\nproxy:\n  write_timeout_seconds: 700\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Fallback.ProviderTimeoutSeconds != 45 {
+		t.Errorf("provider_timeout_seconds = %d, want 45", cfg.Fallback.ProviderTimeoutSeconds)
+	}
+	if cfg.Fallback.StreamTimeoutSeconds != 600 {
+		t.Errorf("stream_timeout_seconds = %d, want 600", cfg.Fallback.StreamTimeoutSeconds)
+	}
+	if cfg.Proxy.WriteTimeoutSeconds != 700 {
+		t.Errorf("write_timeout_seconds = %d, want 700", cfg.Proxy.WriteTimeoutSeconds)
+	}
+}

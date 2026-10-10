@@ -297,6 +297,19 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
 	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 
+	// Per-provider timeout override (providers[].timeout, e.g. "30s").
+	// The field was declared but never read before — every attempt
+	// inherited only the shared client's provider_timeout_seconds cap.
+	// The deadline must wrap the context BEFORE the request is built so
+	// the request context carries it; it aborts the call as a transport
+	// error, which the failure classification treats as retryable, so the
+	// walk continues on the next candidate.
+	if d := cfg.ResolvedTimeout(); d > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
+	}
+
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("encoding request: %w", err)

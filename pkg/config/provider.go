@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // envRefPattern matches "${VAR}" references in literal config values so an
@@ -162,4 +163,21 @@ func (p *ProviderConfig) AllKeys() []string {
 // NumKeys returns the number of API keys available for this provider.
 func (p *ProviderConfig) NumKeys() int {
 	return len(p.AllKeys())
+}
+
+// ResolvedTimeout parses the per-provider timeout field ("30s", "90s", …)
+// into a Duration; 0 means unset or invalid, and the caller falls back to
+// the global fallback.provider_timeout_seconds. The field was previously
+// declared (and documented in configs/config.example.yaml) but never read —
+// wiring it here makes it a working per-upstream override of the buffered
+// attempt timeout.
+func (p *ProviderConfig) ResolvedTimeout() time.Duration {
+	if p.Timeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(p.Timeout)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }

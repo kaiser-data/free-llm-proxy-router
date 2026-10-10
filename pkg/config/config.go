@@ -31,6 +31,14 @@ type ProxyConfig struct {
 	LogLevel  string `mapstructure:"log_level"`
 	Strategy  string `mapstructure:"strategy"`
 
+	// WriteTimeoutSeconds caps the http.Server write timeout — the hard
+	// ceiling on one request's total server-side time, including every
+	// fallback attempt. Previously hardcoded at 120s. Operators raising
+	// the per-attempt upstream timeouts (fallback.provider_timeout_seconds)
+	// must raise this too, or the server deadline cuts the response first.
+	// Default 120.
+	WriteTimeoutSeconds int `mapstructure:"write_timeout_seconds"`
+
 	// StrategyOverrides allows per-strategy config tweaks.
 	StrategyOverrides map[string]map[string]any `mapstructure:"strategy_overrides"`
 
@@ -142,10 +150,24 @@ type RefreshConfig struct {
 
 // FallbackConfig controls retry and fallback behaviour.
 type FallbackConfig struct {
-	RetryOn429              bool `mapstructure:"retry_on_429"`
-	RetryOn5xx              bool `mapstructure:"retry_on_5xx"`
-	MaxAttempts             int  `mapstructure:"max_attempts"`
+	RetryOn429               bool `mapstructure:"retry_on_429"`
+	RetryOn5xx               bool `mapstructure:"retry_on_5xx"`
+	MaxAttempts              int  `mapstructure:"max_attempts"`
 	CerebrasRequestSpacingMs int  `mapstructure:"cerebras_request_spacing_ms"`
+
+	// ProviderTimeoutSeconds caps each buffered upstream attempt
+	// (connection + full response read) on the direct, alias, and strategy
+	// routes. Previously hardcoded at 120s. Providers may override it
+	// per-upstream via providers[].timeout. Default 120.
+	ProviderTimeoutSeconds int `mapstructure:"provider_timeout_seconds"`
+
+	// StreamTimeoutSeconds caps the whole lifetime of a streaming upstream
+	// attempt (SSE pass-through). The default 0 inherits
+	// provider_timeout_seconds, matching the previous behavior where one
+	// 120s client timeout silently bounded both buffered calls and streams.
+	// Raise it for long generations; a per-attempt cap stays mandatory
+	// because an idle upstream would otherwise pin the handler forever.
+	StreamTimeoutSeconds int `mapstructure:"stream_timeout_seconds"`
 }
 
 // mu guards the current config pointer for concurrent hot-reload.
@@ -276,12 +298,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.cache_ttl", 300)
 	v.SetDefault("proxy.log_level", "info")
 	v.SetDefault("proxy.strategy", "adaptive")
+	v.SetDefault("proxy.write_timeout_seconds", 120)
 	v.SetDefault("catalog.path", expandHome("~/.free-llm-proxy-router/catalog.json"))
 	v.SetDefault("catalog.enriched_path", expandHome("~/.free-llm-proxy-router/enriched.json"))
 	v.SetDefault("catalog.max_age_hours", 24)
 	v.SetDefault("fallback.retry_on_429", true)
 	v.SetDefault("fallback.retry_on_5xx", true)
 	v.SetDefault("fallback.max_attempts", 5)
+	v.SetDefault("fallback.provider_timeout_seconds", 120)
+	v.SetDefault("fallback.stream_timeout_seconds", 0) // 0 = inherit provider_timeout_seconds
 	v.SetDefault("models.canonicalization.enabled", true)
 	v.SetDefault("models.canonicalization.free_only", true)
 	v.SetDefault("models.expose_raw", true)

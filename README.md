@@ -321,8 +321,10 @@ The `.env` file is gitignored. See `.env.example` for all supported keys.
   flag) are forwarded as `application/json` — JSON is never disguised as an
   event stream. Remaining scope: requests that reach the strategy chain
   (`model: "auto"` / strategy names, or an alias/raw route whose candidates
-  all failed) still return buffered JSON, and the upstream HTTP client's
-  120-second timeout also bounds stream duration.
+  all failed) still return buffered JSON. Streaming attempts are bounded by
+  `fallback.stream_timeout_seconds` (default: inherit
+  `fallback.provider_timeout_seconds`, itself 120s) — configurable, since a
+  fixed 120s cap silently truncated long streams mid-generation.
 
 ## Development
 

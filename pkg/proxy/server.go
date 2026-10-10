@@ -29,7 +29,6 @@ type Server struct {
 	geminiTracker      *ratelimit.GeminiTracker
 	reliabilityTracker *reliability.Tracker
 	cache              *ResponseCache
-	streamProxy        *StreamProxy
 	httpServer         *http.Server
 
 	// aliasRes holds the canonical model alias resolver. It is rebuilt on
@@ -37,8 +36,8 @@ type Server struct {
 	// requests keep using raw model IDs only.
 	aliasRes atomic.Pointer[alias.Resolver]
 
-	// chainHTTPClient, when set, replaces the default 120s upstream HTTP
-	// client used by the direct, alias, and strategy routes. Tests inject a
+	// chainHTTPClient, when set, replaces the default upstream HTTP client
+	// used by the direct, alias, and strategy routes. Tests inject a
 	// short-timeout client to exercise timeout classification without
 	// slowing the suite.
 	chainHTTPClient *http.Client
@@ -62,7 +61,6 @@ func NewServer(
 	s.cfg.Store(cfg)
 	s.catalog.Store(cat)
 	s.cache = NewResponseCache(cfg.Proxy.CacheTTL)
-	s.streamProxy = &StreamProxy{HTTPClient: &http.Client{Timeout: 120 * time.Second}}
 	s.aliasRes.Store(buildAliasResolver(cfg, cat))
 	return s
 }
@@ -126,12 +124,51 @@ func buildAliasResolver(cfg *config.Config, cat *catalog.Catalog) *alias.Resolve
 
 // upstreamHTTPClient returns the HTTP client used for upstream calls from
 // the direct, alias, and strategy routes. Tests may inject a short-timeout
-// client via chainHTTPClient; production uses a 120s default.
+// client via chainHTTPClient; production builds one from
+// fallback.provider_timeout_seconds (default 120s — previously hardcoded).
 func (s *Server) upstreamHTTPClient() *http.Client {
 	if s.chainHTTPClient != nil {
 		return s.chainHTTPClient
 	}
-	return &http.Client{Timeout: 120 * time.Second}
+	return &http.Client{Timeout: s.providerTimeout()}
+}
+
+// providerTimeout returns the buffered upstream attempt timeout from
+// fallback.provider_timeout_seconds, guarding against zero/negative values
+// from hand-written or hot-reloaded configs (the viper default is 120).
+func (s *Server) providerTimeout() time.Duration {
+	seconds := s.cfg.Load().Fallback.ProviderTimeoutSeconds
+	if seconds <= 0 {
+		seconds = 120
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// streamHTTPClient returns the HTTP client for streaming attempts. A
+// positive fallback.stream_timeout_seconds overrides the buffered timeout
+// (long generations need a bigger cap than buffered calls — NG6); the
+// default (0) inherits provider_timeout_seconds, matching the previous
+// single 120s client. chainHTTPClient injection (tests) still wins.
+func (s *Server) streamHTTPClient() *http.Client {
+	if s.chainHTTPClient != nil {
+		return s.chainHTTPClient
+	}
+	if seconds := s.cfg.Load().Fallback.StreamTimeoutSeconds; seconds > 0 {
+		return &http.Client{Timeout: time.Duration(seconds) * time.Second}
+	}
+	return &http.Client{Timeout: s.providerTimeout()}
+}
+
+// proxyWriteTimeout returns the http.Server write timeout from
+// proxy.write_timeout_seconds (default 120). It is the hard ceiling on a
+// request's total server-side time — including all fallback attempts — so
+// operators raising the per-attempt timeouts must raise this too.
+func (s *Server) proxyWriteTimeout() time.Duration {
+	seconds := s.cfg.Load().Proxy.WriteTimeoutSeconds
+	if seconds <= 0 {
+		seconds = 120
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // Start begins listening on the configured port.
@@ -162,7 +199,7 @@ func (s *Server) Start(ctx context.Context) error {
 		Addr:         fmt.Sprintf(":%d", cfg.Proxy.Port),
 		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second,
+		WriteTimeout: s.proxyWriteTimeout(),
 		IdleTimeout:  60 * time.Second,
 	}
 

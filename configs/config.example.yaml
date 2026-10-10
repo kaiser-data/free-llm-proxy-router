@@ -11,6 +11,11 @@ proxy:
   strategy: "adaptive" # Default strategy: adaptive, performance, speed, volume, balanced,
                         # small, tiny, coding, long_context, similar, parallel, reliable, economical
 
+  # Hard ceiling on one request's total server-side time (seconds),
+  # including every fallback attempt. Keep it at or above the per-attempt
+  # timeouts configured under fallback. Previously hardcoded at 120s.
+  write_timeout_seconds: 120
+
   strategy_overrides:
     performance:   { max_tokens_cap: 2048 }
     small:         { max_tokens_cap: 256 }
@@ -70,6 +75,14 @@ fallback:
   retry_on_429: true
   retry_on_5xx: true
   max_attempts: 5
+  # Per-attempt upstream timeout in seconds for buffered calls
+  # (connection + full response read). Previously hardcoded at 120s.
+  # providers[].timeout overrides this per upstream.
+  provider_timeout_seconds: 120
+  # Streaming attempts (SSE) get their own cap — 0 inherits
+  # provider_timeout_seconds. Raise it for long generations; a cap stays
+  # mandatory so an idle upstream cannot pin the handler forever.
+  stream_timeout_seconds: 0
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
 

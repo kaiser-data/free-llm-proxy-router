@@ -194,7 +194,7 @@ func setStreamContractHeaders(w http.ResponseWriter, canonicalModel, providerID 
 // began.
 func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, provCfg *config.ProviderConfig, body map[string]any, canonicalModel, clientModel, route string) bool {
 	modelID, _ := body["model"].(string)
-	sp := &StreamProxy{HTTPClient: s.upstreamHTTPClient()}
+	sp := &StreamProxy{HTTPClient: s.streamHTTPClient()}
 	err := sp.Forward(r.Context(), w, *provCfg, body, canonicalModel)
 	if err == nil {
 		log.Printf("%s: %s/%s streamed for %q", route, provCfg.ID, modelID, clientModel)
