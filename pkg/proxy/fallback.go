@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -266,7 +267,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 				return nil, true, nil
 			}
 			if err == nil && resp.StatusCode == http.StatusOK {
-				fc.ReliabilityTracker.Record("openrouter", true)
+				fc.ReliabilityTracker.RecordOutcome("openrouter", reliability.OutcomeSuccess)
 				return resp, false, nil
 			}
 			// Fail-fast client/request errors abort the whole chain — no
@@ -275,7 +276,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			// (three-way classification, task C).
 			if finalFailureDecision(resp, err) == FailFast && resp != nil {
 				log.Printf("fallback: openrouter models[] fail-fast status %d — surfacing to client, aborting chain", resp.StatusCode)
-				fc.ReliabilityTracker.Record("openrouter", false)
+				fc.ReliabilityTracker.RecordOutcome("openrouter", failureOutcome(resp, err))
 				return resp, false, nil
 			}
 			if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
@@ -285,7 +286,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 				noteAuthFailure(fc.RateLimiter, "openrouter", "", resp.StatusCode)
 			}
 			log.Printf("fallback: openrouter models[] failed (%v) — continuing", err)
-			fc.ReliabilityTracker.Record("openrouter", false)
+			fc.ReliabilityTracker.RecordOutcome("openrouter", failureOutcome(resp, err))
 		}
 	}
 
@@ -387,6 +388,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 				callCfg.APIKeyEnv = ""
 			}
 		}
+		hopStart := time.Now()
 		resp, committed, err := try(ctx, callCfg, body, &attempt)
 		entered++
 
@@ -410,7 +412,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 					}
 					resp, committed, err = tryOnce(ctx, *providerCfg, body, &attempt)
 					if committed || (err == nil && resp != nil && resp.StatusCode == http.StatusOK) {
-						fc.ReliabilityTracker.Record(r.ProviderID, true)
+						fc.ReliabilityTracker.RecordOutcome(r.ProviderID, successOutcome(time.Since(hopStart)))
 						return resp, committed, nil
 					}
 				}
@@ -455,7 +457,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			if finalFailureDecision(resp, err) == FailFast {
 				if resp != nil {
 					log.Printf("fallback: %s/%s fail-fast status %d — surfacing to client, aborting chain", r.ProviderID, r.ModelID, resp.StatusCode)
-					fc.ReliabilityTracker.Record(r.ProviderID, false)
+					fc.ReliabilityTracker.RecordOutcome(r.ProviderID, failureOutcome(resp, err))
 					return resp, false, nil
 				}
 				return nil, false, err // context canceled — client is gone
@@ -465,7 +467,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 				statusCode = resp.StatusCode
 			}
 			log.Printf("fallback: %s/%s status %d — skipping provider", r.ProviderID, r.ModelID, statusCode)
-			fc.ReliabilityTracker.Record(r.ProviderID, false)
+			fc.ReliabilityTracker.RecordOutcome(r.ProviderID, failureOutcome(resp, err))
 			if fc.ReliabilityTracker.ShouldCooldown(r.ProviderID) {
 				fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(30*time.Second))
 				log.Printf("fallback: %s reliability below 50%% â short cooldown", r.ProviderID)
@@ -483,7 +485,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			}
 			_ = fc.GeminiTracker
 		}
-		fc.ReliabilityTracker.Record(r.ProviderID, true)
+		fc.ReliabilityTracker.RecordOutcome(r.ProviderID, successOutcome(time.Since(hopStart)))
 		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
 			fc.GeminiTracker.RecordRequest(r.ModelID, stratReq.EstimatedPromptTokens)
 		}
@@ -509,10 +511,10 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			return nil, true, nil
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
-			fc.ReliabilityTracker.Record("openrouter", true)
+			fc.ReliabilityTracker.RecordOutcome("openrouter", reliability.OutcomeSuccess)
 			return resp, false, nil
 		}
-		fc.ReliabilityTracker.Record("openrouter", false)
+		fc.ReliabilityTracker.RecordOutcome("openrouter", failureOutcome(resp, err))
 		// A fail-fast error from the last step still surfaces the real
 		// upstream response instead of degrading into the exhaustion path.
 		if finalFailureDecision(resp, err) == FailFast && resp != nil {
@@ -643,6 +645,50 @@ func failureCause(resp *Response, err error) string {
 		return "no response"
 	}
 	return fmt.Sprintf("status %d", resp.StatusCode)
+}
+
+// slowSuccessThreshold separates a prompt success from a slow one (task M):
+// a success that burned the slot this long still ranks below a prompt
+// success — every second holds the 1/minute slot busy.
+const slowSuccessThreshold = 15 * time.Second
+
+// errEmptyCompletion is the buffered empty-200: the upstream answered 200
+// with no usable body — the attempt failed and the scored outcome is
+// OutcomeWasted (task M).
+var errEmptyCompletion = errors.New("upstream answered 200 with an empty body")
+
+// failureOutcome classifies a failed attempt for the reliability EMA
+// (task M): timeouts and empty-200s waste the slot hardest (no answer, no
+// usable signal); 429/5xx and transport failures burn it with an
+// actionable cause. Both outrank only... nothing — they ARE the penalties;
+// the ordering lives in reliability.Outcome.
+func failureOutcome(resp *Response, err error) reliability.Outcome {
+	if err != nil {
+		if isTimeoutErr(err) {
+			return reliability.OutcomeWasted
+		}
+		return reliability.OutcomeRateLimited
+	}
+	if resp == nil {
+		return reliability.OutcomeRateLimited
+	}
+	if resp.StatusCode == http.StatusOK {
+		// The failure block only sees status 200 when the attempt produced
+		// nothing usable (empty/error first event on a stream) — an
+		// empty-200, the worst kind of slot burn.
+		return reliability.OutcomeWasted
+	}
+	return reliability.OutcomeRateLimited
+}
+
+// successOutcome distinguishes a prompt success from a slow one (task M):
+// a slow success still delivered the answer, but the slot stayed busy
+// longer — it ranks between plain success and the failure classes.
+func successOutcome(dur time.Duration) reliability.Outcome {
+	if dur > slowSuccessThreshold {
+		return reliability.OutcomeSlowSuccess
+	}
+	return reliability.OutcomeSuccess
 }
 
 // retrySameCandidate retries the SAME provider/model up to
@@ -787,6 +833,15 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	// Empty-200 guard (task M): an upstream that answers 200 with nothing
+	// usable has burned the attempt — surface it as a failed attempt so
+	// the ladder retries/falls back and the client never receives an empty
+	// "completion" (every request must get a REAL answer). The scored
+	// outcome is OutcomeWasted — the worst slot burn.
+	if resp.StatusCode == http.StatusOK && len(bytes.TrimSpace(respBody)) == 0 {
+		return nil, errEmptyCompletion
 	}
 
 	// Extract the actual model used (OpenRouter fills this in). The value

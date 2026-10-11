@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
 )
 
 // TestSlotLimiterReserveAtomicAndNextAvailable locks the limiter contract:
@@ -104,11 +106,15 @@ func TestSlotQueueFIFOHandsTurnsInEnqueueOrder(t *testing.T) {
 	var mu sync.Mutex
 	var served []int
 	var wg sync.WaitGroup
+	start := time.Now()
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
-		go func(n int) {
+		// A deterministic wake fallback: waiter i may be woken no later
+		// than start+(i+1)*window even when the limiter has no state left.
+		earliest := start.Add(time.Duration(i+1) * l.window)
+		go func(n int, wake time.Time) {
 			defer wg.Done()
-			ok, err := m.wait(context.Background(), "g", []string{"tp/m"}, time.Time{}, 10*time.Second, 10, false)
+			ok, err := m.wait(context.Background(), "g", []string{"tp/m"}, wake, 10*time.Second, 10, false)
 			if !ok {
 				mu.Lock()
 				t.Logf("waiter %d not served: %v", n, err)
@@ -119,7 +125,7 @@ func TestSlotQueueFIFOHandsTurnsInEnqueueOrder(t *testing.T) {
 			mu.Lock()
 			served = append(served, n)
 			mu.Unlock()
-		}(i)
+		}(i, earliest)
 		// Park waiter n before starting n+1 — deterministic enqueue order.
 		deadline := time.Now().Add(2 * time.Second)
 		for m.len("g") < i+1 && time.Now().Before(deadline) {
@@ -219,7 +225,9 @@ func TestSlotQueueFullRejectsImmediately(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = m.wait(context.Background(), "g", []string{"tp/m"}, time.Time{}, 5*time.Second, 2, false)
+			// Short budget: the parked waiters time out on their own right
+			// after the assertion — the test stays fast.
+			_, _ = m.wait(context.Background(), "g", []string{"tp/m"}, time.Time{}, 700*time.Millisecond, 2, false)
 			<-release
 		}()
 	}
@@ -235,3 +243,35 @@ func TestSlotQueueFullRejectsImmediately(t *testing.T) {
 	wg.Wait()
 }
 
+// TestFailureOutcomeClassification (task M): the scored outcome of a failed
+// attempt follows the penalty ordering — a timeout and an empty-200 waste
+// the slot hardest; 429/5xx and transport failures burn it with an
+// actionable cause.
+func TestFailureOutcomeClassification(t *testing.T) {
+	if o := failureOutcome(nil, context.DeadlineExceeded); o != reliability.OutcomeWasted {
+		t.Fatalf("timeout must score OutcomeWasted, got %v", o)
+	}
+	if o := failureOutcome(&Response{StatusCode: 200}, nil); o != reliability.OutcomeWasted {
+		t.Fatalf("empty-200 must score OutcomeWasted, got %v", o)
+	}
+	if o := failureOutcome(&Response{StatusCode: 429}, nil); o != reliability.OutcomeRateLimited {
+		t.Fatalf("429 must score OutcomeRateLimited, got %v", o)
+	}
+	if o := failureOutcome(&Response{StatusCode: 500}, nil); o != reliability.OutcomeRateLimited {
+		t.Fatalf("500 must score OutcomeRateLimited, got %v", o)
+	}
+	if o := failureOutcome(nil, errors.New("connection refused")); o != reliability.OutcomeRateLimited {
+		t.Fatalf("transport failure must score OutcomeRateLimited, got %v", o)
+	}
+}
+
+// TestSuccessOutcomeSlowThreshold (task M): a success inside the threshold
+// scores full; one beyond it scores the slow-success penalty.
+func TestSuccessOutcomeSlowThreshold(t *testing.T) {
+	if o := successOutcome(100 * time.Millisecond); o != reliability.OutcomeSuccess {
+		t.Fatalf("a prompt success must score OutcomeSuccess, got %v", o)
+	}
+	if o := successOutcome(slowSuccessThreshold + time.Second); o != reliability.OutcomeSlowSuccess {
+		t.Fatalf("a slow success must score OutcomeSlowSuccess, got %v", o)
+	}
+}
