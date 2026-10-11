@@ -90,10 +90,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	}
 
 	ranked := fc.Strategy.Rank(stratReq, freeEntries, nil)
-	maxAttempts := fc.Cfg.Fallback.MaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 5
-	}
+	maxAttempts := fc.maxAttemptsBudget()
 
 	// Step 1: Try OpenRouter with models[] array (native fallback)
 	if or := fc.findProvider("openrouter"); or != nil {
@@ -293,6 +290,18 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempt)
 }
 
+// maxAttemptsBudget returns the effective per-request upstream-call budget:
+// fallback.max_attempts with the <=0 guard (viper default 5; a zeroed
+// FallbackConfig — as built by some tests — must not read as "unbounded").
+// Every site that compares against the budget, including the same-candidate
+// retry loop, must use this helper.
+func (fc *FallbackChain) maxAttemptsBudget() int {
+	if fc.Cfg.Fallback.MaxAttempts <= 0 {
+		return 5
+	}
+	return fc.Cfg.Fallback.MaxAttempts
+}
+
 // callProviderWithRetries wraps callProvider with the bounded same-candidate
 // retry: previously one failed call dropped the provider for the whole
 // request (gap G1), so a single transient 5xx or timeout on the best-ranked
@@ -336,6 +345,14 @@ func (fc *FallbackChain) retrySameCandidate(ctx context.Context, callCfg config.
 			return resp, err // client error or canceled context — never retried
 		}
 		if !fc.sameCandidateRetryAllowed(resp) {
+			return resp, err
+		}
+		// Hard budget ceiling: the outer walk only checks max_attempts
+		// between candidates, so without this check one candidate's retry
+		// chain could push the total past the ceiling by up to
+		// retries_per_candidate calls (every retry below increments
+		// *attempt).
+		if *attempt >= fc.maxAttemptsBudget() {
 			return resp, err
 		}
 		base, maxDelay := ratelimit.DefaultBackoffParams()

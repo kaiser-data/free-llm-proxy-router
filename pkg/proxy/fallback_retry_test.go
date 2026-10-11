@@ -11,8 +11,10 @@ import (
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/models"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
 )
 
 // statusThenOKHandler: the first upstream hit replies failStatus, every later
@@ -219,5 +221,80 @@ func TestRetriesConsumeMaxAttemptsBudget(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hits); got != 2 {
 		t.Errorf("upstream hits = %d, want 2 (max_attempts bounds total calls)", got)
+	}
+}
+
+// twoCandidateStrategy ranks two different providers — used to verify the
+// max_attempts ceiling across candidate boundaries.
+type twoCandidateStrategy struct{}
+
+func (twoCandidateStrategy) Name() string { return "two-candidate-mock" }
+func (twoCandidateStrategy) Rank(_ strategy.Request, _ []catalog.CatalogEntry, _ *models.EnrichedCatalog) []strategy.RankedEntry {
+	return []strategy.RankedEntry{
+		{ProviderID: "provider-a", ModelID: "model-a"},
+		{ProviderID: "provider-b", ModelID: "model-b"},
+	}
+}
+
+// TestRetriesStopAtMaxAttemptsCeiling: retries share the max_attempts budget
+// AND the ceiling holds inside one candidate's retry chain — the total number
+// of upstream calls never exceeds max_attempts. Before the ceiling check was
+// added inside the retry loop, the walk only checked the ceiling between
+// candidates, so candidate two could push the total to
+// max_attempts + retries_per_candidate (here 6 calls for a budget of 4).
+func TestRetriesStopAtMaxAttemptsCeiling(t *testing.T) {
+	var hitsA, hitsB int32
+	fail500 := func(counter *int32) http.HandlerFunc {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(counter, 1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"error":{"message":"always failing"}}`)
+		})
+	}
+	srvA := httptest.NewServer(fail500(&hitsA))
+	defer srvA.Close()
+	srvB := httptest.NewServer(fail500(&hitsB))
+	defer srvB.Close()
+
+	rl := ratelimit.NewGlobalTracker()
+	cat := &catalog.Catalog{Entries: []catalog.CatalogEntry{
+		{ProviderID: "provider-a", ModelID: "model-a", IsFree: true, TierType: "free"},
+		{ProviderID: "provider-b", ModelID: "model-b", IsFree: true, TierType: "free"},
+	}}
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{
+			{ID: "provider-a", BaseURL: srvA.URL, Enabled: true},
+			{ID: "provider-b", BaseURL: srvB.URL, Enabled: true},
+		},
+		Fallback: config.FallbackConfig{
+			MaxAttempts:         4,
+			RetriesPerCandidate: 2,
+			RetryOn429:          true,
+			RetryOn5xx:          true,
+		},
+	}
+	fc := &FallbackChain{
+		Cfg:                cfg,
+		Strategy:           twoCandidateStrategy{},
+		Catalog:            cat,
+		RateLimiter:        rl,
+		ReliabilityTracker: reliability.New(),
+		HTTPClient:         &http.Client{},
+	}
+
+	_, err := fc.Execute(context.Background(), retryRequest())
+	if err == nil {
+		t.Fatal("expected exhaustion error")
+	}
+	a, b := atomic.LoadInt32(&hitsA), atomic.LoadInt32(&hitsB)
+	if a != 3 {
+		t.Errorf("provider-a hits = %d, want 3 (initial call + 2 retries fit the budget)", a)
+	}
+	if b != 1 {
+		t.Errorf("provider-b hits = %d, want 1 (initial call only — budget spent, ceiling blocks the retry)", b)
+	}
+	if a+b != 4 {
+		t.Errorf("total upstream calls = %d, want exactly max_attempts (4)", a+b)
 	}
 }
