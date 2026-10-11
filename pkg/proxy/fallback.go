@@ -80,6 +80,13 @@ type Response struct {
 // retryable failure. Only genuine candidate exhaustion produces an error;
 // callers turn that into the exhaustion response.
 func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, error) {
+	// Per-request wall-clock budget (fallback.total_deadline_seconds): the
+	// deadline rides the request context, so every attempt, HF-loading wait
+	// and backoff sleep observes it.
+	ctx, cancelTotal := fc.withTotalDeadline(ctx)
+	if cancelTotal != nil {
+		defer cancelTotal()
+	}
 	freeEntries := fc.Catalog.FreeEntries()
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
@@ -91,11 +98,14 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 
 	ranked := fc.Strategy.Rank(stratReq, freeEntries, nil)
 	maxAttempts := fc.maxAttemptsBudget()
+	maxHops := fc.maxFallbackHops()
+	hops := 0
 
 	// Step 1: Try OpenRouter with models[] array (native fallback)
 	if or := fc.findProvider("openrouter"); or != nil {
 		openRouterModels := fc.collectProviderModels("openrouter", ranked)
 		if len(openRouterModels) > 0 {
+			hops++ // the models[] request is one candidate/hop
 			body := BuildOpenRouterRequest(req.Raw, openRouterModels)
 			resp, err := fc.callProvider(ctx, *or, body)
 			if err == nil && resp.StatusCode == http.StatusOK {
@@ -125,6 +135,12 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	attempt := 0
 	failedProviders := make(map[string]bool)
 	for _, r := range ranked {
+		if ctx.Err() != nil {
+			// The request budget (or the client) canceled the context —
+			// stop the walk immediately, answer with the exhaustion
+			// response.
+			return nil, errRequestBudget(ctx)
+		}
 		if attempt >= maxAttempts {
 			break
 		}
@@ -164,7 +180,11 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			}
 			spacingMs := fc.Cfg.Fallback.CerebrasRequestSpacingMs
 			if spacingMs > 0 {
-				time.Sleep(time.Duration(spacingMs) * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					return nil, errRequestBudget(ctx)
+				case <-time.After(time.Duration(spacingMs) * time.Millisecond):
+				}
 			}
 		}
 
@@ -176,6 +196,15 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 				continue
 			}
 		}
+
+		// Hop ceiling (fallback.max_fallback_hops): a hard stop — the walk
+		// answers with the exhaustion response immediately; no further
+		// candidates and no ultimate-fallback step. This bounds the walk
+		// even when max_attempts / retries_per_candidate are cranked up.
+		if hops >= maxHops {
+			return nil, fmt.Errorf("fallback hop ceiling %d reached — aborting walk", maxHops)
+		}
+		hops++
 
 		body := fc.buildBody(r.ProviderID, req.Raw, r.ModelID)
 		// Apply active key slot when multiple API keys are configured.
@@ -189,11 +218,20 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		resp, err := fc.callProviderWithRetries(ctx, callCfg, body, &attempt)
 
 		if err != nil || resp.StatusCode != http.StatusOK {
+			// The request budget (or the client) canceled the context while
+			// the attempt ran — every further attempt is pointless.
+			if ctx.Err() != nil {
+				return nil, errRequestBudget(ctx)
+			}
 			// HuggingFace 503+loading: wait and retry SAME provider (cold start).
 			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
 				if waitMs := parseHFLoadingWait(resp.Body); waitMs > 0 {
 					log.Printf("fallback: huggingface model loading, waiting %dms", waitMs)
-					time.Sleep(time.Duration(waitMs) * time.Millisecond)
+					select {
+					case <-ctx.Done():
+						return nil, errRequestBudget(ctx)
+					case <-time.After(time.Duration(waitMs) * time.Millisecond):
+					}
 					resp, err = fc.callProvider(ctx, *providerCfg, body)
 					if err == nil && resp.StatusCode == http.StatusOK {
 						fc.ReliabilityTracker.Record(r.ProviderID, true)
@@ -273,6 +311,10 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 
 	// Step 5: Ultimate fallback — OpenRouter free router
 	if or := fc.findProvider("openrouter"); or != nil {
+		if hops >= maxHops {
+			return nil, fmt.Errorf("fallback hop ceiling %d reached — aborting walk", maxHops)
+		}
+		hops++
 		log.Printf("fallback: trying openrouter/free ultimate fallback")
 		body := OpenRouterFreeRouterRequest(req.Raw)
 		resp, err := fc.callProvider(ctx, *or, body)
@@ -302,6 +344,41 @@ func (fc *FallbackChain) maxAttemptsBudget() int {
 		return 5
 	}
 	return fc.Cfg.Fallback.MaxAttempts
+}
+
+// maxFallbackHops returns the effective per-request candidate ceiling
+// (fallback.max_fallback_hops); the <=0 guard mirrors the viper default 8
+// for zeroed Config structs.
+func (fc *FallbackChain) maxFallbackHops() int {
+	if fc.Cfg.Fallback.MaxFallbackHops <= 0 {
+		return 8
+	}
+	return fc.Cfg.Fallback.MaxFallbackHops
+}
+
+// totalDeadline returns the request's wall-clock budget; 0 = disabled.
+func (fc *FallbackChain) totalDeadline() time.Duration {
+	if fc.Cfg.Fallback.TotalDeadlineSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(fc.Cfg.Fallback.TotalDeadlineSeconds) * time.Second
+}
+
+// withTotalDeadline wraps ctx with the request's total wall-clock deadline
+// when fallback.total_deadline_seconds is configured. The returned cancel
+// is nil when no deadline was added; callers must call it when non-nil.
+func (fc *FallbackChain) withTotalDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if d := fc.totalDeadline(); d > 0 {
+		return context.WithTimeout(ctx, d)
+	}
+	return ctx, nil
+}
+
+// errRequestBudget wraps a context error as the walk's budget-exhaustion
+// error: the request's total deadline fired (fallback.total_deadline_seconds)
+// or the client canceled — no further attempt is meaningful.
+func errRequestBudget(ctx context.Context) error {
+	return fmt.Errorf("request budget exhausted: %w", ctx.Err())
 }
 
 // callProviderWithRetries wraps callProvider with the bounded same-candidate

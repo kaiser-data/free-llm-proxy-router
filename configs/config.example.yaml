@@ -93,6 +93,17 @@ fallback:
   # every candidate failed — clients are asked to wait this long before
   # retrying.
   retry_after_seconds: 5
+  # Hard ceiling on distinct candidates per request (each ranked entry plus
+  # the OpenRouter steps count as one hop). Reaching it aborts the walk and
+  # the request gets the 503 exhaustion response. Default 8 sits above
+  # max_attempts (5) so it never binds unless configured aggressively.
+  max_fallback_hops: 8
+  # Whole-request wall-clock budget in seconds — covers every attempt and
+  # backoff sleep. An attempt that outlives it is aborted and the request
+  # ends in the 503 exhaustion response. Keep below
+  # proxy.write_timeout_seconds and raise both together for long
+  # generations. 0 disables the cap.
+  total_deadline_seconds: 90
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
 

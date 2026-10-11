@@ -290,6 +290,21 @@ the request get a `503 Service Unavailable` with a `Retry-After` hint
 JSON error body (`type: "server_error"`,
 `code: "all_candidates_exhausted"`) — never a masked 200 completion.
 
+Two walk-level budgets guard against runaway requests:
+
+- `fallback.max_fallback_hops` (default 8) — a hard ceiling on how many
+  distinct candidates one request may enter (each ranked entry plus the
+  OpenRouter steps count as one hop). Reaching it aborts the walk
+  immediately and the request gets the 503 exhaustion response. The default
+  sits above `max_attempts` (5), so it never binds unless configured
+  aggressively.
+- `fallback.total_deadline_seconds` (default 90, `0` disables) — the whole
+  request's wall-clock budget covering every attempt and every backoff
+  sleep: an attempt that outlives the budget is aborted mid-flight and the
+  request ends in the 503 exhaustion response instead of the write timeout
+  killing the connection. Keep it below `proxy.write_timeout_seconds`
+  (default 120) and raise both together when serving long generations.
+
 `404` during a candidate walk means "this provider does not serve this
 model" (catalog staleness), so other candidates are tried and the entry is
 flagged for reverification. A `404` caused by request semantics — a model

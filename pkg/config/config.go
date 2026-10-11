@@ -182,6 +182,23 @@ type FallbackConfig struct {
 	// exhaustion response when every candidate failed — the value clients
 	// are asked to wait before retrying. Default 5.
 	RetryAfterSeconds int `mapstructure:"retry_after_seconds"`
+
+	// MaxFallbackHops caps how many distinct candidates a single request
+	// may enter (each ranked-walk entry plus the OpenRouter steps count as
+	// one hop) — a hard guard against unbounded walking when max_attempts
+	// and retries_per_candidate are cranked up. Reaching the ceiling aborts
+	// the walk immediately and the request gets the 503 exhaustion
+	// response. Default 8: above the default max_attempts=5, so it never
+	// binds unless configured aggressively.
+	MaxFallbackHops int `mapstructure:"max_fallback_hops"`
+
+	// TotalDeadlineSeconds caps the whole request's wall-clock time
+	// (connection + every attempt + every backoff sleep) across the entire
+	// candidate walk. Keep it below proxy.write_timeout_seconds (default
+	// 120) so a budget overrun ends in a clean 503 exhaustion response
+	// instead of the write timeout killing the connection mid-response.
+	// 0 disables the cap. Default 90.
+	TotalDeadlineSeconds int `mapstructure:"total_deadline_seconds"`
 }
 
 // mu guards the current config pointer for concurrent hot-reload.
@@ -323,6 +340,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.stream_timeout_seconds", 0) // 0 = inherit provider_timeout_seconds
 	v.SetDefault("fallback.retries_per_candidate", 1)
 	v.SetDefault("fallback.retry_after_seconds", 5)
+	v.SetDefault("fallback.max_fallback_hops", 8)
+	v.SetDefault("fallback.total_deadline_seconds", 90)
 	v.SetDefault("models.canonicalization.enabled", true)
 	v.SetDefault("models.canonicalization.free_only", true)
 	v.SetDefault("models.expose_raw", true)
