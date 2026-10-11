@@ -441,19 +441,27 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			w.Write(resp.Body)
 			return
 		}
-		// Non-retryable client/request errors (400, 401, 403, …) surface
-		// immediately: no next catalog entry, no strategy chain, and no
-		// masked success. Availability failures keep walking below.
-		if classifyUpstreamFailure(resp, err) == nonRetryable {
+		// Route decision comes from ClassifyFailure like every other route
+		// (task H — no route keeps its own failure table): fail-fast
+		// client/request defects (400, 413, content-policy, …) surface
+		// immediately with no masked success; 401/403 cool the provider down
+		// and keep walking; every other retryable class (rate limits, 5xx,
+		// transport) also walks to the next catalog entry.
+		switch finalFailureDecision(resp, err) {
+		case FailFast:
 			if resp != nil {
-				log.Printf("direct route: %s/%s non-retryable status %d — surfacing to client", e.ProviderID, e.ModelID, resp.StatusCode)
+				log.Printf("direct route: %s/%s fail-fast status %d — surfacing to client", e.ProviderID, e.ModelID, resp.StatusCode)
 				s.writeUpstreamError(w, req.Model, resp)
 			} else {
 				log.Printf("direct route: %s/%s request canceled — aborting walk", e.ProviderID, e.ModelID)
 			}
 			return
+		default:
+			if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+				noteAuthFailure(s.rateLimiter, e.ProviderID, e.ModelID, resp.StatusCode)
+			}
+			// Try the next catalog entry.
 		}
-		// Any retryable error or non-2xx — try next catalog entry.
 	}
 	if !found {
 		if s.serveAliasModel(w, r, cfg, cat, req, raw, resolver) {
@@ -538,18 +546,24 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 			w.Write(resp.Body)
 			return true
 		}
-		// Client/request errors (400, 401, 403, …) must not walk more
-		// candidates: no other upstream can succeed with the same payload,
-		// and continuing would mask the real error behind an exhaustion
-		// response. Surface the upstream response to the client as-is.
-		if classifyUpstreamFailure(resp, err) == nonRetryable {
+		// Route decision comes from ClassifyFailure like every other route
+		// (task H): fail-fast client/request defects surface the upstream
+		// response to the client verbatim; 401/403 cool the provider down
+		// and walk on; other retryable classes walk to the next candidate.
+		switch finalFailureDecision(resp, err) {
+		case FailFast:
 			if resp != nil {
-				log.Printf("alias route: %s/%s non-retryable status %d — surfacing to client, no further candidates", u.ProviderID, u.ModelID, resp.StatusCode)
+				log.Printf("alias route: %s/%s fail-fast status %d — surfacing to client, no further candidates", u.ProviderID, u.ModelID, resp.StatusCode)
 				s.writeUpstreamError(w, req.Model, resp)
 			} else {
 				log.Printf("alias route: %s/%s request canceled — aborting candidate walk", u.ProviderID, u.ModelID)
 			}
 			return true
+		default:
+			if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+				noteAuthFailure(s.rateLimiter, u.ProviderID, u.ModelID, resp.StatusCode)
+			}
+			// Retryable failure — try the next candidate.
 		}
 		// Retryable upstream failure — record the candidate and the
 		// failure class, then try the next one (cooldown/retry already

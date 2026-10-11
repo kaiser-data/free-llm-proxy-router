@@ -11,6 +11,7 @@ import (
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
 )
 
 // newAliasRouteServer builds a Server whose canonical alias "qwen3" maps to
@@ -83,11 +84,15 @@ func failThenSucceedHandler(failStatus int, hangFirst time.Duration) (http.Handl
 }
 
 // TestAliasRouteClientErrorsSurfaceImmediately locks in the error
-// classification contract: upstream 400/401/403 are client/request errors —
-// the proxy must surface them as-is, attempt only one candidate, and never
-// walk further or return the 502 exhaustion response.
+// classification contract: a genuine payload defect (400 ClassifyFailure
+// cannot map to a candidate-shaped fix) surfaces as-is, attempts only one
+// candidate, and never walks further or degrades into the exhaustion
+// response. 401/403 are NOT in this table anymore — task H moved them to the
+// cooldown+fallback contract shared by every route
+// (TestAliasRouteAuthErrorsCooldownAndFallback here and
+// TestAuth401And403BehaveIdenticallyOnEveryRoute for the full matrix).
 func TestAliasRouteClientErrorsSurfaceImmediately(t *testing.T) {
-	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden} {
+	for _, status := range []int{http.StatusBadRequest} {
 		t.Run(fmt.Sprintf("%d", status), func(t *testing.T) {
 			handler, hits := failThenSucceedHandler(status, 0)
 			srv := httptest.NewServer(handler)
@@ -106,6 +111,36 @@ func TestAliasRouteClientErrorsSurfaceImmediately(t *testing.T) {
 			}
 			if strings.Contains(rec.Body.String(), "temporarily unavailable") {
 				t.Errorf("canned exhaustion response leaked for a client error: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestAliasRouteAuthErrorsCooldownAndFallback: 401/403 on the alias route
+// now follow the same contract as every route (task H) — the failure is
+// never surfaced, the provider goes on cooldown, and the walk continues to
+// the next candidate, which serves the request.
+func TestAliasRouteAuthErrorsCooldownAndFallback(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("%d", status), func(t *testing.T) {
+			handler, hits := failThenSucceedHandler(status, 0)
+			srv := httptest.NewServer(handler)
+			defer srv.Close()
+			s := newAliasRouteServer(t, srv.URL, 0)
+			s.rateLimiter = ratelimit.NewGlobalTracker() // the harness passes nil — the cooldown assertions need the real tracker
+
+			rec := serveAliasRequest(s)
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want 200 (401/403 must walk to the next candidate, task H)", rec.Code)
+			}
+			if got := atomic.LoadInt32(hits); got != 2 {
+				t.Errorf("upstream hits = %d, want 2 (auth failure walks, next candidate serves)", got)
+			}
+			if !strings.Contains(rec.Body.String(), "FALLBACK_OK") {
+				t.Errorf("body %q missing second-candidate content", rec.Body.String())
+			}
+			if !s.rateLimiter.IsOnCooldown("testprovider") {
+				t.Error("401/403 must put the provider on cooldown")
 			}
 		})
 	}

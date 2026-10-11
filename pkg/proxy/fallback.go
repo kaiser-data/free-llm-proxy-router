@@ -200,6 +200,12 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 				fc.ReliabilityTracker.Record("openrouter", false)
 				return resp, false, nil
 			}
+			if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+				// The models[] candidate failed on auth: the same 401/403
+				// contract as the ranked walk (task H) — cooldown + warn —
+				// then walk on to the ranked candidates.
+				noteAuthFailure(fc.RateLimiter, "openrouter", "", resp.StatusCode)
+			}
 			log.Printf("fallback: openrouter models[] failed (%v) — continuing", err)
 			fc.ReliabilityTracker.Record("openrouter", false)
 		}
@@ -341,8 +347,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 						log.Printf("fallback: %s/%s rate limited — cooldown until %s", r.ProviderID, r.ModelID, until.Format("15:04:05"))
 					}
 				case 401, 403:
-					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(10*time.Minute))
-					log.Printf("fallback: %s auth error %d — cooldown 10min", r.ProviderID, resp.StatusCode)
+					noteAuthFailure(fc.RateLimiter, r.ProviderID, r.ModelID, resp.StatusCode)
 				case 404:
 					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(5*time.Minute))
@@ -420,6 +425,11 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 		if finalFailureDecision(resp, err) == FailFast && resp != nil {
 			log.Printf("fallback: openrouter/free fail-fast status %d — surfacing to client", resp.StatusCode)
 			return resp, false, nil
+		}
+		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			// The same 401/403 contract as every other path (task H) — the
+			// cooldown applies even though this walk ends in exhaustion.
+			noteAuthFailure(fc.RateLimiter, "openrouter", bodyModel(body), resp.StatusCode)
 		}
 	}
 

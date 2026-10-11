@@ -15,8 +15,8 @@ import (
 // UpstreamStreamError is returned by StreamProxy.Forward when the upstream
 // answered a streaming request with a non-200 status. Nothing has been
 // written to the client at that point, so the caller can classify the
-// failure (see classifyUpstreamFailure) and either walk to the next
-// candidate or surface the upstream response verbatim.
+// failure (see ClassifyFailure) and either walk to the next candidate or
+// surface the upstream response verbatim.
 type UpstreamStreamError struct {
 	ProviderID string
 	StatusCode int
@@ -146,18 +146,25 @@ func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, prov
 		if modelID != "" {
 			resp.Header.Set("X-Free-Router-Upstream-Model", modelID)
 		}
-		if classifyUpstreamFailure(resp, nil) == nonRetryable {
-			log.Printf("%s: %s/%s non-retryable status %d (stream) — surfacing to client, no further candidates", route, provCfg.ID, modelID, use.StatusCode)
+		// The same ClassifyFailure verdict every route applies (task H):
+		// fail-fast defects surface verbatim; 401/403 cool the provider
+		// down and the walk continues; other retryable classes walk on.
+		if finalFailureDecision(resp, nil) == FailFast {
+			log.Printf("%s: %s/%s fail-fast status %d (stream) — surfacing to client, no further candidates", route, provCfg.ID, modelID, use.StatusCode)
 			s.writeUpstreamError(w, clientModel, resp)
 			return true
+		}
+		if use.StatusCode == http.StatusUnauthorized || use.StatusCode == http.StatusForbidden {
+			noteAuthFailure(s.rateLimiter, provCfg.ID, modelID, use.StatusCode)
 		}
 		log.Printf("%s: %s/%s status %d (stream) — trying next candidate", route, provCfg.ID, modelID, use.StatusCode)
 		return false
 	}
 	// Transport-level failure: timeout, connection failure, or a canceled
 	// context (client disconnect). Only the canceled case aborts the walk —
-	// the client is gone and no further attempt is meaningful.
-	if classifyUpstreamFailure(nil, err) == nonRetryable {
+	// the client is gone and no further attempt is meaningful (the same
+	// ClassifyFailure verdict every route applies, task H).
+	if finalFailureDecision(nil, err) == FailFast {
 		log.Printf("%s: %s/%s stream request canceled — aborting candidate walk", route, provCfg.ID, modelID)
 		return true
 	}

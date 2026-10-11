@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -68,6 +69,33 @@ type FailureInput struct {
 	// only the FIRST timeout earns a same-candidate retry; a second
 	// consecutive timeout says the provider is too slow for this request.
 	TimeoutsDone int
+}
+
+// cooldownSetter is the minimal cooldown surface the auth-failure handler
+// needs; *ratelimit.GlobalTracker satisfies it.
+type cooldownSetter interface {
+	SetCooldown(providerID string, until time.Time)
+}
+
+// authCooldownDuration is how long a provider stays on cooldown after a
+// 401/403: the credential was rejected, so retrying sooner is pointless.
+const authCooldownDuration = 10 * time.Minute
+
+// noteAuthFailure applies the 401/403 contract shared by every route
+// (task H): the provider goes on cooldown and a warn-level log names the
+// candidate and the cause — making a dead or rotated key obvious in ops
+// output without grepping for status codes. The log line never contains the
+// API key or the upstream body: 401/403 bodies can echo credentials, so only
+// the status is reported.
+func noteAuthFailure(setter cooldownSetter, providerID, modelID string, status int) {
+	if setter != nil {
+		setter.SetCooldown(providerID, time.Now().Add(authCooldownDuration))
+	}
+	candidate := providerID
+	if modelID != "" {
+		candidate += "/" + modelID
+	}
+	log.Printf("WARN auth failure: candidate=%s status=%d cause=credential rejected by provider (check the API key) — provider on cooldown %v, falling back to next candidate", candidate, status, authCooldownDuration)
 }
 
 // ClassifyFailure decides what the retry ladder does with one failed

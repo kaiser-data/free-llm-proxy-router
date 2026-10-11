@@ -11,6 +11,7 @@ import (
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
 )
 
 // unoCatalogEntries are the free candidates a real UnoRouter discovery would
@@ -166,11 +167,13 @@ func TestUnoAliasDuplicateCandidatesGrouped(t *testing.T) {
 	}
 }
 
-// TestUnoAliasClientErrorSurfacesImmediately: UnoRouter 400/401/403 are
-// client/request errors — surface verbatim, exactly one attempt, never the
-// 502 exhaustion response.
+// TestUnoAliasClientErrorSurfacesImmediately: a UnoRouter 400 ClassifyFailure
+// cannot map to a candidate-shaped fix is a client/request error — surface
+// verbatim, exactly one attempt, never the exhaustion response. 401/403 are
+// NOT in this table anymore — task H moved them to the cooldown+fallback
+// contract shared by every route (TestUnoAliasAuthErrorsCooldownAndFallback).
 func TestUnoAliasClientErrorSurfacesImmediately(t *testing.T) {
-	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden} {
+	for _, status := range []int{http.StatusBadRequest} {
 		t.Run(fmt.Sprintf("%d", status), func(t *testing.T) {
 			handler, urec := unoUpstreamHandler(status)
 			srv := httptest.NewServer(handler)
@@ -186,6 +189,35 @@ func TestUnoAliasClientErrorSurfacesImmediately(t *testing.T) {
 			}
 			if strings.Contains(rec.Body.String(), "temporarily unavailable") {
 				t.Errorf("canned exhaustion response leaked: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestUnoAliasAuthErrorsCooldownAndFallback: a UnoRouter 401/403 follows the
+// same contract as every route (task H) — never surfaced, the provider goes
+// on cooldown, and the walk continues to the next candidate.
+func TestUnoAliasAuthErrorsCooldownAndFallback(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("%d", status), func(t *testing.T) {
+			handler, urec := unoUpstreamHandler(status)
+			srv := httptest.NewServer(handler)
+			defer srv.Close()
+			s := newUnoAliasServer(t, srv.URL, "uno-secret-key")
+			s.rateLimiter = ratelimit.NewGlobalTracker() // the harness passes nil — the cooldown assertions need the real tracker
+
+			rec := unoAliasRequest(s)
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want 200 (401/403 must walk to the next candidate, task H) — body: %s", rec.Code, rec.Body.String())
+			}
+			if got := urec.Hits(); got != 2 {
+				t.Errorf("upstream hits = %d, want 2 (auth failure walks, next candidate serves)", got)
+			}
+			if !strings.Contains(rec.Body.String(), "UNO_LIVE_OK") {
+				t.Errorf("body %q missing second-candidate content", rec.Body.String())
+			}
+			if !s.rateLimiter.IsOnCooldown("unorouter") {
+				t.Error("401/403 must put the provider on cooldown")
 			}
 		})
 	}
