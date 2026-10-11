@@ -539,6 +539,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 	if !rawOnly {
 		resolver = s.aliasRes.Load()
 	}
+	directDemand := demandOf(req.Raw, req.Messages, req.MaxTokens)
 	chain := &FallbackChain{
 		Cfg:                cfg,
 		Strategy:           nil,
@@ -551,11 +552,12 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		Resolver:           resolver,
 		Slots:              s.slotLimit,
 		Queues:             s.queues,
+		Gate:               &directDemand,
 	}
 
 	found := false
 	for {
-		entered, blockedKeys := 0, []string{}
+		entered, blockedKeys, gateSkipped := 0, []string{}, 0
 		for _, e := range cat.Entries {
 			if !matchEntry(e, req.Model, targetProvider, targetModel) {
 				continue
@@ -563,6 +565,13 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			found = true
 			provCfg := findProviderCfg(cfg, e.ProviderID)
 			if provCfg == nil {
+				continue
+			}
+			// Capability gate (task Q): NG8-flagged, over-context, and
+			// capability-mismatched entries are skipped before anything
+			// waits — an all-skipped set answers immediately below.
+			if !entryPassesGate(e, *chain.Gate) {
+				gateSkipped++
 				continue
 			}
 			// RPM slot gate (task L0): entering the candidate consumes one
@@ -617,16 +626,30 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 				// Try the next catalog entry.
 			}
 		}
-		// No upstream was entered this round but matched candidates were
-		// skipped for quota: wait FIFO in the group queue instead of
-		// failing immediately (task L0). A handed turn walks again;
-		// otherwise the response is already finished.
-		if entered > 0 || len(blockedKeys) == 0 || !found {
-			break
+		// Route disposition when the round entered nothing:
+		if !found {
+			break // no direct entry matched — the caller falls to the alias route
 		}
-		if !s.candidatesBlocked(r.Context(), w, queueGroup(req), req.Model, blockedKeys) {
+		if entered > 0 {
+			break // entries were entered and failed — strategy chain as before
+		}
+		if len(blockedKeys) > 0 {
+			// Matched candidates were skipped for quota: wait FIFO in the
+			// group queue instead of failing immediately (task L0). A
+			// handed turn walks again; otherwise the response is finished.
+			if !s.candidatesBlocked(r.Context(), w, queueGroup(req), req.Model, blockedKeys) {
+				return
+			}
+			continue
+		}
+		if gateSkipped > 0 {
+			// Every matched entry failed the capability gate (NG8 /
+			// context / tools / vision): a clear immediate error — the
+			// request never waits in the slot queue (task Q).
+			s.writeNoCapableCandidate(w, req.Model, *chain.Gate)
 			return
 		}
+		break // matched only disabled providers — fall to the alias route
 	}
 	if !found {
 		if s.serveAliasModel(w, r, cfg, cat, req, raw, resolver) {
@@ -652,6 +675,17 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 	if len(ups) == 0 {
 		return false
 	}
+	// Capability gate BEFORE the queue (task Q): candidates the request
+	// cannot use — NG8-flagged, too small a context window, missing
+	// tools/vision — are dropped first. An empty surviving set fails
+	// immediately with the clear error; it never waits in the slot queue.
+	demand := demandOf(req.Raw, req.Messages, req.MaxTokens)
+	ups = s.gateUpstreams(cat, req, ups)
+	if len(ups) == 0 {
+		log.Printf("alias route: %q — no candidate passes the capability gate (NG8/context/tools/vision)", req.Model)
+		s.writeNoCapableCandidate(w, req.Model, demand)
+		return true
+	}
 	if resolver.IsPool(req.Model) {
 		log.Printf("pool alias: %q -> %d free candidate(s)", req.Model, len(ups))
 		ups = s.rankPoolCandidates(cfg, req, resolver, cat, req.Model, ups)
@@ -671,6 +705,7 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 		Resolver:           resolver,
 		Slots:              s.slotLimit,
 		Queues:             s.queues,
+		Gate:               &demand,
 	}
 	for {
 		entered, blockedKeys := 0, []string{}
@@ -848,6 +883,24 @@ func (s *Server) rankPoolCandidates(cfg *config.Config, req Request, resolver *a
 	return out
 }
 
+// gateUpstreams filters the alias/pool candidate list through the request's
+// capability gate (task Q): NG8 exclusion, context fit, tools/vision — the
+// same rule the ranked walk applies.
+func (s *Server) gateUpstreams(cat *catalog.Catalog, req Request, ups []alias.Upstream) []alias.Upstream {
+	d := demandOf(req.Raw, req.Messages, req.MaxTokens)
+	out := make([]alias.Upstream, 0, len(ups))
+	for _, u := range ups {
+		e := cat.Find(u.ProviderID, u.ModelID)
+		if e == nil {
+			continue // entry vanished from the catalog mid-flight
+		}
+		if entryPassesGate(*e, d) {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
 // matchEntry reports whether a catalog entry matches the requested model.
 // Pass 1: full exact string match (handles OpenRouter IDs with embedded slash).
 // Pass 2: explicit provider-prefix routing (e.g. "groq/llama-3.3-70b-versatile").
@@ -879,6 +932,17 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		strat, _ = s.strategyReg.Get("adaptive")
 	}
 
+	// Capability gate BEFORE the queue (task Q): a request no surviving
+	// candidate can serve fails immediately with the clear error — it
+	// never waits in the slot queue, because waiting cannot grow a context
+	// window or add a missing capability.
+	demand := demandOf(req.Raw, req.Messages, req.MaxTokens)
+	if len(gateEntries(cat.FreeEntries(), demand)) == 0 {
+		log.Printf("strategy chain: no candidate passes the capability gate for %q", req.ClientModel)
+		s.writeNoCapableCandidate(w, req.ClientModel, demand)
+		return
+	}
+
 	chain := &FallbackChain{
 		Cfg:                cfg,
 		Strategy:           strat,
@@ -891,6 +955,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		Resolver:           s.aliasRes.Load(),
 		Slots:              s.slotLimit,
 		Queues:             s.queues,
+		Gate:               &demand,
 	}
 
 	// Streaming requests run the SAME walk in streaming mode

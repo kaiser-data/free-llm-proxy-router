@@ -58,6 +58,10 @@ type FallbackChain struct {
 	// fallback.queue_wait_seconds are set, the errAllSlotsBusy sentinel
 	// waits in its model group's queue instead of failing immediately.
 	Queues *queueManager
+	// Gate, when non-nil, is the request's capability demand (task Q) — the
+	// walk ranks only entries passing it (NG8 exclusion, context fit,
+	// tools/vision). Nil keeps the old full-catalog ranking.
+	Gate *capabilityDemand
 }
 
 // Request is the parsed incoming chat-completions request.
@@ -213,6 +217,12 @@ func (fc *FallbackChain) bufferedTryOnce(reqID string) candidateAttempt {
 //	               upstream error to surface verbatim
 func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce candidateAttempt) (*Response, bool, error) {
 	freeEntries := fc.Catalog.FreeEntries()
+	// Capability gate (task Q): rank only entries the request can actually
+	// use — NG8-flagged entries are never selected; with a demand set,
+	// context fit and tools/vision also filter. An empty surviving set
+	// reaches the routes' immediate no-capable-candidate error, never a
+	// queue wait.
+	freeEntries = gateEntries(freeEntries, fc.gateDemand())
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
 		EstimatedPromptTokens: estimateTokens(req.Messages),
@@ -555,6 +565,16 @@ func (fc *FallbackChain) totalDeadline() time.Duration {
 		return 0
 	}
 	return time.Duration(fc.Cfg.Fallback.TotalDeadlineSeconds) * time.Second
+}
+
+// gateDemand returns the walk's capability gate: the route-installed demand
+// when set, otherwise the empty demand — which still applies the NG8 rule
+// (NeedsReverification entries are never selected).
+func (fc *FallbackChain) gateDemand() capabilityDemand {
+	if fc.Gate != nil {
+		return *fc.Gate
+	}
+	return capabilityDemand{}
 }
 
 // withTotalDeadline wraps ctx with the request's total wall-clock deadline

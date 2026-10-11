@@ -23,8 +23,8 @@ import (
 )
 
 var (
-	cfgFile  string
-	port     int
+	cfgFile   string
+	port      int
 	stratName string
 )
 
@@ -168,6 +168,13 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		defer stopWatch()
 	}
 
+	// Live :free-model discovery (task Q): GET /v1/models at boot and every
+	// models.model_refresh_minutes for providers that opted in
+	// (providers[].discovery.refresh). A failed refresh keeps the existing
+	// list — groups are never cleared by a refresh error.
+	proxy.NewModelRefresher(srv).Start(ctx)
+	warnQueueTimeoutConfig(cfg)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -181,4 +188,30 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}()
 
 	return srv.Start(ctx)
+}
+
+// warnQueueTimeoutConfig checks the slot-queue knobs for the one missetup
+// that turns a queued wait into a connection cut: the request's effective
+// deadline (queue_wait + one attempt) exceeding proxy.write_timeout_seconds
+// would let the server kill the connection BEFORE the clean 503/SSE error
+// can be written. The walk raises total_deadline_seconds automatically
+// (task L0); the write timeout is set at server construction and must be
+// raised by the operator.
+func warnQueueTimeoutConfig(cfg *config.Config) {
+	if cfg.Fallback.QueueWaitSeconds <= 0 {
+		return
+	}
+	attempt := cfg.Fallback.ProviderTimeoutSeconds
+	if attempt <= 0 {
+		attempt = 120
+	}
+	floor := cfg.Fallback.QueueWaitSeconds + attempt
+	effective := cfg.Fallback.TotalDeadlineSeconds
+	if effective > 0 && effective < floor {
+		effective = floor
+		log.Printf("WARN slot queue: total_deadline_seconds raised to %d (queue_wait %d + attempt ceiling %d)", effective, cfg.Fallback.QueueWaitSeconds, attempt)
+	}
+	if cfg.Proxy.WriteTimeoutSeconds > 0 && effective > cfg.Proxy.WriteTimeoutSeconds {
+		log.Printf("WARN slot queue: effective request deadline %ds exceeds proxy.write_timeout_seconds %d — raise write_timeout_seconds or queued waits end in a connection cut instead of a clean error", effective, cfg.Proxy.WriteTimeoutSeconds)
+	}
 }
