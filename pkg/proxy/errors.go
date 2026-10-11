@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 )
 
 // upstreamErrorClass describes whether a failed upstream attempt may be
@@ -96,12 +97,23 @@ func (s *Server) writeUpstreamError(w http.ResponseWriter, canonicalModel string
 }
 
 // writeExhaustionError answers the client when every candidate failed with a
-// retryable failure (candidate exhaustion). It returns 502 Bad Gateway with
-// an OpenAI-style JSON error body so clients can tell a proxy outage apart
-// from a real completion — the previous behavior answered 200 with a canned
-// "I'm temporarily unavailable" completion, which agents cannot distinguish
-// from a genuine model answer (new gap NG1 in the scenario-matrix report).
+// retryable failure (candidate exhaustion). It returns 503 Service
+// Unavailable — the status that tells an OpenAI-compatible client "the
+// server is temporarily unable to handle the request, retry later" — with a
+// Retry-After hint in seconds from fallback.retry_after_seconds (default 5)
+// and an OpenAI-style JSON error body whose type "server_error" is the type
+// official SDKs branch on for server-side failures. The code
+// "all_candidates_exhausted" stays machine-readable and X-Used-Model keeps
+// the identity the client asked for. The original behavior answered 200 with
+// a canned "I'm temporarily unavailable" completion, which agents cannot
+// distinguish from a genuine model answer (gap NG1 in the scenario-matrix
+// report); the first NG1 commit shipped this as 502, which this spec pass
+// corrects to 503.
 func (s *Server) writeExhaustionError(w http.ResponseWriter, clientModel string, cause error) {
+	retryAfter := s.cfg.Load().Fallback.RetryAfterSeconds
+	if retryAfter <= 0 {
+		retryAfter = 5 // mirror the viper default for zeroed Config structs
+	}
 	var body struct {
 		Error struct {
 			Message string `json:"message"`
@@ -110,10 +122,11 @@ func (s *Server) writeExhaustionError(w http.ResponseWriter, clientModel string,
 		} `json:"error"`
 	}
 	body.Error.Message = fmt.Sprintf("all provider candidates exhausted: %v", cause)
-	body.Error.Type = "upstream_error"
+	body.Error.Type = "server_error"
 	body.Error.Code = "all_candidates_exhausted"
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Used-Model", clientModel)
-	w.WriteHeader(http.StatusBadGateway)
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	w.WriteHeader(http.StatusServiceUnavailable)
 	json.NewEncoder(w).Encode(body)
 }

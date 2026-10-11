@@ -639,10 +639,11 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)
 		// Candidate exhaustion is an upstream availability failure: answer
-		// 502 with a JSON error body so clients (and agents) can tell a
-		// proxy outage apart from a real completion. The previous 200 with
-		// a canned "temporarily unavailable" completion masked the failure
-		// (gap NG1 in the scenario-matrix report).
+		// 503 with a JSON error body + Retry-After so clients (and agents)
+		// can tell a proxy outage apart from a real completion and know
+		// when to come back. The previous 200 with a canned "temporarily
+		// unavailable" completion masked the failure (gap NG1 in the
+		// scenario-matrix report).
 		s.writeExhaustionError(w, req.ClientModel, err)
 		return
 	}

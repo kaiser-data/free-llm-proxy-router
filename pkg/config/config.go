@@ -177,6 +177,11 @@ type FallbackConfig struct {
 	// max_attempts budget. 0 restores the old fail-once-then-skip
 	// behavior. Default 1.
 	RetriesPerCandidate int `mapstructure:"retries_per_candidate"`
+
+	// RetryAfterSeconds is the Retry-After hint (seconds) sent with the 503
+	// exhaustion response when every candidate failed — the value clients
+	// are asked to wait before retrying. Default 5.
+	RetryAfterSeconds int `mapstructure:"retry_after_seconds"`
 }
 
 // mu guards the current config pointer for concurrent hot-reload.
@@ -317,6 +322,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.provider_timeout_seconds", 120)
 	v.SetDefault("fallback.stream_timeout_seconds", 0) // 0 = inherit provider_timeout_seconds
 	v.SetDefault("fallback.retries_per_candidate", 1)
+	v.SetDefault("fallback.retry_after_seconds", 5)
 	v.SetDefault("models.canonicalization.enabled", true)
 	v.SetDefault("models.canonicalization.free_only", true)
 	v.SetDefault("models.expose_raw", true)

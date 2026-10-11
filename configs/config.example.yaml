@@ -89,6 +89,10 @@ fallback:
   # backoff before the provider is dropped for the rest of the request.
   # Retries consume the max_attempts budget. 0 restores fail-once-then-skip.
   retries_per_candidate: 1
+  # Retry-After hint (seconds) on the 503 exhaustion response sent when
+  # every candidate failed — clients are asked to wait this long before
+  # retrying.
+  retry_after_seconds: 5
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
 
