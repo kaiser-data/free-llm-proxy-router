@@ -418,7 +418,9 @@ func TestStreamAliasRouteTrueSSE(t *testing.T) {
 // TestStreamNoFallbackAfterStreamStart: candidate A starts the SSE stream,
 // then its connection breaks mid-generation. The proxy must NOT start
 // candidate B — that would concatenate two unrelated generations. The client
-// keeps A's partial stream; B is never contacted.
+// keeps A's partial stream, then gets the OpenAI-style SSE error event and
+// the [DONE] terminator (the pre-commit hold guarantees this failure happened
+// AFTER the commit — post-commit is terminal). B is never contacted.
 func TestStreamNoFallbackAfterStreamStart(t *testing.T) {
 	hitA := &streamUpstreamRecord{}
 	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -451,8 +453,8 @@ func TestStreamNoFallbackAfterStreamStart(t *testing.T) {
 	if strings.Contains(string(body), "B_ONLY_MARKER") {
 		t.Error("client received candidate B's generation — fallback after stream start is forbidden")
 	}
-	if strings.Contains(string(body), "[DONE]") {
-		t.Error("truncated stream unexpectedly contained a [DONE] terminator")
+	if !strings.Contains(string(body), "upstream_stream_interrupted") || !strings.Contains(string(body), "data: [DONE]") {
+		t.Errorf("interrupted stream must end with the SSE error event + [DONE]; body: %q", body)
 	}
 	if got := hitB.Hits(); got != 0 {
 		t.Errorf("candidate B hits = %d, want 0 (no candidate may start after the stream began)", got)

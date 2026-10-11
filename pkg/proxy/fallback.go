@@ -39,6 +39,10 @@ type FallbackChain struct {
 	GeminiTracker      *ratelimit.GeminiTracker
 	ReliabilityTracker *reliability.Tracker
 	HTTPClient         *http.Client
+	// StreamHTTPClient caps streaming attempts separately from buffered
+	// calls (fallback.stream_timeout_seconds — NG6). Nil falls back to
+	// HTTPClient.
+	StreamHTTPClient *http.Client
 
 	// Resolver maps canonical model names to raw upstream model IDs for
 	// response rewriting (CanonicalFor). May be nil — nil means canonical
@@ -71,6 +75,12 @@ type Response struct {
 	UsedModel string
 }
 
+// candidateAttempt executes one candidate (including its bounded
+// same-candidate retries). committed reports that a streaming attempt
+// already answered the client — the walk must not touch the response again
+// and the request is done either way.
+type candidateAttempt func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, bool, error)
+
 // Execute runs the fallback chain for the given request.
 //
 // Returns the first successful response, the first fail-fast upstream error
@@ -87,6 +97,44 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	if cancelTotal != nil {
 		defer cancelTotal()
 	}
+	resp, committed, err := fc.walk(ctx, req, fc.bufferedTry(), fc.bufferedTryOnce())
+	if committed {
+		// Unreachable for the buffered walk; kept for the shared signature.
+		return nil, nil
+	}
+	return resp, err
+}
+
+// bufferedTry wraps the buffered attempt with its same-candidate retry.
+func (fc *FallbackChain) bufferedTry() candidateAttempt {
+	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, bool, error) {
+		resp, err := fc.callProviderWithRetries(ctx, callCfg, body, attempt)
+		return resp, false, err
+	}
+}
+
+// bufferedTryOnce is a single buffered call — the OpenRouter steps and the
+// HF cold-start re-attempt run without the retry ladder, as before.
+func (fc *FallbackChain) bufferedTryOnce() candidateAttempt {
+	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, _ *int) (*Response, bool, error) {
+		resp, err := fc.callProvider(ctx, callCfg, body)
+		return resp, false, err
+	}
+}
+
+// walk runs the ranked candidate walk shared by the buffered (Execute) and
+// streaming (ExecuteStream) modes. The per-candidate behavior is injected:
+// try = one candidate with its same-candidate retry ladder; tryOnce = one
+// bare attempt (OpenRouter steps, HF cold-start re-attempt).
+//
+// Returns:
+//
+//	err != nil   — genuine exhaustion / hop ceiling / request budget; callers
+//	               answer with the exhaustion response
+//	committed    — a streaming attempt answered the client; the request is done
+//	resp != nil  — a response to deliver: success (200) or a fail-fast
+//	               upstream error to surface verbatim
+func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce candidateAttempt) (*Response, bool, error) {
 	freeEntries := fc.Catalog.FreeEntries()
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
@@ -107,10 +155,16 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		if len(openRouterModels) > 0 {
 			hops++ // the models[] request is one candidate/hop
 			body := BuildOpenRouterRequest(req.Raw, openRouterModels)
-			resp, err := fc.callProvider(ctx, *or, body)
+			if req.Stream {
+				body["stream"] = true // streaming walk keeps SSE end-to-end (NG3)
+			}
+			resp, committed, err := tryOnce(ctx, *or, body, new(int))
+			if committed {
+				return nil, true, nil
+			}
 			if err == nil && resp.StatusCode == http.StatusOK {
 				fc.ReliabilityTracker.Record("openrouter", true)
-				return resp, nil
+				return resp, false, nil
 			}
 			// Fail-fast client/request errors abort the whole chain — no
 			// other step can succeed with the same payload. Auth/model
@@ -119,7 +173,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			if finalFailureDecision(resp, err) == FailFast && resp != nil {
 				log.Printf("fallback: openrouter models[] fail-fast status %d — surfacing to client, aborting chain", resp.StatusCode)
 				fc.ReliabilityTracker.Record("openrouter", false)
-				return resp, nil
+				return resp, false, nil
 			}
 			log.Printf("fallback: openrouter models[] failed (%v) — continuing", err)
 			fc.ReliabilityTracker.Record("openrouter", false)
@@ -139,7 +193,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			// The request budget (or the client) canceled the context —
 			// stop the walk immediately, answer with the exhaustion
 			// response.
-			return nil, errRequestBudget(ctx)
+			return nil, false, errRequestBudget(ctx)
 		}
 		if attempt >= maxAttempts {
 			break
@@ -182,7 +236,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			if spacingMs > 0 {
 				select {
 				case <-ctx.Done():
-					return nil, errRequestBudget(ctx)
+					return nil, false, errRequestBudget(ctx)
 				case <-time.After(time.Duration(spacingMs) * time.Millisecond):
 				}
 			}
@@ -202,11 +256,14 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		// candidates and no ultimate-fallback step. This bounds the walk
 		// even when max_attempts / retries_per_candidate are cranked up.
 		if hops >= maxHops {
-			return nil, fmt.Errorf("fallback hop ceiling %d reached — aborting walk", maxHops)
+			return nil, false, fmt.Errorf("fallback hop ceiling %d reached — aborting walk", maxHops)
 		}
 		hops++
 
 		body := fc.buildBody(r.ProviderID, req.Raw, r.ModelID)
+		if req.Stream {
+			body["stream"] = true // streaming walk keeps SSE end-to-end (NG3)
+		}
 		// Apply active key slot when multiple API keys are configured.
 		callCfg := *providerCfg
 		if keys := providerCfg.AllKeys(); len(keys) > 1 {
@@ -215,13 +272,13 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 				callCfg.APIKeyEnv = ""
 			}
 		}
-		resp, err := fc.callProviderWithRetries(ctx, callCfg, body, &attempt)
+		resp, committed, err := try(ctx, callCfg, body, &attempt)
 
-		if err != nil || resp.StatusCode != http.StatusOK {
+		if !committed && (err != nil || resp.StatusCode != http.StatusOK) {
 			// The request budget (or the client) canceled the context while
 			// the attempt ran — every further attempt is pointless.
 			if ctx.Err() != nil {
-				return nil, errRequestBudget(ctx)
+				return nil, false, errRequestBudget(ctx)
 			}
 			// HuggingFace 503+loading: wait and retry SAME provider (cold start).
 			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
@@ -229,13 +286,13 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					log.Printf("fallback: huggingface model loading, waiting %dms", waitMs)
 					select {
 					case <-ctx.Done():
-						return nil, errRequestBudget(ctx)
+						return nil, false, errRequestBudget(ctx)
 					case <-time.After(time.Duration(waitMs) * time.Millisecond):
 					}
-					resp, err = fc.callProvider(ctx, *providerCfg, body)
-					if err == nil && resp.StatusCode == http.StatusOK {
+					resp, committed, err = tryOnce(ctx, *providerCfg, body, &attempt)
+					if committed || (err == nil && resp != nil && resp.StatusCode == http.StatusOK) {
 						fc.ReliabilityTracker.Record(r.ProviderID, true)
-						return resp, nil
+						return resp, committed, nil
 					}
 				}
 			}
@@ -275,9 +332,9 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 				if resp != nil {
 					log.Printf("fallback: %s/%s fail-fast status %d — surfacing to client, aborting chain", r.ProviderID, r.ModelID, resp.StatusCode)
 					fc.ReliabilityTracker.Record(r.ProviderID, false)
-					return resp, nil
+					return resp, false, nil
 				}
-				return nil, err // context canceled — client is gone
+				return nil, false, err // context canceled — client is gone
 			}
 			statusCode := 0
 			if resp != nil {
@@ -306,32 +363,38 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
 			fc.GeminiTracker.RecordRequest(r.ModelID, stratReq.EstimatedPromptTokens)
 		}
-		return resp, nil
+		return resp, committed, nil
 	}
 
 	// Step 5: Ultimate fallback — OpenRouter free router
 	if or := fc.findProvider("openrouter"); or != nil {
 		if hops >= maxHops {
-			return nil, fmt.Errorf("fallback hop ceiling %d reached — aborting walk", maxHops)
+			return nil, false, fmt.Errorf("fallback hop ceiling %d reached — aborting walk", maxHops)
 		}
 		hops++
 		log.Printf("fallback: trying openrouter/free ultimate fallback")
 		body := OpenRouterFreeRouterRequest(req.Raw)
-		resp, err := fc.callProvider(ctx, *or, body)
+		if req.Stream {
+			body["stream"] = true // streaming walk keeps SSE end-to-end (NG3)
+		}
+		resp, committed, err := tryOnce(ctx, *or, body, new(int))
+		if committed {
+			return nil, true, nil
+		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			fc.ReliabilityTracker.Record("openrouter", true)
-			return resp, nil
+			return resp, false, nil
 		}
 		fc.ReliabilityTracker.Record("openrouter", false)
 		// A fail-fast error from the last step still surfaces the real
 		// upstream response instead of degrading into the exhaustion path.
 		if finalFailureDecision(resp, err) == FailFast && resp != nil {
 			log.Printf("fallback: openrouter/free fail-fast status %d — surfacing to client", resp.StatusCode)
-			return resp, nil
+			return resp, false, nil
 		}
 	}
 
-	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempt)
+	return nil, false, fmt.Errorf("all providers exhausted after %d attempts", attempt)
 }
 
 // maxAttemptsBudget returns the effective per-request upstream-call budget:

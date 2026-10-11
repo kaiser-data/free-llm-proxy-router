@@ -305,6 +305,32 @@ Two walk-level budgets guard against runaway requests:
   killing the connection. Keep it below `proxy.write_timeout_seconds`
   (default 120) and raise both together when serving long generations.
 
+### Streaming with the pre-commit hold
+
+`stream: true` requests are served as real SSE end-to-end on every route —
+including the strategy chain (which previously silently answered a buffered
+JSON completion to an SSE-expecting client). Every streaming attempt is
+held before anything reaches the client:
+
+- **Pre-commit** (no headers, no bytes written): transport errors, non-200
+  statuses, a silent upstream past `fallback.first_token_timeout_seconds`
+  (default 30), and first events that are empty keepalives, error objects,
+  or a bare `data: [DONE]` all fail the attempt silently — the retry ladder
+  (same-candidate retry, then the next candidate) runs exactly as on the
+  buffered path. The commit (SSE headers + first bytes + flush) happens
+  exactly once per request.
+- **Post-commit** the attempt is terminal: an upstream that dies
+  mid-stream, stalls past `fallback.stream_idle_timeout_seconds`
+  (default 30), or closes without `data: [DONE]` ends the stream with an
+  OpenAI-style SSE error event (`type: "server_error"`,
+  `code: "upstream_stream_interrupted"`) followed by `data: [DONE]` — never
+  a silently truncated completion and never text stitched together from
+  another provider.
+- The whole streaming attempt stays capped by
+  `fallback.stream_timeout_seconds` (0 inherits
+  `provider_timeout_seconds`) — independent of
+  `proxy.write_timeout_seconds`.
+
 `404` during a candidate walk means "this provider does not serve this
 model" (catalog staleness), so other candidates are tried and the entry is
 flagged for reverification. A `404` caused by request semantics — a model

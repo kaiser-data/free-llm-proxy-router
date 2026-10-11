@@ -104,6 +104,13 @@ fallback:
   # proxy.write_timeout_seconds and raise both together for long
   # generations. 0 disables the cap.
   total_deadline_seconds: 90
+  # Streaming: how long an attempt may sit on a 200 without a usable first
+  # event (time to first token). The attempt is dropped and the retry
+  # ladder runs — the client has received nothing yet.
+  first_token_timeout_seconds: 30
+  # Streaming: max silent gap between chunks on a started stream. Exceeding
+  # it ends the stream with an OpenAI-style SSE error event + [DONE].
+  stream_idle_timeout_seconds: 30
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
 

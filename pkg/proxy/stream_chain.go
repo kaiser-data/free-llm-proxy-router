@@ -1,0 +1,541 @@
+package proxy
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
+)
+
+// Streaming contract for the pre-commit hold (second P0 pass, task E):
+//
+//   - NOTHING is written to the client until a usable first SSE event
+//     arrives (non-empty, not a comment/keepalive, not an error event, not
+//     a bare [DONE]). Every failure before that point — transport error,
+//     non-200 status, TTFT timeout, empty/error first event — is silent to
+//     the client and runs through the retry ladder (ClassifyFailure):
+//     retry_same, fallback, or fail_fast.
+//   - The commit happens exactly once per request: SSE headers +
+//     WriteHeader(200) + first bytes, then the pump. A second WriteHeader
+//     would panic the handler or corrupt the stream — commit is guarded.
+//   - After the commit the attempt is terminal: no retry, no cross-provider
+//     continuation. Any failure ends with an OpenAI-style SSE error event +
+//     data: [DONE] so SSE clients see a structured error instead of a
+//     silently truncated completion.
+//   - first_token_timeout_seconds bounds the pre-commit hold;
+//     stream_idle_timeout_seconds bounds each silent gap after the commit;
+//     the stream HTTP client's own cap (fallback.stream_timeout_seconds,
+//     NG6) bounds the whole attempt — separate from write_timeout.
+
+// streamClientParams groups the knobs of one streaming attempt that are not
+// provider config. The hold/pump logic below has no access to Server/Config
+// — callers assemble the params, tests drive them directly.
+type streamClientParams struct {
+	Client            *http.Client
+	FirstTokenTimeout time.Duration // 0 → 30s default
+	IdleTimeout       time.Duration // 0 → 30s default
+	RequestID         string        // X-Request-Id on commit (may be empty)
+	// CanonicalFor resolves the X-Used-Model identity for a commit:
+	// (providerID, upstreamModel) → canonical name. Nil = identity.
+	CanonicalFor func(providerID, upstreamModel string) string
+}
+
+// sseChunkSize is the pump read buffer.
+const sseChunkSize = 4096
+
+// streamUpstreamHeld performs one streaming attempt against an upstream.
+//
+// Returns:
+//
+//	resp != nil, !committed — a non-200 upstream response: classify and let
+//	                        the ladder decide; nothing was written to the client
+//	committed               — the client was answered (headers written);
+//	                        any post-commit failure already ended in the
+//	                        SSE error event + [DONE]; the attempt is terminal
+//	err != nil, !committed  — transport-level failure before any byte:
+//	                        classify and let the ladder decide
+func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.ProviderConfig, body map[string]any, p streamClientParams) (*Response, bool, error) {
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
+	upstreamModel, _ := body["model"].(string)
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, false, fmt.Errorf("encoding stream request: %w", err)
+	}
+
+	// The attempt ctx is cancelable so the TTFT/idle watchdogs can abort
+	// the in-flight upstream call and body reads without touching the
+	// parent (the parent's cancel still means "client/budget gone").
+	attemptCtx, cancelAttempt := context.WithCancel(ctx)
+	defer cancelAttempt()
+
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return nil, false, fmt.Errorf("building stream request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if h, v := cfg.ResolvedAuth(); v != "" && v != "Bearer " {
+		req.Header.Set(h, v)
+	}
+	for k, val := range cfg.ExtraHeaders {
+		req.Header.Set(k, val)
+	}
+
+	client := p.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	// The TTFT watchdog covers the WHOLE pre-commit window — awaiting the
+	// response headers AND the first usable event. An upstream that never
+	// flushes its headers would otherwise hang client.Do forever when the
+	// client carries no cap of its own.
+	ttft := p.FirstTokenTimeout
+	if ttft <= 0 {
+		ttft = 30 * time.Second
+	}
+	ttftTimer := time.AfterFunc(ttft, cancelAttempt)
+	defer ttftTimer.Stop()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, false, err // client/budget gone — parent ctx carries it
+		}
+		if attemptCtx.Err() != nil {
+			return nil, false, fmt.Errorf("stream attempt aborted by the TTFT watchdog: %w", context.DeadlineExceeded)
+		}
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+	ttftTimer.Stop() // headers arrived — the body phases re-arm their own watchdogs
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		out := &Response{StatusCode: resp.StatusCode, Header: http.Header{}, Body: b}
+		out.Header.Set("X-Free-Router-Upstream-Provider", cfg.ID)
+		if upstreamModel != "" {
+			out.Header.Set("X-Free-Router-Upstream-Model", upstreamModel)
+		}
+		return out, false, nil
+	}
+
+	if !isSSEContentType(resp.Header.Get("Content-Type")) {
+		// The provider ignored stream:true and answered a buffered JSON
+		// completion. Hold it until it is complete and usable, then commit
+		// it as JSON under its own content type — JSON is never disguised
+		// as an event stream.
+		b, rerr := io.ReadAll(resp.Body)
+		if rerr != nil {
+			if ctx.Err() != nil {
+				return nil, false, rerr
+			}
+			return nil, false, fmt.Errorf("reading non-SSE stream body: %w", rerr)
+		}
+		if len(bytes.TrimSpace(b)) == 0 {
+			return nil, false, fmt.Errorf("upstream answered 200 with an empty non-SSE body")
+		}
+		usedModel := parseUsedModel(b)
+		if usedModel == "" {
+			usedModel = upstreamModel
+		}
+		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+		if canonical := applyCanonical(p, cfg.ID, usedModel); canonical != "" {
+			w.Header().Set("X-Used-Model", canonical)
+		}
+		if p.RequestID != "" {
+			w.Header().Set("X-Request-Id", p.RequestID)
+		}
+		w.Header().Set("X-Free-Router-Upstream-Provider", cfg.ID)
+		if upstreamModel != "" {
+			w.Header().Set("X-Free-Router-Upstream-Model", upstreamModel)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write(b)
+		if flusher, ok := flusherOf(w); ok {
+			flusher.Flush()
+		}
+		return &Response{StatusCode: http.StatusOK, UsedModel: usedModel}, true, nil
+	}
+
+	// --- Pre-commit hold: read until the first USABLE complete event. ---
+	ttftTimer = time.AfterFunc(ttft, cancelAttempt) // re-arm for the hold
+	var buf bytes.Buffer
+	chunk := make([]byte, sseChunkSize)
+	for {
+		n, rerr := resp.Body.Read(chunk)
+		if n > 0 {
+			buf.Write(chunk[:n])
+			if verdict, reason := judgeFirstSSE(buf.Bytes()); verdict != sseUndecided {
+				ttftTimer.Stop()
+				if verdict == sseUnusable {
+					return nil, false, fmt.Errorf("upstream %s: first SSE event unusable (%s)", cfg.ID, reason)
+				}
+				// --- COMMIT: exactly once per request. ---
+				usedModel := parseUsedModel(buf.Bytes())
+				if usedModel == "" {
+					usedModel = upstreamModel
+				}
+				setStreamContractHeaders(w, applyCanonical(p, cfg.ID, usedModel), cfg.ID, upstreamModel)
+				w.Header().Set("Content-Type", "text/event-stream")
+				if p.RequestID != "" {
+					w.Header().Set("X-Request-Id", p.RequestID)
+				}
+				w.WriteHeader(http.StatusOK)
+				if _, werr := w.Write(buf.Bytes()); werr != nil {
+					// The client vanished in the commit window — the
+					// attempt is terminal either way.
+					log.Printf("stream: client write error at commit (no fallback after commit): %v", werr)
+					return nil, true, nil
+				}
+				if flusher, ok := flusherOf(w); ok {
+					flusher.Flush()
+				}
+				pumpCommittedStream(ctx, w, resp.Body, p, cancelAttempt)
+				return &Response{StatusCode: http.StatusOK, UsedModel: usedModel}, true, nil
+			}
+		}
+		if rerr != nil {
+			ttftTimer.Stop()
+			if ctx.Err() != nil {
+				return nil, false, rerr // client/budget gone
+			}
+			if attemptCtx.Err() != nil {
+				return nil, false, fmt.Errorf("no first token within %v: %w", ttft, context.DeadlineExceeded)
+			}
+			if rerr == io.EOF {
+				return nil, false, fmt.Errorf("upstream %s: EOF before a usable first event", cfg.ID)
+			}
+			return nil, false, fmt.Errorf("reading stream hold: %w", rerr)
+		}
+	}
+}
+
+// sseVerdict is the pre-commit judgment of the buffered bytes.
+type sseVerdict int
+
+const (
+	sseUndecided sseVerdict = iota // keep holding — no complete usable event yet
+	sseUsable                      // first usable event seen — commit
+	sseUnusable                    // the first event is an error/empty stream — fail the attempt
+)
+
+// judgeFirstSSE decides whether the buffered bytes contain a usable first
+// event. Keepalive comments (":" prefix) and blank lines are skipped; the
+// decision waits for a complete event ("\n\n"). A first data payload of
+// "[DONE]" (empty stream) or an error-shaped payload / "event: error" fails
+// the attempt BEFORE any commit — the ladder then tries the next candidate.
+func judgeFirstSSE(buf []byte) (sseVerdict, string) {
+	end := bytes.Index(buf, []byte("\n\n"))
+	if end < 0 {
+		return sseUndecided, ""
+	}
+	first := string(buf[:end])
+	for _, line := range strings.Split(first, "\n") {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, ":") {
+			continue // comment/keepalive
+		}
+		if strings.HasPrefix(trimmed, "event:") {
+			if strings.Contains(strings.ToLower(trimmed), "error") {
+				return sseUnusable, "event: error"
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "data:") {
+			payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if payload == "[DONE]" {
+				return sseUnusable, "first event was [DONE] (empty stream)"
+			}
+			if strings.Contains(payload, "\"error\"") {
+				return sseUnusable, "first event carried an error object"
+			}
+			return sseUsable, ""
+		}
+	}
+	// A complete event without data lines — keep holding for real content.
+	return sseUndecided, ""
+}
+
+// parseUsedModel extracts the "model" field of the first JSON data payload —
+// OpenAI-style chunks carry it, mirroring what callProvider reads from
+// buffered bodies for X-Used-Model.
+func parseUsedModel(buf []byte) string {
+	for _, raw := range bytes.Split(buf, []byte("\n")) {
+		line := strings.TrimSpace(string(raw))
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var probe struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal([]byte(payload), &probe) == nil && probe.Model != "" {
+			return probe.Model
+		}
+	}
+	return ""
+}
+
+// flusherOf returns the Flusher for w when available (the logging
+// middleware forwards it — commit 16f01ad).
+func flusherOf(w http.ResponseWriter) (http.Flusher, bool) {
+	f, ok := w.(http.Flusher)
+	return f, ok
+}
+
+// applyCanonical resolves the X-Used-Model identity for a commit:
+// CanonicalFor(providerID, upstreamModel) when set, identity otherwise.
+func applyCanonical(p streamClientParams, providerID, upstreamModel string) string {
+	if p.CanonicalFor != nil {
+		return p.CanonicalFor(providerID, upstreamModel)
+	}
+	return upstreamModel
+}
+
+// firstTokenTimeout returns the pre-commit hold cap:
+// fallback.first_token_timeout_seconds (default 30).
+func (fc *FallbackChain) firstTokenTimeout() time.Duration {
+	if s := fc.Cfg.Fallback.FirstTokenTimeoutSeconds; s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return 30 * time.Second
+}
+
+// streamIdleTimeout returns the post-commit per-read gap cap:
+// fallback.stream_idle_timeout_seconds (default 30).
+func (fc *FallbackChain) streamIdleTimeout() time.Duration {
+	if s := fc.Cfg.Fallback.StreamIdleTimeoutSeconds; s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return 30 * time.Second
+}
+
+// canonicalForParams adapts the alias resolver for the streaming commit:
+// the canonical alias of the upstream model when known, else the raw
+// requested id — the same X-Used-Model rule callProvider applies to
+// buffered bodies.
+func (fc *FallbackChain) canonicalForParams() func(providerID, upstreamModel string) string {
+	return func(providerID, upstreamModel string) string {
+		if fc.Resolver != nil && upstreamModel != "" {
+			if canon := fc.Resolver.CanonicalFor(providerID, upstreamModel); canon != "" {
+				return canon
+			}
+		}
+		return upstreamModel
+	}
+}
+
+// streamAttemptOnce runs one streaming attempt with the chain's streaming
+// client (fallback.stream_timeout_seconds — NG6, separate from
+// write_timeout) and timeout knobs.
+func (fc *FallbackChain) streamAttemptOnce(ctx context.Context, w http.ResponseWriter, callCfg config.ProviderConfig, body map[string]any) (*Response, bool, error) {
+	// Per-provider timeout override — the same contract callProvider
+	// applies to buffered attempts: the deadline must wrap the context
+	// BEFORE the request is built.
+	pctx := ctx
+	cancelP := func() {}
+	if d := callCfg.ResolvedTimeout(); d > 0 {
+		pctx, cancelP = context.WithTimeout(ctx, d)
+	}
+	defer cancelP()
+
+	params := streamClientParams{
+		Client:            fc.StreamHTTPClient,
+		FirstTokenTimeout: fc.firstTokenTimeout(),
+		IdleTimeout:       fc.streamIdleTimeout(),
+		CanonicalFor:      fc.canonicalForParams(),
+	}
+	return streamUpstreamHeld(pctx, w, callCfg, body, params)
+}
+
+// streamCandidateWithRetries is the streaming mirror of
+// callProviderWithRetries: one attempt plus the bounded same-candidate
+// retry ladder (ClassifyFailure decides; retries consume the attempt
+// budget; a commit is terminal).
+func (fc *FallbackChain) streamCandidateWithRetries(ctx context.Context, w http.ResponseWriter, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, bool, error) {
+	resp, committed, err := fc.streamAttemptOnce(ctx, w, callCfg, body)
+	if committed {
+		return resp, true, nil
+	}
+	*attempt++
+	if err == nil && resp.StatusCode == http.StatusOK {
+		return resp, false, nil
+	}
+	return fc.retryStreamCandidate(ctx, w, callCfg, body, resp, err, attempt)
+}
+
+// retryStreamCandidate retries the SAME provider/model for the streaming
+// walk — the same ladder rules as retrySameCandidate. HuggingFace
+// 503-loading stays owned by the walk's dedicated cold-start wait.
+func (fc *FallbackChain) retryStreamCandidate(ctx context.Context, w http.ResponseWriter, callCfg config.ProviderConfig, body map[string]any, resp *Response, err error, attempt *int) (*Response, bool, error) {
+	maxRetries := fc.Cfg.Fallback.RetriesPerCandidate
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	if maxRetries > 5 {
+		maxRetries = 5
+	}
+	if callCfg.ID == "huggingface" && resp != nil && resp.StatusCode == http.StatusServiceUnavailable && parseHFLoadingWait(resp.Body) > 0 {
+		return resp, false, err
+	}
+	modelID, _ := body["model"].(string)
+	timeouts := 0
+	if err != nil && isTimeoutErr(err) {
+		timeouts = 1
+	}
+	for retryIdx := 0; retryIdx < maxRetries; retryIdx++ {
+		switch ClassifyFailure(fc.classifierInput(ctx, resp, err, retryIdx, maxRetries, timeouts)) {
+		case FailFast, FallbackNext:
+			return resp, false, err
+		case RetrySame:
+			// fall through to the retry below
+		}
+		if *attempt >= fc.maxAttemptsBudget() {
+			return resp, false, err
+		}
+		base, maxDelay := ratelimit.DefaultBackoffParams()
+		delay := ratelimit.ExponentialBackoff(retryIdx, base, maxDelay)
+		if rem := remainingBudget(ctx); rem > 0 && delay >= rem {
+			return resp, false, err
+		}
+		log.Printf("stream fallback: %s/%s retryable failure — same-candidate retry %d/%d after %v", callCfg.ID, modelID, retryIdx+1, maxRetries, delay)
+		select {
+		case <-ctx.Done():
+			return resp, false, err
+		case <-time.After(delay):
+		}
+		resp, committed, rerr := fc.streamAttemptOnce(ctx, w, callCfg, body)
+		if committed {
+			return resp, true, nil
+		}
+		err = rerr
+		*attempt++
+		if err != nil && isTimeoutErr(err) {
+			timeouts++
+		}
+		if err == nil && resp.StatusCode == http.StatusOK {
+			return resp, false, nil
+		}
+	}
+	return resp, false, err
+}
+
+// ExecuteStream runs the same candidate walk in streaming mode: every
+// attempt holds its upstream response until a usable first event and only
+// then commits (pre-commit hold). Pre-commit failures run the retry ladder
+// silently — the client sees nothing of them; post-commit failures end
+// with the SSE error event + [DONE].
+//
+// Returns:
+//
+//	err != nil  — exhaustion / hop ceiling / request budget: the caller
+//	              answers with the exhaustion response (nothing was written)
+//	committed   — the client was answered by the walk itself
+//	resp != nil — a fail-fast upstream error to surface verbatim
+func (fc *FallbackChain) ExecuteStream(ctx context.Context, req Request, w http.ResponseWriter) (*Response, bool, error) {
+	ctx, cancelTotal := fc.withTotalDeadline(ctx)
+	if cancelTotal != nil {
+		defer cancelTotal()
+	}
+	return fc.walk(ctx, req, fc.streamTry(w), fc.streamTryOnce(w))
+}
+
+// streamTry wraps the streaming attempt with its same-candidate retry.
+func (fc *FallbackChain) streamTry(w http.ResponseWriter) candidateAttempt {
+	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, bool, error) {
+		return fc.streamCandidateWithRetries(ctx, w, callCfg, body, attempt)
+	}
+}
+
+// streamTryOnce is a single streaming attempt — the OpenRouter steps and
+// the HF cold-start re-attempt run without the retry ladder.
+func (fc *FallbackChain) streamTryOnce(w http.ResponseWriter) candidateAttempt {
+	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, _ *int) (*Response, bool, error) {
+		return fc.streamAttemptOnce(ctx, w, callCfg, body)
+	}
+}
+
+// pumpCommittedStream streams the remaining upstream events to the client.
+// Post-commit the attempt is TERMINAL: on any failure — upstream read
+// error, idle timeout, abnormal close before [DONE], client write error —
+// the stream ends with an OpenAI-style SSE error event + data: [DONE] and
+// never retries or continues from another provider. A clean EOF after
+// data: [DONE] ends the stream normally.
+func pumpCommittedStream(ctx context.Context, w http.ResponseWriter, body io.Reader, p streamClientParams, cancelAttempt context.CancelFunc) {
+	idle := p.IdleTimeout
+	if idle <= 0 {
+		idle = 30 * time.Second
+	}
+	idleTimer := time.AfterFunc(idle, cancelAttempt)
+	defer idleTimer.Stop()
+
+	flusher, canFlush := flusherOf(w)
+	buf := make([]byte, sseChunkSize)
+	sawDone := false
+	// carry holds the tail of the previous chunk so a [DONE] split across
+	// two reads is still recognized.
+	var carry []byte
+	for {
+		n, rerr := body.Read(buf)
+		if n > 0 {
+			probe := append(append([]byte(nil), carry...), buf[:n]...)
+			if bytes.Contains(probe, []byte("[DONE]")) {
+				sawDone = true
+			}
+			if len(probe) > 8 {
+				carry = append(carry[:0], probe[len(probe)-8:]...)
+			} else {
+				carry = append(carry[:0], probe...)
+			}
+			idleTimer.Reset(idle)
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				// Client gone mid-stream: no fallback after stream start.
+				log.Printf("stream: client write error (stream aborted, no fallback after commit): %v", werr)
+				return
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF && sawDone {
+				return // clean upstream end — the sentinel reached the client
+			}
+			if ctx.Err() != nil {
+				// Client gone: an error event has no audience.
+				log.Printf("stream: upstream ended after commit with client gone: %v", rerr)
+				return
+			}
+			log.Printf("stream: upstream interrupted after commit (sawDone=%v): %v", sawDone, rerr)
+			writeSSEErrorEvent(w, flusher, canFlush)
+			return
+		}
+	}
+}
+
+// writeSSEErrorEvent terminates a committed-but-interrupted stream with an
+// OpenAI-style error event and the [DONE] sentinel so SSE clients never see
+// a silently truncated completion. Write failures (client already gone) are
+// ignored — there is nobody left to tell.
+func writeSSEErrorEvent(w http.ResponseWriter, flusher http.Flusher, canFlush bool) {
+	errEvent := `data: {"error":{"message":"upstream stream interrupted after the response started","type":"server_error","code":"upstream_stream_interrupted"}}` + "\n\n"
+	if _, err := w.Write([]byte(errEvent)); err != nil {
+		return
+	}
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	if canFlush {
+		flusher.Flush()
+	}
+}

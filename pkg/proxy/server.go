@@ -171,6 +171,24 @@ func (s *Server) proxyWriteTimeout() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+// firstTokenTimeout returns the streaming pre-commit hold cap from
+// fallback.first_token_timeout_seconds (default 30).
+func (s *Server) firstTokenTimeout() time.Duration {
+	if seconds := s.cfg.Load().Fallback.FirstTokenTimeoutSeconds; seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return 30 * time.Second
+}
+
+// streamIdleTimeout returns the post-commit per-read gap cap from
+// fallback.stream_idle_timeout_seconds (default 30).
+func (s *Server) streamIdleTimeout() time.Duration {
+	if seconds := s.cfg.Load().Fallback.StreamIdleTimeoutSeconds; seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return 30 * time.Second
+}
+
 // Start begins listening on the configured port.
 func (s *Server) Start(ctx context.Context) error {
 	cfg := s.cfg.Load()
@@ -350,6 +368,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		GeminiTracker:      s.geminiTracker,
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         s.upstreamHTTPClient(),
+		StreamHTTPClient:   s.streamHTTPClient(),
 		Resolver:           resolver,
 	}
 
@@ -439,6 +458,7 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 		GeminiTracker:      s.geminiTracker,
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         s.upstreamHTTPClient(),
+		StreamHTTPClient:   s.streamHTTPClient(),
 		Resolver:           resolver,
 	}
 	for _, u := range ups {
@@ -629,12 +649,29 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		GeminiTracker:      s.geminiTracker,
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         s.upstreamHTTPClient(),
+		StreamHTTPClient:   s.streamHTTPClient(),
 		Resolver:           s.aliasRes.Load(),
 	}
 
-	// Always use the fallback chain regardless of stream flag.
-	// Streaming is stripped from provider requests in buildBody so the chain
-	// always receives buffered JSON — this is required for fallback to work.
+	// Streaming requests run the SAME walk in streaming mode
+	// (ExecuteStream): every attempt holds its upstream response until a
+	// usable first event, so pre-commit failures retry/fall back silently
+	// and the client sees real SSE (gap NG3) instead of a buffered JSON
+	// completion served under application/json.
+	if req.Stream {
+		_, committed, err := chain.ExecuteStream(r.Context(), req, w)
+		if err != nil {
+			log.Printf("fallback chain exhausted (stream): %v", err)
+			// Same exhaustion contract as the buffered path: 503 +
+			// Retry-After + OpenAI-style error body. Allowed here because
+			// the pre-commit hold guarantees no headers were written yet.
+			s.writeExhaustionError(w, req.ClientModel, err)
+			return
+		}
+		_ = committed // a committed stream already answered the client
+		return
+	}
+
 	resp, err := chain.Execute(r.Context(), req)
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)

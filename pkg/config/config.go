@@ -199,6 +199,19 @@ type FallbackConfig struct {
 	// instead of the write timeout killing the connection mid-response.
 	// 0 disables the cap. Default 90.
 	TotalDeadlineSeconds int `mapstructure:"total_deadline_seconds"`
+
+	// FirstTokenTimeoutSeconds bounds how long a streaming attempt may sit
+	// on a 200 response without producing a usable first event (time to
+	// first token). The attempt is dropped and the retry ladder runs —
+	// nothing has been written to the client yet (pre-commit hold).
+	// Default 30.
+	FirstTokenTimeoutSeconds int `mapstructure:"first_token_timeout_seconds"`
+
+	// StreamIdleTimeoutSeconds bounds the silent gap between chunks on a
+	// committed stream (after the first token). Exceeding it ends the
+	// stream with an OpenAI-style SSE error event + [DONE] — never a
+	// silently truncated completion. Default 30.
+	StreamIdleTimeoutSeconds int `mapstructure:"stream_idle_timeout_seconds"`
 }
 
 // mu guards the current config pointer for concurrent hot-reload.
@@ -342,6 +355,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.retry_after_seconds", 5)
 	v.SetDefault("fallback.max_fallback_hops", 8)
 	v.SetDefault("fallback.total_deadline_seconds", 90)
+	v.SetDefault("fallback.first_token_timeout_seconds", 30)
+	v.SetDefault("fallback.stream_idle_timeout_seconds", 30)
 	v.SetDefault("models.canonicalization.enabled", true)
 	v.SetDefault("models.canonicalization.free_only", true)
 	v.SetDefault("models.expose_raw", true)
