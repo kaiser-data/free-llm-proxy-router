@@ -268,7 +268,8 @@ between "try the next candidate" and "return immediately":
   `fallback.retry_on_5xx` — and then the walk continues to the next
   candidate (per-status cooldowns still apply). Retries consume the
   `max_attempts` budget. Only when every candidate fails with a retryable
-  failure does the request get the short exhaustion response.
+  failure does the request get a `502 Bad Gateway` with an OpenAI-style JSON
+  error body — never a masked 200 completion.
 - **Non-retryable** — `400`, `401`, `403`, and every other `4xx` except
   `404`/`408`/`429`: the upstream response is returned to the client
   verbatim. No further candidates are walked and a client error is never

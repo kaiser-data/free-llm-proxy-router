@@ -85,7 +85,7 @@ func failThenSucceedHandler(failStatus int, hangFirst time.Duration) (http.Handl
 // TestAliasRouteClientErrorsSurfaceImmediately locks in the error
 // classification contract: upstream 400/401/403 are client/request errors —
 // the proxy must surface them as-is, attempt only one candidate, and never
-// walk further or return the canned exhaustion 200.
+// walk further or return the 502 exhaustion response.
 func TestAliasRouteClientErrorsSurfaceImmediately(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(fmt.Sprintf("%d", status), func(t *testing.T) {

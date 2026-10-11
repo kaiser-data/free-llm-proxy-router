@@ -638,10 +638,12 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	resp, err := chain.Execute(r.Context(), req)
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)
-		// Return a valid empty completion so the client sees no error message.
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"id":"exhausted","object":"chat.completion","created":%d,"model":"none","choices":[{"index":0,"message":{"role":"assistant","content":"I\u2019m temporarily unavailable \u2014 please try again in a moment."},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`, time.Now().Unix())
+		// Candidate exhaustion is an upstream availability failure: answer
+		// 502 with a JSON error body so clients (and agents) can tell a
+		// proxy outage apart from a real completion. The previous 200 with
+		// a canned "temporarily unavailable" completion masked the failure
+		// (gap NG1 in the scenario-matrix report).
+		s.writeExhaustionError(w, req.ClientModel, err)
 		return
 	}
 

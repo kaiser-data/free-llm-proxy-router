@@ -168,7 +168,7 @@ func TestUnoAliasDuplicateCandidatesGrouped(t *testing.T) {
 
 // TestUnoAliasClientErrorSurfacesImmediately: UnoRouter 400/401/403 are
 // client/request errors — surface verbatim, exactly one attempt, never the
-// canned exhaustion 200.
+// 502 exhaustion response.
 func TestUnoAliasClientErrorSurfacesImmediately(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(fmt.Sprintf("%d", status), func(t *testing.T) {
