@@ -126,12 +126,13 @@ func setStreamContractHeaders(w http.ResponseWriter, canonicalModel, providerID 
 // Once the upstream answers 200 and the pump starts, Forward returns nil on
 // every mid-stream failure, so no candidate is ever started after the stream
 // began.
-func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, provCfg *config.ProviderConfig, body map[string]any, canonicalModel, clientModel, route string) bool {
+func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, provCfg *config.ProviderConfig, body map[string]any, canonicalModel, clientModel, route, requestID string) bool {
 	modelID, _ := body["model"].(string)
 	sp := &StreamProxy{
 		HTTPClient:        s.streamHTTPClient(),
 		FirstTokenTimeout: s.firstTokenTimeout(),
 		IdleTimeout:       s.streamIdleTimeout(),
+		RequestID:         requestID,
 	}
 	err := sp.Forward(r.Context(), w, *provCfg, body, canonicalModel)
 	if err == nil {

@@ -64,6 +64,10 @@ type Request struct {
 	ClientModel string `json:"-"`
 	// Raw holds the original request body for passthrough.
 	Raw map[string]any `json:"-"`
+	// RequestID identifies the request across the per-attempt logs and the
+	// X-Request-Id response header; the handler mints one when the client
+	// did not send a usable X-Request-Id.
+	RequestID string `json:"-"`
 }
 
 // Response wraps an upstream HTTP response.
@@ -97,7 +101,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	if cancelTotal != nil {
 		defer cancelTotal()
 	}
-	resp, committed, err := fc.walk(ctx, req, fc.bufferedTry(), fc.bufferedTryOnce())
+	resp, committed, err := fc.walk(ctx, req, fc.bufferedTry(req), fc.bufferedTryOnce())
 	if committed {
 		// Unreachable for the buffered walk; kept for the shared signature.
 		return nil, nil
@@ -106,9 +110,10 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 }
 
 // bufferedTry wraps the buffered attempt with its same-candidate retry.
-func (fc *FallbackChain) bufferedTry() candidateAttempt {
+func (fc *FallbackChain) bufferedTry(req Request) candidateAttempt {
+	reqID := req.RequestID
 	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, bool, error) {
-		resp, err := fc.callProviderWithRetries(ctx, callCfg, body, attempt)
+		resp, err := fc.callProviderWithRetries(ctx, callCfg, body, attempt, reqID)
 		return resp, false, err
 	}
 }
@@ -449,14 +454,50 @@ func errRequestBudget(ctx context.Context) error {
 // request (gap G1), so a single transient 5xx or timeout on the best-ranked
 // candidate already degraded the response. Retries consume the caller's
 // maxAttempts budget — every upstream call increments *attempt — keeping
-// the global call bound intact.
-func (fc *FallbackChain) callProviderWithRetries(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, error) {
+// the global call bound intact. Every attempt (including the initial one)
+// is logged with the request id, candidate, attempt number, cause, duration
+// and the ladder's decision (task F).
+func (fc *FallbackChain) callProviderWithRetries(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, attempt *int, reqID string) (*Response, error) {
+	start := time.Now()
 	resp, err := fc.callProvider(ctx, callCfg, body)
+	dur := time.Since(start)
 	*attempt++
 	if err == nil && resp.StatusCode == http.StatusOK {
+		fc.logAttempt(reqID, callCfg.ID, bodyModel(body), *attempt, dur, "ok", "ok")
 		return resp, nil
 	}
-	return fc.retrySameCandidate(ctx, callCfg, body, resp, err, attempt)
+	return fc.retrySameCandidate(ctx, callCfg, body, resp, err, attempt, reqID, dur)
+}
+
+// bodyModel extracts the requested upstream model id for logging.
+func bodyModel(body map[string]any) string {
+	id, _ := body["model"].(string)
+	return id
+}
+
+// logAttempt emits the per-attempt observability record (task F): request
+// id, candidate, attempt number, cause, duration, decision. cause carries
+// failure summaries only — never API keys or prompt content.
+func (fc *FallbackChain) logAttempt(reqID, providerID, modelID string, n int, dur time.Duration, cause string, decision string) {
+	if reqID == "" {
+		reqID = "-"
+	}
+	if len(cause) > 200 {
+		cause = cause[:200] + "…"
+	}
+	log.Printf("attempt: req=%s candidate=%s/%s n=%d duration=%s cause=%q decision=%s", reqID, providerID, modelID, n, dur, cause, decision)
+}
+
+// failureCause summarizes a failed attempt for the attempt log (transport
+// error text or the status code — no request content).
+func failureCause(resp *Response, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if resp == nil {
+		return "no response"
+	}
+	return fmt.Sprintf("status %d", resp.StatusCode)
 }
 
 // retrySameCandidate retries the SAME provider/model up to
@@ -472,7 +513,7 @@ func (fc *FallbackChain) callProviderWithRetries(ctx context.Context, callCfg co
 // 503-loading recovery in Execute owns that case with its dedicated
 // estimated-time wait, so it is excluded here to avoid double-retrying in
 // front of it.
-func (fc *FallbackChain) retrySameCandidate(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, resp *Response, err error, attempt *int) (*Response, error) {
+func (fc *FallbackChain) retrySameCandidate(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, resp *Response, err error, attempt *int, reqID string, lastDur time.Duration) (*Response, error) {
 	maxRetries := fc.Cfg.Fallback.RetriesPerCandidate
 	if maxRetries < 0 {
 		maxRetries = 0
@@ -481,52 +522,55 @@ func (fc *FallbackChain) retrySameCandidate(ctx context.Context, callCfg config.
 		maxRetries = 5 // bound config abuse; the backoff alone reaches 16s by then
 	}
 	if callCfg.ID == "huggingface" && resp != nil && resp.StatusCode == http.StatusServiceUnavailable && parseHFLoadingWait(resp.Body) > 0 {
+		fc.logAttempt(reqID, callCfg.ID, bodyModel(body), *attempt, lastDur, "huggingface 503 loading — deferring to the walk's cold-start wait", "fallback")
 		return resp, err
 	}
-	modelID, _ := body["model"].(string)
+	modelID := bodyModel(body)
 	timeouts := 0
 	if err != nil && isTimeoutErr(err) {
 		timeouts = 1
 	}
-	for retryIdx := 0; retryIdx < maxRetries; retryIdx++ {
-		switch ClassifyFailure(fc.classifierInput(ctx, resp, err, retryIdx, maxRetries, timeouts)) {
-		case FailFast, FallbackNext:
-			return resp, err // client/request defect or class says move on
-		case RetrySame:
-			// fall through to the retry below
+	retriesDone := 0
+	for {
+		dec := ClassifyFailure(fc.classifierInput(ctx, resp, err, retriesDone, maxRetries, timeouts))
+		if dec == RetrySame {
+			// Budget/deadline guards turn a nominal retry_same into a
+			// fallback so the logged decision is the one acted on.
+			if *attempt >= fc.maxAttemptsBudget() {
+				dec = FallbackNext
+			} else {
+				base, maxDelay := ratelimit.DefaultBackoffParams()
+				if delay := ratelimit.ExponentialBackoff(retriesDone, base, maxDelay); remainingBudget(ctx) > 0 && delay >= remainingBudget(ctx) {
+					// Never sleep past the request's total deadline.
+					dec = FallbackNext
+				}
+			}
 		}
-		// Hard budget ceiling: the outer walk only checks max_attempts
-		// between candidates, so without this check one candidate's retry
-		// chain could push the total past the ceiling by up to
-		// retries_per_candidate calls (every retry below increments
-		// *attempt).
-		if *attempt >= fc.maxAttemptsBudget() {
-			return resp, err
+		fc.logAttempt(reqID, callCfg.ID, modelID, *attempt, lastDur, failureCause(resp, err), dec.String())
+		if dec != RetrySame {
+			return resp, err // client/request defect or class says move on
 		}
 		base, maxDelay := ratelimit.DefaultBackoffParams()
-		delay := ratelimit.ExponentialBackoff(retryIdx, base, maxDelay)
-		// Never sleep past the request's total deadline: a backoff that
-		// would not fit the remaining budget is treated as "candidate
-		// done" and the walk continues on the next one.
-		if rem := remainingBudget(ctx); rem > 0 && delay >= rem {
-			return resp, err
-		}
-		log.Printf("fallback: %s/%s retryable failure — same-candidate retry %d/%d after %v", callCfg.ID, modelID, retryIdx+1, maxRetries, delay)
+		delay := ratelimit.ExponentialBackoff(retriesDone, base, maxDelay)
+		log.Printf("fallback: %s/%s retryable failure — same-candidate retry %d/%d after %v", callCfg.ID, modelID, retriesDone+1, maxRetries, delay)
 		select {
 		case <-ctx.Done():
 			return resp, err
 		case <-time.After(delay):
 		}
+		start := time.Now()
 		resp, err = fc.callProvider(ctx, callCfg, body)
+		lastDur = time.Since(start)
 		*attempt++
+		retriesDone++
 		if err != nil && isTimeoutErr(err) {
 			timeouts++
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
+			fc.logAttempt(reqID, callCfg.ID, modelID, *attempt, lastDur, "ok", "ok")
 			return resp, nil
 		}
 	}
-	return resp, err
 }
 
 // classifierInput assembles the pure classifier's input for a failed

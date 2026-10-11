@@ -331,6 +331,15 @@ held before anything reaches the client:
   `provider_timeout_seconds`) — independent of
   `proxy.write_timeout_seconds`.
 
+### Observability
+
+Every response carries `X-Request-Id` — the client's `X-Request-Id` header
+when usable (printable ASCII, ≤64 chars) or a freshly minted 16-hex id.
+Every upstream attempt is logged as one line:
+`attempt: req=<request id> candidate=<provider>/<model> n=<attempt no.> duration=<elapsed> cause="<status | transport error>" decision=<ok|retry_same|fallback|fail_fast>`
+— enough to reconstruct the whole ladder of a request from its logs. Causes
+carry failure summaries only, never API keys or prompt content.
+
 `404` during a candidate walk means "this provider does not serve this
 model" (catalog staleness), so other candidates are tried and the entry is
 flagged for reverification. A `404` caused by request semantics — a model

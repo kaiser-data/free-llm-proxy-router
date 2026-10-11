@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +21,37 @@ import (
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
 )
+
+// newRequestID mints a 16-hex-char request id; the crypto fallback keeps
+// startup working even if the entropy source fails.
+func newRequestID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("req-%016x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// requestIDFor reuses a usable incoming X-Request-Id (printable ASCII, ≤64
+// chars) or mints one, and pins it into the response headers so every route
+// answers with it (task F).
+func requestIDFor(w http.ResponseWriter, r *http.Request) string {
+	id := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+	if len(id) > 64 {
+		id = ""
+	}
+	for i := 0; id != "" && i < len(id); i++ {
+		if c := id[i]; c < 0x21 || c > 0x7E {
+			id = ""
+			break
+		}
+	}
+	if id == "" {
+		id = newRequestID()
+	}
+	w.Header().Set("X-Request-Id", id)
+	return id
+}
 
 // Server is the OpenAI-compatible proxy server.
 type Server struct {
@@ -276,6 +309,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if mt, ok := raw["max_tokens"].(float64); ok {
 		req.MaxTokens = int(mt)
 	}
+	// Request id: honor the client's X-Request-Id or mint one — the response
+	// header and every per-attempt log line carry it (task F).
+	req.RequestID = requestIDFor(w, r)
 
 	cfg := s.cfg.Load()
 	cat := s.catalog.Load()
@@ -392,7 +428,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			// semantics as the alias route. canonicalModel is empty here —
 			// the direct route reports no X-Used-Model on success, matching
 			// its buffered behavior.
-			if !s.streamOneCandidate(w, r, provCfg, body, "", req.Model, "direct route") {
+			if !s.streamOneCandidate(w, r, provCfg, body, "", req.Model, "direct route", req.RequestID) {
 				continue
 			}
 			return
@@ -476,7 +512,7 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 			// upstream SSE through incrementally. streamOneCandidate only
 			// walks to the next candidate while nothing has been written
 			// downstream; once the stream starts the attempt is terminal.
-			if !s.streamOneCandidate(w, r, provCfg, body, req.Model, req.Model, "alias route") {
+			if !s.streamOneCandidate(w, r, provCfg, body, req.Model, req.Model, "alias route", req.RequestID) {
 				continue
 			}
 			return true

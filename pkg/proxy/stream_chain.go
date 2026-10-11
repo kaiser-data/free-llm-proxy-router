@@ -340,7 +340,7 @@ func (fc *FallbackChain) canonicalForParams() func(providerID, upstreamModel str
 // streamAttemptOnce runs one streaming attempt with the chain's streaming
 // client (fallback.stream_timeout_seconds — NG6, separate from
 // write_timeout) and timeout knobs.
-func (fc *FallbackChain) streamAttemptOnce(ctx context.Context, w http.ResponseWriter, callCfg config.ProviderConfig, body map[string]any) (*Response, bool, error) {
+func (fc *FallbackChain) streamAttemptOnce(ctx context.Context, w http.ResponseWriter, callCfg config.ProviderConfig, body map[string]any, reqID string) (*Response, bool, error) {
 	// Per-provider timeout override — the same contract callProvider
 	// applies to buffered attempts: the deadline must wrap the context
 	// BEFORE the request is built.
@@ -355,6 +355,7 @@ func (fc *FallbackChain) streamAttemptOnce(ctx context.Context, w http.ResponseW
 		Client:            fc.StreamHTTPClient,
 		FirstTokenTimeout: fc.firstTokenTimeout(),
 		IdleTimeout:       fc.streamIdleTimeout(),
+		RequestID:         reqID,
 		CanonicalFor:      fc.canonicalForParams(),
 	}
 	return streamUpstreamHeld(pctx, w, callCfg, body, params)
@@ -363,23 +364,28 @@ func (fc *FallbackChain) streamAttemptOnce(ctx context.Context, w http.ResponseW
 // streamCandidateWithRetries is the streaming mirror of
 // callProviderWithRetries: one attempt plus the bounded same-candidate
 // retry ladder (ClassifyFailure decides; retries consume the attempt
-// budget; a commit is terminal).
-func (fc *FallbackChain) streamCandidateWithRetries(ctx context.Context, w http.ResponseWriter, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, bool, error) {
-	resp, committed, err := fc.streamAttemptOnce(ctx, w, callCfg, body)
+// budget; a commit is terminal). Every attempt is logged with the request
+// id, candidate, attempt number, cause, duration and decision (task F).
+func (fc *FallbackChain) streamCandidateWithRetries(ctx context.Context, w http.ResponseWriter, callCfg config.ProviderConfig, body map[string]any, attempt *int, reqID string) (*Response, bool, error) {
+	start := time.Now()
+	resp, committed, err := fc.streamAttemptOnce(ctx, w, callCfg, body, reqID)
+	dur := time.Since(start)
 	if committed {
 		return resp, true, nil
 	}
 	*attempt++
 	if err == nil && resp.StatusCode == http.StatusOK {
+		fc.logAttempt(reqID, callCfg.ID, bodyModel(body), *attempt, dur, "ok", "ok")
 		return resp, false, nil
 	}
-	return fc.retryStreamCandidate(ctx, w, callCfg, body, resp, err, attempt)
+	return fc.retryStreamCandidate(ctx, w, callCfg, body, resp, err, attempt, reqID, dur)
 }
 
 // retryStreamCandidate retries the SAME provider/model for the streaming
-// walk — the same ladder rules as retrySameCandidate. HuggingFace
-// 503-loading stays owned by the walk's dedicated cold-start wait.
-func (fc *FallbackChain) retryStreamCandidate(ctx context.Context, w http.ResponseWriter, callCfg config.ProviderConfig, body map[string]any, resp *Response, err error, attempt *int) (*Response, bool, error) {
+// walk — the same decide-then-act ladder rules as retrySameCandidate.
+// HuggingFace 503-loading stays owned by the walk's dedicated cold-start
+// wait.
+func (fc *FallbackChain) retryStreamCandidate(ctx context.Context, w http.ResponseWriter, callCfg config.ProviderConfig, body map[string]any, resp *Response, err error, attempt *int, reqID string, lastDur time.Duration) (*Response, bool, error) {
 	maxRetries := fc.Cfg.Fallback.RetriesPerCandidate
 	if maxRetries < 0 {
 		maxRetries = 0
@@ -388,48 +394,56 @@ func (fc *FallbackChain) retryStreamCandidate(ctx context.Context, w http.Respon
 		maxRetries = 5
 	}
 	if callCfg.ID == "huggingface" && resp != nil && resp.StatusCode == http.StatusServiceUnavailable && parseHFLoadingWait(resp.Body) > 0 {
+		fc.logAttempt(reqID, callCfg.ID, bodyModel(body), *attempt, lastDur, "huggingface 503 loading — deferring to the walk's cold-start wait", "fallback")
 		return resp, false, err
 	}
-	modelID, _ := body["model"].(string)
+	modelID := bodyModel(body)
 	timeouts := 0
 	if err != nil && isTimeoutErr(err) {
 		timeouts = 1
 	}
-	for retryIdx := 0; retryIdx < maxRetries; retryIdx++ {
-		switch ClassifyFailure(fc.classifierInput(ctx, resp, err, retryIdx, maxRetries, timeouts)) {
-		case FailFast, FallbackNext:
-			return resp, false, err
-		case RetrySame:
-			// fall through to the retry below
+	retriesDone := 0
+	for {
+		dec := ClassifyFailure(fc.classifierInput(ctx, resp, err, retriesDone, maxRetries, timeouts))
+		if dec == RetrySame {
+			if *attempt >= fc.maxAttemptsBudget() {
+				dec = FallbackNext
+			} else {
+				base, maxDelay := ratelimit.DefaultBackoffParams()
+				if delay := ratelimit.ExponentialBackoff(retriesDone, base, maxDelay); remainingBudget(ctx) > 0 && delay >= remainingBudget(ctx) {
+					dec = FallbackNext
+				}
+			}
 		}
-		if *attempt >= fc.maxAttemptsBudget() {
+		fc.logAttempt(reqID, callCfg.ID, modelID, *attempt, lastDur, failureCause(resp, err), dec.String())
+		if dec != RetrySame {
 			return resp, false, err
 		}
 		base, maxDelay := ratelimit.DefaultBackoffParams()
-		delay := ratelimit.ExponentialBackoff(retryIdx, base, maxDelay)
-		if rem := remainingBudget(ctx); rem > 0 && delay >= rem {
-			return resp, false, err
-		}
-		log.Printf("stream fallback: %s/%s retryable failure — same-candidate retry %d/%d after %v", callCfg.ID, modelID, retryIdx+1, maxRetries, delay)
+		delay := ratelimit.ExponentialBackoff(retriesDone, base, maxDelay)
+		log.Printf("stream fallback: %s/%s retryable failure — same-candidate retry %d/%d after %v", callCfg.ID, modelID, retriesDone+1, maxRetries, delay)
 		select {
 		case <-ctx.Done():
 			return resp, false, err
 		case <-time.After(delay):
 		}
-		resp, committed, rerr := fc.streamAttemptOnce(ctx, w, callCfg, body)
+		start := time.Now()
+		resp, committed, rerr := fc.streamAttemptOnce(ctx, w, callCfg, body, reqID)
+		lastDur = time.Since(start)
 		if committed {
 			return resp, true, nil
 		}
 		err = rerr
 		*attempt++
+		retriesDone++
 		if err != nil && isTimeoutErr(err) {
 			timeouts++
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
+			fc.logAttempt(reqID, callCfg.ID, modelID, *attempt, lastDur, "ok", "ok")
 			return resp, false, nil
 		}
 	}
-	return resp, false, err
 }
 
 // ExecuteStream runs the same candidate walk in streaming mode: every
@@ -449,21 +463,22 @@ func (fc *FallbackChain) ExecuteStream(ctx context.Context, req Request, w http.
 	if cancelTotal != nil {
 		defer cancelTotal()
 	}
-	return fc.walk(ctx, req, fc.streamTry(w), fc.streamTryOnce(w))
+	return fc.walk(ctx, req, fc.streamTry(w, req), fc.streamTryOnce(w, req.RequestID))
 }
 
 // streamTry wraps the streaming attempt with its same-candidate retry.
-func (fc *FallbackChain) streamTry(w http.ResponseWriter) candidateAttempt {
+func (fc *FallbackChain) streamTry(w http.ResponseWriter, req Request) candidateAttempt {
+	reqID := req.RequestID
 	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, bool, error) {
-		return fc.streamCandidateWithRetries(ctx, w, callCfg, body, attempt)
+		return fc.streamCandidateWithRetries(ctx, w, callCfg, body, attempt, reqID)
 	}
 }
 
 // streamTryOnce is a single streaming attempt — the OpenRouter steps and
 // the HF cold-start re-attempt run without the retry ladder.
-func (fc *FallbackChain) streamTryOnce(w http.ResponseWriter) candidateAttempt {
+func (fc *FallbackChain) streamTryOnce(w http.ResponseWriter, reqID string) candidateAttempt {
 	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, _ *int) (*Response, bool, error) {
-		return fc.streamAttemptOnce(ctx, w, callCfg, body)
+		return fc.streamAttemptOnce(ctx, w, callCfg, body, reqID)
 	}
 }
 
