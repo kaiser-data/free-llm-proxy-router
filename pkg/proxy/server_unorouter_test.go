@@ -67,9 +67,9 @@ type unoUpstreamRecord struct {
 	requestedModel atomic.Value // string
 }
 
-func (u *unoUpstreamRecord) Hits() int32          { return u.hits.Load() }
-func (u *unoUpstreamRecord) Auth() string         { s, _ := u.authHeader.Load().(string); return s }
-func (u *unoUpstreamRecord) Model() string        { s, _ := u.requestedModel.Load().(string); return s }
+func (u *unoUpstreamRecord) Hits() int32   { return u.hits.Load() }
+func (u *unoUpstreamRecord) Auth() string  { s, _ := u.authHeader.Load().(string); return s }
+func (u *unoUpstreamRecord) Model() string { s, _ := u.requestedModel.Load().(string); return s }
 
 func unoUpstreamHandler(firstStatus int) (http.HandlerFunc, *unoUpstreamRecord) {
 	rec := &unoUpstreamRecord{}

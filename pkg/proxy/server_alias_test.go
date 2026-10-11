@@ -196,4 +196,3 @@ func TestAliasRouteTimeoutFallback(t *testing.T) {
 		t.Errorf("body %q missing second-candidate content", rec.Body.String())
 	}
 }
-

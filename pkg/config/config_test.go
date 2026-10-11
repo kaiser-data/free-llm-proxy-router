@@ -126,6 +126,7 @@ func TestAPIKeyEnvRefExpansion(t *testing.T) {
 		t.Errorf("unknown env ref = %q, want empty", got)
 	}
 }
+
 // TestPublicAliasParsing verifies models.public_alias is loaded and defaults
 // to empty (feature off) when unset.
 func TestPublicAliasParsing(t *testing.T) {

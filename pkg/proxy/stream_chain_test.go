@@ -520,7 +520,7 @@ func TestStreamRoleOnlyForeverHitsTTFT(t *testing.T) {
 func TestFirstTokenTimeoutPerProviderModelOverride(t *testing.T) {
 	t.Run("override keeps the reasoning model", func(t *testing.T) {
 		var hitsA, hitsB int32
-		srvA := sseServer(&hitsA, reasoningStreamSSE(1500 * time.Millisecond))
+		srvA := sseServer(&hitsA, reasoningStreamSSE(1500*time.Millisecond))
 		defer srvA.Close()
 		srvB := sseServer(&hitsB, goodStreamSSE("b"))
 		defer srvB.Close()
@@ -549,7 +549,7 @@ func TestFirstTokenTimeoutPerProviderModelOverride(t *testing.T) {
 
 	t.Run("no override drops at the global hold", func(t *testing.T) {
 		var hitsA, hitsB int32
-		srvA := sseServer(&hitsA, reasoningStreamSSE(1500 * time.Millisecond))
+		srvA := sseServer(&hitsA, reasoningStreamSSE(1500*time.Millisecond))
 		defer srvA.Close()
 		srvB := sseServer(&hitsB, goodStreamSSE("b"))
 		defer srvB.Close()
@@ -577,7 +577,7 @@ func TestFirstTokenTimeoutPerProviderModelOverride(t *testing.T) {
 
 	t.Run("provider-wide override applies to its models", func(t *testing.T) {
 		var hitsA, hitsB int32
-		srvA := sseServer(&hitsA, reasoningStreamSSE(1500 * time.Millisecond))
+		srvA := sseServer(&hitsA, reasoningStreamSSE(1500*time.Millisecond))
 		defer srvA.Close()
 		srvB := sseServer(&hitsB, goodStreamSSE("b"))
 		defer srvB.Close()

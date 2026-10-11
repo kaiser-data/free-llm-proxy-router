@@ -210,7 +210,7 @@ func TestClassifyBadRequestPerProvider(t *testing.T) {
 			`{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"temperature_x\"","status":"INVALID_ARGUMENT"}}`,
 			FailFast},
 		{"huggingface malformed inputs",
-			`{"error":"Input validation error: `+"`parameters`"+` must be a JSON object"}`,
+			`{"error":"Input validation error: ` + "`parameters`" + ` must be a JSON object"}`,
 			FailFast},
 		{"regression guard: model id contains vision",
 			`{"error":{"message":"Invalid parameter: messages for meta-llama/llama-3.2-11b-vision-instruct: 'content' must be a string","type":"invalid_request_error"}}`,
