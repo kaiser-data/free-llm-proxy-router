@@ -193,12 +193,22 @@ func ClassifyFailure(in FailureInput) FailureDecision {
 	}
 }
 
-// classifyBadRequest splits the 400 class by what the upstream said:
-// a content-policy refusal can never be served by another provider
-// (FailFast); a context-length or modality complaint may be fixed by a
-// candidate that supports the request shape (FallbackNext); everything else
-// is a genuine payload defect (FailFast). Detection is a best-effort text
-// match — an unrecognized 400 stays FailFast so a broken payload is never
+// classifyBadRequest splits the 400 class by what the upstream said
+// (task I). The split lives ONLY here — every route shares it through
+// ClassifyFailure:
+//
+//	content-policy refusal          → FailFast (no provider may serve it)
+//	context-length overflow         → FallbackNext (a bigger window can)
+//	unsupported image/audio/video   → FallbackNext (a multimodal model can)
+//	anything else — a genuine       → FailFast (no candidate can fix the
+//	  payload defect (malformed       payload; an unknown 400 never
+//	  fields, bad types, unknown      becomes a silent fallback)
+//	  params)
+//
+// Detection is a best-effort lowercase substring match of the upstream error
+// body against the marker tables below — the single source of truth, with
+// the per-provider message shapes documented on each table. Anything not
+// confidently recognized defaults to FailFast so a broken payload is never
 // masked behind an exhaustion response.
 func classifyBadRequest(body []byte) FailureDecision {
 	if containsAnyMarker(body, contentPolicyMarkers) {
@@ -216,19 +226,44 @@ var contentPolicyMarkers = []string{
 	"content_filter", "content filter", "content filtering",
 }
 
-// contextLengthMarkers detect "prompt too long for this model" errors.
+// contextLengthMarkers detect "prompt too long for this model" errors — the
+// one 400 subclass another candidate can genuinely fix (a model with a
+// bigger context window). Matched as lowercase substrings of the error
+// body; shapes per provider family:
+//
+//	OpenAI-style text (OpenRouter passthrough, Groq, Cerebras, NVIDIA NIM,
+//	  vLLM): "This model's maximum context length is 8192 tokens. However,
+//	  you requested … Please reduce the length of the messages or
+//	  completion."
+//	OpenRouter code style: {"error":{"code":"context_length_exceeded",…}}
+//	Anthropic (raw metadata surfaced via OpenRouter): "prompt is too long:
+//	  5000 tokens > 4096 maximum"
+//	Gemini: "The input token count (50000) exceeds the maximum number of
+//	  tokens allowed (32768)."
+//	HuggingFace TGI: "Input validation error: `inputs` must have less than
+//	  4096 tokens. Given: 5000"
 var contextLengthMarkers = []string{
-	"context length", "context_length", "maximum context", "max context",
-	"too many tokens", "token limit", "tokens exceeded",
-	"prompt is too long", "prompt too long", "reduce the length",
-	"input is too long",
+	"context length", "context_length", "context window",
+	"maximum context", "max context",
+	"exceeds the maximum", // Gemini: …exceeds the maximum number of tokens allowed
+	"too many tokens", "too many input tokens", "tokens exceeded", "token limit",
+	"prompt is too long", "prompt too long", // Anthropic
+	"reduce the length", // OpenAI-style closing sentence
+	"input is too long", "input too long",
+	"must have less than", // HuggingFace TGI: `inputs` must have less than N tokens
 }
 
-// modalityMarkers detect "this model does not accept image/audio input".
+// modalityMarkers detect "this model does not accept image/audio/video
+// input" — same reasoning as context length: another candidate may accept
+// the modality. Deliberately PHRASE-level: bare substrings like "images",
+// "vision", "modality", or "image_url" also appear inside model IDs
+// ("…-vision-instruct") and in malformed-field validation errors that no
+// candidate can fix, which would misroute genuine payload defects into the
+// fallback path (task I).
 var modalityMarkers = []string{
-	"image input", "image_url", "images", "vision",
-	"audio input", "audio is not", "video input", "video is not",
-	"multimodal", "unsupported modality", "modality",
+	"image input", "audio input", "video input",
+	"does not support image", "does not support audio", "does not support video",
+	"multimodal", "unsupported modality",
 }
 
 func containsAnyMarker(body []byte, markers []string) bool {

@@ -139,6 +139,97 @@ func TestIsTimeoutErr(t *testing.T) {
 	}
 }
 
+// TestClassifyBadRequestPerProvider: the 400 subtype split (task I) against
+// the REAL error-body shapes of every provider family this repo routes to.
+// Context-length and modality complaints fall back (another candidate can
+// genuinely fix them); content-policy refusals and payload defects —
+// including the near-miss shapes that would misroute under bare-substring
+// markers — fail fast.
+func TestClassifyBadRequestPerProvider(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want FailureDecision
+	}{
+		// --- context length → FallbackNext ---
+		{"openai-style text (openrouter passthrough / vllm)",
+			`{"error":{"message":"This model's maximum context length is 8192 tokens. However, you requested 10006 tokens (6000 in the messages, 4006 in the completion). Please reduce the length of the messages or completion.","code":400}}`,
+			FallbackNext},
+		{"openrouter code style",
+			`{"error":{"code":"context_length_exceeded","message":"Context length exceeded for this model"}}`,
+			FallbackNext},
+		{"anthropic raw via openrouter",
+			`{"error":{"code":400,"message":"prompt is too long: 5000 tokens > 4096 maximum"}}`,
+			FallbackNext},
+		{"gemini",
+			`{"error":{"code":400,"message":"The input token count (50000) exceeds the maximum number of tokens allowed (32768).","status":"INVALID_ARGUMENT"}}`,
+			FallbackNext},
+		{"huggingface tgi",
+			`{"error":"Input validation error: inputs must have less than 4096 tokens. Given: 5000"}`,
+			FallbackNext},
+		{"groq",
+			`{"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 200000 tokens.","type":"invalid_request_error","code":"context_length_exceeded"}}`,
+			FallbackNext},
+		{"cerebras",
+			`{"error":{"message":"input is too long: 50000 tokens > 32768 maximum","type":"invalid_request_error"}}`,
+			FallbackNext},
+		{"nvidia nim",
+			`{"error":{"message":"This model's maximum context length is 4096 tokens. However, you requested 5000 tokens (4000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error"}}`,
+			FallbackNext},
+
+		// --- unsupported modality → FallbackNext ---
+		{"gemini image on text model",
+			`{"error":{"code":400,"message":"Image input is not supported by this model.","status":"INVALID_ARGUMENT"}}`,
+			FallbackNext},
+		{"openai image on text model",
+			`{"error":{"message":"This model does not support image input.","type":"invalid_request_error"}}`,
+			FallbackNext},
+		{"openrouter audio on text model",
+			`{"error":{"message":"This model does not support audio input","code":400}}`,
+			FallbackNext},
+
+		// --- content-policy refusal → FailFast ---
+		{"openai safety rejection",
+			`{"error":{"code":"content_filter","message":"Your request was rejected as a result of our safety system.","type":"invalid_request_error"}}`,
+			FailFast},
+		{"groq content filter",
+			`{"error":{"type":"request_error","code":"content_filter","message":"Content filter triggered: the prompt violates the usage policy"}}`,
+			FailFast},
+		{"openrouter content policy",
+			`{"error":{"message":"Provider returned error: the request violates the provider's content policy","code":400}}`,
+			FailFast},
+
+		// --- genuine payload defects → FailFast (unknown 400 never falls back) ---
+		{"groq schema error",
+			`{"error":{"message":"Invalid 'tools[0]': array items must be objects","type":"invalid_request_error"}}`,
+			FailFast},
+		{"openai unknown argument",
+			`{"error":{"message":"Unrecognized request argument supplied: temperature","type":"invalid_request_error"}}`,
+			FailFast},
+		{"gemini invalid value",
+			`{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"temperature_x\"","status":"INVALID_ARGUMENT"}}`,
+			FailFast},
+		{"huggingface malformed inputs",
+			`{"error":"Input validation error: `+"`parameters`"+` must be a JSON object"}`,
+			FailFast},
+		{"regression guard: model id contains vision",
+			`{"error":{"message":"Invalid parameter: messages for meta-llama/llama-3.2-11b-vision-instruct: 'content' must be a string","type":"invalid_request_error"}}`,
+			FailFast},
+		{"regression guard: malformed image_url field",
+			`{"error":{"message":"Invalid type for 'messages[0].content[0].image_url': expected an object with 'url'","type":"invalid_request_error"}}`,
+			FailFast},
+		{"empty body", "", FailFast},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyFailure(FailureInput{StatusCode: 400, Body: []byte(tt.body)})
+			if got != tt.want {
+				t.Errorf("ClassifyFailure(400, %q) = %s, want %s", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestFinalFailureDecision: at walk level (retries spent) every retryable
 // class collapses to FallbackNext and only true client/context defects stay
 // FailFast.
