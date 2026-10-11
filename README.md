@@ -262,9 +262,13 @@ Failures during candidate routing are classified once, and the class decides
 between "try the next candidate" and "return immediately":
 
 - **Retryable** — `408`, `429`, all `5xx`, upstream timeouts, and connection
-  failures: the walk continues to the next candidate (per-status cooldowns
-  still apply). Only when every candidate fails with a retryable failure does
-  the request get the short exhaustion response.
+  failures: the same candidate is first retried up to
+  `fallback.retries_per_candidate` times (default 1) with exponential
+  backoff — a 429 retry gated by `fallback.retry_on_429`, a 5xx retry by
+  `fallback.retry_on_5xx` — and then the walk continues to the next
+  candidate (per-status cooldowns still apply). Retries consume the
+  `max_attempts` budget. Only when every candidate fails with a retryable
+  failure does the request get the short exhaustion response.
 - **Non-retryable** — `400`, `401`, `403`, and every other `4xx` except
   `404`/`408`/`429`: the upstream response is returned to the client
   verbatim. No further candidates are walked and a client error is never

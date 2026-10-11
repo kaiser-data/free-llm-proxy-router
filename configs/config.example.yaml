@@ -83,6 +83,12 @@ fallback:
   # provider_timeout_seconds. Raise it for long generations; a cap stays
   # mandatory so an idle upstream cannot pin the handler forever.
   stream_timeout_seconds: 0
+  # Same-candidate retries: when a candidate fails with a retryable failure
+  # (transport error, 408, 404, 5xx/429 gated by the flags above), the SAME
+  # provider/model is retried this many extra times with exponential
+  # backoff before the provider is dropped for the rest of the request.
+  # Retries consume the max_attempts budget. 0 restores fail-once-then-skip.
+  retries_per_candidate: 1
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
 

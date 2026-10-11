@@ -168,6 +168,15 @@ type FallbackConfig struct {
 	// Raise it for long generations; a per-attempt cap stays mandatory
 	// because an idle upstream would otherwise pin the handler forever.
 	StreamTimeoutSeconds int `mapstructure:"stream_timeout_seconds"`
+
+	// RetriesPerCandidate bounds the same-candidate retry: when a candidate
+	// fails with a retryable failure (transport error, 408, 404, and 5xx /
+	// 429 gated by the flags above), the SAME provider/model is retried up
+	// to this many extra times with exponential backoff before the walk
+	// drops the whole provider for the request. Each retry consumes the
+	// max_attempts budget. 0 restores the old fail-once-then-skip
+	// behavior. Default 1.
+	RetriesPerCandidate int `mapstructure:"retries_per_candidate"`
 }
 
 // mu guards the current config pointer for concurrent hot-reload.
@@ -307,6 +316,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.max_attempts", 5)
 	v.SetDefault("fallback.provider_timeout_seconds", 120)
 	v.SetDefault("fallback.stream_timeout_seconds", 0) // 0 = inherit provider_timeout_seconds
+	v.SetDefault("fallback.retries_per_candidate", 1)
 	v.SetDefault("models.canonicalization.enabled", true)
 	v.SetDefault("models.canonicalization.free_only", true)
 	v.SetDefault("models.expose_raw", true)

@@ -187,8 +187,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 				callCfg.APIKeyEnv = ""
 			}
 		}
-		resp, err := fc.callProvider(ctx, callCfg, body)
-		attempt++
+		resp, err := fc.callProviderWithRetries(ctx, callCfg, body, &attempt)
 
 		if err != nil || resp.StatusCode != http.StatusOK {
 			// HuggingFace 503+loading: wait and retry SAME provider (cold start).
@@ -292,6 +291,85 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	}
 
 	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempt)
+}
+
+// callProviderWithRetries wraps callProvider with the bounded same-candidate
+// retry: previously one failed call dropped the provider for the whole
+// request (gap G1), so a single transient 5xx or timeout on the best-ranked
+// candidate already degraded the response. Retries consume the caller's
+// maxAttempts budget — every upstream call increments *attempt — keeping
+// the global call bound intact.
+func (fc *FallbackChain) callProviderWithRetries(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, error) {
+	resp, err := fc.callProvider(ctx, callCfg, body)
+	*attempt++
+	if err == nil && resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+	return fc.retrySameCandidate(ctx, callCfg, body, resp, err, attempt)
+}
+
+// retrySameCandidate retries the SAME provider/model up to
+// fallback.retries_per_candidate times, sleeping between attempts with
+// ratelimit.ExponentialBackoff + DefaultBackoffParams (exponential backoff
+// with jitter — previously dead code, gap G4). Failure classes are gated by
+// fallback.retry_on_429 / fallback.retry_on_5xx (both flags existed with
+// default true but were never read — dead config, NG4): a 429 retries only
+// when retry_on_429, a 5xx only when retry_on_5xx; transport errors, 408
+// and 404 retry unconditionally (transient availability failures without a
+// dedicated flag). The HuggingFace 503-loading recovery in Execute owns that
+// case with its dedicated estimated-time wait, so it is excluded here to
+// avoid double-retrying in front of it.
+func (fc *FallbackChain) retrySameCandidate(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, resp *Response, err error, attempt *int) (*Response, error) {
+	maxRetries := fc.Cfg.Fallback.RetriesPerCandidate
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	if maxRetries > 5 {
+		maxRetries = 5 // bound config abuse; the backoff alone reaches 16s by then
+	}
+	if callCfg.ID == "huggingface" && resp != nil && resp.StatusCode == http.StatusServiceUnavailable && parseHFLoadingWait(resp.Body) > 0 {
+		return resp, err
+	}
+	modelID, _ := body["model"].(string)
+	for retryIdx := 0; retryIdx < maxRetries; retryIdx++ {
+		if classifyUpstreamFailure(resp, err) != retryable {
+			return resp, err // client error or canceled context — never retried
+		}
+		if !fc.sameCandidateRetryAllowed(resp) {
+			return resp, err
+		}
+		base, maxDelay := ratelimit.DefaultBackoffParams()
+		delay := ratelimit.ExponentialBackoff(retryIdx, base, maxDelay)
+		log.Printf("fallback: %s/%s retryable failure — same-candidate retry %d/%d after %v", callCfg.ID, modelID, retryIdx+1, maxRetries, delay)
+		select {
+		case <-ctx.Done():
+			return resp, err
+		case <-time.After(delay):
+		}
+		resp, err = fc.callProvider(ctx, callCfg, body)
+		*attempt++
+		if err == nil && resp.StatusCode == http.StatusOK {
+			return resp, nil
+		}
+	}
+	return resp, err
+}
+
+// sameCandidateRetryAllowed gates the same-candidate retry by failure class:
+// 429 follows fallback.retry_on_429 and 5xx follows fallback.retry_on_5xx;
+// transport errors (resp == nil), 408 and 404 stay retry-eligible.
+func (fc *FallbackChain) sameCandidateRetryAllowed(resp *Response) bool {
+	if resp == nil {
+		return true
+	}
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return fc.Cfg.Fallback.RetryOn429
+	case resp.StatusCode >= http.StatusInternalServerError:
+		return fc.Cfg.Fallback.RetryOn5xx
+	default:
+		return true
+	}
 }
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
