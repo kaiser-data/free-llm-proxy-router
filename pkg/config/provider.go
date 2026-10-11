@@ -61,6 +61,14 @@ type ProviderConfig struct {
 
 	// PreferredVolumeModel is used by StrategyVolume to pick highest-RPD model.
 	PreferredVolumeModel string `mapstructure:"preferred_volume_model"`
+
+	// RPM caps the per-model request rate the slot limiter (task L0) allows
+	// for this provider: at most RPM reservations per sliding minute per
+	// model id. 0 (default) disables slot limiting for the provider —
+	// requests enter upstreams ungated and rely on upstream 429 handling
+	// exactly as before. Set it to the provider's documented per-model
+	// per-minute quota (UnoRouter: 1).
+	RPM int `mapstructure:"rpm_limit"`
 }
 
 // NativeFeatures lists provider-native request capabilities.
@@ -99,6 +107,14 @@ type DiscoveryConfig struct {
 
 	// HubAPIFilters is passed to the HF Hub API for model filtering.
 	HubAPIFilters string `mapstructure:"hub_api_filters"`
+
+	// Refresh opts the provider into the proxy's live :free-model refresh
+	// (task Q): the proxy calls GET /v1/models for it at boot and every
+	// models.model_refresh_minutes, keeping the canonical groups in sync
+	// with the provider's current free list. Off by default — a provider
+	// must explicitly opt in (the scanner call is an upstream request and
+	// some discovery sources are heavy).
+	Refresh bool `mapstructure:"refresh"`
 }
 
 // ResolvedAPIKey returns the bare API key (no header name, no prefix).

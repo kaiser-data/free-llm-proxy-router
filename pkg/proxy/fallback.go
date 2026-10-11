@@ -48,14 +48,24 @@ type FallbackChain struct {
 	// response rewriting (CanonicalFor). May be nil — nil means canonical
 	// aliasing is off and UsedModel keeps the raw upstream name.
 	Resolver *alias.Resolver
+
+	// Slots is the RPM slot limiter (task L0). Non-nil + a positive
+	// providers[].rpm_limit gates candidate entry on an atomic slot
+	// reservation; a fully slotless walk returns the errAllSlotsBusy
+	// sentinel instead of a real exhaustion error. Nil = no gating.
+	Slots *SlotLimiter
+	// Queues is the FIFO slot-queue manager (task L0). When both Queues and
+	// fallback.queue_wait_seconds are set, the errAllSlotsBusy sentinel
+	// waits in its model group's queue instead of failing immediately.
+	Queues *queueManager
 }
 
 // Request is the parsed incoming chat-completions request.
 type Request struct {
-	Model    string           `json:"model"`
-	Messages []map[string]any `json:"messages"`
-	Stream   bool             `json:"stream,omitempty"`
-	MaxTokens int             `json:"max_tokens,omitempty"`
+	Model     string           `json:"model"`
+	Messages  []map[string]any `json:"messages"`
+	Stream    bool             `json:"stream,omitempty"`
+	MaxTokens int              `json:"max_tokens,omitempty"`
 	// ClientModel is the model name the client originally asked for, kept
 	// intact before any routing redirection (agent profiles, raw- prefix,
 	// alias-route fallback clearing). The pool-alias route uses it to keep
@@ -96,17 +106,68 @@ type candidateAttempt func(ctx context.Context, callCfg config.ProviderConfig, b
 func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, error) {
 	// Per-request wall-clock budget (fallback.total_deadline_seconds): the
 	// deadline rides the request context, so every attempt, HF-loading wait
-	// and backoff sleep observes it.
+	// and backoff sleep observes it. It wraps the QUEUE loop too — a slot
+	// wait counts against the same budget.
 	ctx, cancelTotal := fc.withTotalDeadline(ctx)
 	if cancelTotal != nil {
 		defer cancelTotal()
 	}
-	resp, committed, err := fc.walk(ctx, req, fc.bufferedTry(req), fc.bufferedTryOnce(req.RequestID))
-	if committed {
-		// Unreachable for the buffered walk; kept for the shared signature.
-		return nil, nil
+	for {
+		resp, committed, err := fc.executeOnce(ctx, req)
+		busy, ok := err.(*errAllSlotsBusy)
+		if !ok {
+			if committed {
+				// Unreachable for the buffered walk; kept for the shared signature.
+				return nil, nil
+			}
+			return resp, err
+		}
+		served, qerr := fc.waitInQueue(ctx, req, busy, false)
+		if !served {
+			return nil, qerr
+		}
 	}
-	return resp, err
+}
+
+// executeOnce is one full candidate walk (the previous Execute body). The
+// total deadline wrap lives in Execute/ExecuteStream so slot-queue waits
+// share the request's budget.
+func (fc *FallbackChain) executeOnce(ctx context.Context, req Request) (*Response, bool, error) {
+	resp, committed, err := fc.walk(ctx, req, fc.bufferedTry(req), fc.bufferedTryOnce(req.RequestID))
+	return resp, committed, err
+}
+
+// waitInQueue parks the request in its model group's FIFO slot queue after
+// the walk reported errAllSlotsBusy. served=true hands the caller its turn
+// (it has been removed from the line); served=false answers why the wait
+// ended — an immediate no-slot error when queueing is off, the queue-full
+// or wait-timeout sentinels, or errClientGone when the request context
+// died while waiting.
+func (fc *FallbackChain) waitInQueue(ctx context.Context, req Request, busy *errAllSlotsBusy, senior bool) (bool, error) {
+	if fc.Queues == nil || fc.queueWait() <= 0 {
+		// Queueing off (or not wired): the walk fails with the clear
+		// slotless-exhaustion cause — no waiting, no fake success.
+		return false, busy
+	}
+	return fc.Queues.wait(ctx, queueGroup(req), busy.keys, busy.earliest, fc.queueWait(), fc.queueMaxWaiters(), senior)
+}
+
+// queueWait returns the effective slot-queue wait budget in seconds; 0
+// disables queueing.
+func (fc *FallbackChain) queueWait() time.Duration {
+	if s := fc.Cfg.Fallback.QueueWaitSeconds; s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return 0
+}
+
+// queueMaxWaiters returns the effective per-queue waiter cap (viper
+// default 64 for zeroed Config structs).
+func (fc *FallbackChain) queueMaxWaiters() int {
+	if s := fc.Cfg.Fallback.QueueMaxWaiters; s > 0 {
+		return s
+	}
+	return 64
 }
 
 // bufferedTry wraps the buffered attempt with its same-candidate retry.
@@ -164,6 +225,13 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 	maxAttempts := fc.maxAttemptsBudget()
 	maxHops := fc.maxFallbackHops()
 	hops := 0
+	// slotSkips collects the candidates that were skipped for lack of an
+	// RPM slot and entered counts the upstream calls actually entered —
+	// when the walk ends with entered==0 and skips>0 it failed for QUOTA,
+	// not for defects, and the errAllSlotsBusy sentinel lets the caller
+	// wait for a slot instead of failing immediately (task L0).
+	slotSkips := []string{}
+	entered := 0
 	// attempt is the per-request upstream-call budget counter
 	// (fallback.max_attempts). EVERY upstream call consumes it — the ranked
 	// walk's attempts with their same-candidate retries AND the once-paths:
@@ -242,6 +310,13 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			continue
 		}
 
+		// RPM slot gate (task L0): entering this candidate consumes one
+		// atomic reservation per sliding minute. A denied candidate is
+		// collected for the group queue and costs no hop and no attempt.
+		if !slotEnter(fc.Slots, providerCfg, r.ModelID, &slotSkips) {
+			continue
+		}
+
 		// Skip any provider currently on rate-limit cooldown (auth errors).
 		if fc.RateLimiter.IsOnCooldown(r.ProviderID) {
 			log.Printf("fallback: %s on cooldown — skipping provider", r.ProviderID)
@@ -303,6 +378,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			}
 		}
 		resp, committed, err := try(ctx, callCfg, body, &attempt)
+		entered++
 
 		if !committed && (err != nil || resp.StatusCode != http.StatusOK) {
 			// The request budget (or the client) canceled the context while
@@ -339,6 +415,12 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 					until := time.Now().Add(waitDur)
 					// Cooldown on the specific model, not the whole provider.
 					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, until)
+					// The 429 also adjusts the slot limiter's next_available
+					// (task L0): no reservation is granted before the
+					// provider said so, even when the local window is free.
+					if fc.Slots != nil {
+						fc.Slots.AdjustNextAvailable(r.ProviderID+"/"+r.ModelID, until)
+					}
 					// Rotate to the next API key slot if multiple keys are configured.
 					if providerCfg != nil && providerCfg.NumKeys() > 1 {
 						newIdx := fc.RateLimiter.RotateKey(r.ProviderID, providerCfg.NumKeys())
@@ -412,6 +494,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			body["stream"] = true // streaming walk keeps SSE end-to-end (NG3)
 		}
 		resp, committed, err := tryOnce(ctx, *or, body, &attempt)
+		entered++
 		if committed {
 			return nil, true, nil
 		}
@@ -431,6 +514,14 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			// cooldown applies even though this walk ends in exhaustion.
 			noteAuthFailure(fc.RateLimiter, "openrouter", bodyModel(body), resp.StatusCode)
 		}
+	}
+
+	// The walk entered NO upstream call but skipped candidates for lack of
+	// an RPM slot: this is quota pressure, not a defect — hand the sentinel
+	// to the caller so it can wait in the group queue (task L0).
+	if entered == 0 && len(slotSkips) > 0 {
+		earliest, _ := fc.Slots.Earliest(slotSkips)
+		return nil, false, &errAllSlotsBusy{keys: slotSkips, earliest: earliest}
 	}
 
 	return nil, false, fmt.Errorf("all providers exhausted after %d attempts", attempt)

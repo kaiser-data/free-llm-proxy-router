@@ -148,6 +148,20 @@ OpenAI-compatible wire format:
   the `qwen3` group), so clients request `qwen3` while the upstream receives
   the exact raw `:free` ID. Multiple free candidates for one canonical name
   walk the existing retryable-failure fallback chain.
+- **Slot limiter** — UnoRouter's free tier allows **1 request per minute per
+  model**. Set `rpm_limit: 1` on the provider (task L0): the proxy reserves
+  an atomic per-model slot before every upstream attempt — a reserved slot
+  is never released, so a failed attempt consumes the real quota exactly
+  once — and an upstream 429 adjusts the slot's next-available time. When
+  every eligible candidate lacks a free slot, the request waits FIFO in its
+  model group's queue instead of getting an instant 503 (see
+  `fallback.queue_wait_seconds` under Error classification).
+- **Live :free refresh** — with `discovery.refresh: true` the proxy calls
+  `GET /v1/models` for UnoRouter at boot and every
+  `models.model_refresh_minutes` (default 20): new `:free` ids join their
+  canonical groups automatically, ids that disappeared leave the groups for
+  new requests (in-flight requests finish), and a failed refresh keeps the
+  existing list — groups are never cleared by a refresh error.
 - **Standalone** — UnoRouter works as the only enabled upstream when just
   `UNOROUTER_API_KEY` is configured.
 
@@ -304,6 +318,19 @@ Two walk-level budgets guard against runaway requests:
   request ends in the 503 exhaustion response instead of the write timeout
   killing the connection. Keep it below `proxy.write_timeout_seconds`
   (default 120) and raise both together when serving long generations.
+- `fallback.queue_wait_seconds` (default 90, `0` disables queueing) and
+  `fallback.queue_max_waiters` (default 64) — the RPM slot queue (task L0).
+  When a provider opts into `rpm_limit` and every eligible candidate lacks a
+  free slot, the request waits FIFO in its model group's queue — woken by a
+  single timer at the earliest next-available time (no polling) — instead of
+  getting the exhaustion 503 instantly. Waiting ends in the exhaustion 503 +
+  Retry-After when the budget expires or the queue is full; a streaming
+  request whose header already went out (keepalive, task P) ends in the
+  structured SSE error event + `data: [DONE]` instead. While queueing is on,
+  `total_deadline_seconds` is raised automatically to at least
+  `queue_wait_seconds` + one attempt — raise `proxy.write_timeout_seconds`
+  to match. A client that disconnects while waiting leaves the queue
+  immediately, holding no slot and no goroutine.
 
 ### Streaming with the pre-commit hold
 

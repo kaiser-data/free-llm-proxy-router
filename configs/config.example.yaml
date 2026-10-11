@@ -118,6 +118,16 @@ fallback:
   # Streaming: max silent gap between chunks on a started stream. Exceeding
   # it ends the stream with an OpenAI-style SSE error event + [DONE].
   stream_idle_timeout_seconds: 30
+  # Slot queue (task L0): when providers[].rpm_limit gates an upstream and
+  # every eligible candidate lacks a free slot, the request waits FIFO in
+  # its model group's queue — woken by a single timer at the earliest
+  # next_available (no polling) — instead of getting an instant 503.
+  # queue_wait_seconds bounds the wait (0 disables queueing: instant 503);
+  # queue_max_waiters caps concurrent waiters per queue. When queueing is
+  # on, total_deadline_seconds is automatically raised to at least
+  # queue_wait + one attempt — raise proxy.write_timeout_seconds to match.
+  queue_wait_seconds: 90
+  queue_max_waiters: 64
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
 
@@ -244,12 +254,21 @@ providers:
     enabled: false
     priority: 7
     timeout: "30s"
+    # Slot limiter (task L0): UnoRouter's free tier allows 1 request per
+    # minute per model — the proxy reserves an atomic slot per routed model
+    # before each attempt and queues slotless requests FIFO (see
+    # fallback.queue_wait_seconds).
+    rpm_limit: 1
     rate_limit_notes: "Independent OpenAI-compatible aggregator — NOT OpenRouter. Free models carry a ':free' ID suffix; model availability depends on the API key."
     discovery:
       # Free-tier detection: pricing metadata wins when the API exposes it;
       # otherwise this ID-suffix marker decides. Models without either are
       # treated as paid and excluded from the catalog.
       free_markers: [":free"]
+      # Live :free-model refresh (task Q): call GET /v1/models at boot and
+      # every models.model_refresh_minutes to keep the canonical groups in
+      # sync with the provider's current free list.
+      refresh: true
 
   - id: nvidia-nim
     name: "NVIDIA NIM"
@@ -336,6 +355,13 @@ models:
   public_alias: "kiwi-auto"
   expose_raw: false
   expose_canonical: false
+
+  # Live :free-model refresh (task Q): every enabled provider that opts in
+  # (providers[].discovery.refresh: true) gets GET /v1/models called at
+  # boot and then every model_refresh_minutes; ids must end in ":free"
+  # exactly. A failed refresh keeps the existing list — groups are never
+  # cleared by a refresh error. 0 disables the live refresh.
+  model_refresh_minutes: 20
 
   # Multi-model mode (used when public_alias is unset):
   #

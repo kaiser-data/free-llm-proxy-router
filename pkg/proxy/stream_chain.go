@@ -586,11 +586,23 @@ func (fc *FallbackChain) retryStreamCandidate(ctx context.Context, w http.Respon
 //	committed   — the client was answered by the walk itself
 //	resp != nil — a fail-fast upstream error to surface verbatim
 func (fc *FallbackChain) ExecuteStream(ctx context.Context, req Request, w http.ResponseWriter) (*Response, bool, error) {
+	// The deadline wraps the QUEUE loop — a slot wait counts against the
+	// same request budget (task L0).
 	ctx, cancelTotal := fc.withTotalDeadline(ctx)
 	if cancelTotal != nil {
 		defer cancelTotal()
 	}
-	return fc.walk(ctx, req, fc.streamTry(w, req), fc.streamTryOnce(w, req.RequestID))
+	for {
+		resp, committed, err := fc.walk(ctx, req, fc.streamTry(w, req), fc.streamTryOnce(w, req.RequestID))
+		busy, ok := err.(*errAllSlotsBusy)
+		if !ok {
+			return resp, committed, err
+		}
+		served, qerr := fc.waitInQueue(ctx, req, busy, false)
+		if !served {
+			return nil, false, qerr
+		}
+	}
 }
 
 // streamTry wraps the streaming attempt with its same-candidate retry.

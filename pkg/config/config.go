@@ -78,7 +78,7 @@ type CatalogConfig struct {
 // GitSyncConfig controls catalog synchronisation via git or a raw remote URL.
 // See pkg/catalog/gitsync.go for full documentation.
 type GitSyncConfig struct {
-	Enabled       bool   `mapstructure:"enabled"`
+	Enabled bool `mapstructure:"enabled"`
 	// Scanner role (one machine only):
 	RepoPath      string `mapstructure:"repo_path"`
 	CatalogInRepo string `mapstructure:"catalog_in_repo"`
@@ -126,6 +126,14 @@ type ModelsConfig struct {
 	// use; they are just not listed. The real candidate set behind the alias
 	// is inspectable at GET /debug/pool.
 	PublicAlias string `mapstructure:"public_alias"`
+
+	// ModelRefreshMinutes is the refresh interval for the live :free-model
+	// discovery (task Q): the proxy calls GET /v1/models for every enabled
+	// provider that opted in (providers[].discovery.refresh) at boot and
+	// then every this many minutes. A failed refresh keeps the existing
+	// list — groups are never cleared by a refresh error. 0 disables the
+	// live refresh entirely. Default 20.
+	ModelRefreshMinutes int `mapstructure:"model_refresh_minutes"`
 }
 
 // CanonicalizationConfig controls auto-derivation of canonical model groups.
@@ -140,11 +148,11 @@ type CanonicalizationConfig struct {
 
 // RefreshConfig holds the LLM-powered refresh settings.
 type RefreshConfig struct {
-	Model      string `mapstructure:"model"`
-	Provider   string `mapstructure:"provider"`
-	Schedule   string `mapstructure:"schedule"`
-	PromptFile string `mapstructure:"prompt_file"`
-	WebSearch  bool   `mapstructure:"web_search"`
+	Model       string `mapstructure:"model"`
+	Provider    string `mapstructure:"provider"`
+	Schedule    string `mapstructure:"schedule"`
+	PromptFile  string `mapstructure:"prompt_file"`
+	WebSearch   bool   `mapstructure:"web_search"`
 	OutputMerge string `mapstructure:"output_merge"`
 }
 
@@ -221,6 +229,29 @@ type FallbackConfig struct {
 	// stream with an OpenAI-style SSE error event + [DONE] — never a
 	// silently truncated completion. Default 30.
 	StreamIdleTimeoutSeconds int `mapstructure:"stream_idle_timeout_seconds"`
+
+	// QueueWaitSeconds bounds how long a request may wait in its model
+	// group's FIFO slot queue (task L0) when every eligible upstream lacked
+	// an RPM slot. The wait is woken by a single timer at the earliest
+	// next_available — no polling. 0 disables queueing: a slotless request
+	// gets the exhaustion 503 immediately. Default 90.
+	QueueWaitSeconds int `mapstructure:"queue_wait_seconds"`
+
+	// QueueMaxWaiters caps the number of concurrently waiting requests per
+	// slot queue; a request arriving on a full queue gets the exhaustion
+	// 503 (with Retry-After) immediately instead of waiting. Default 64.
+	QueueMaxWaiters int `mapstructure:"queue_max_waiters"`
+
+	// StreamKeepaliveAfterSeconds starts the SSE keepalive on a WAITING
+	// streaming request (queue wait or pre-commit hold): once the wait
+	// passes this many seconds the proxy sends the 200 SSE header and
+	// ": keepalive\n\n" comment events so agents and LBs do not cut the
+	// idle connection. 0 disables keepalive. Default 5.
+	StreamKeepaliveAfterSeconds int `mapstructure:"stream_keepalive_after_seconds"`
+
+	// StreamKeepaliveIntervalSeconds is the spacing between ": keepalive\n\n"
+	// comments once the keepalive has started. Default 15.
+	StreamKeepaliveIntervalSeconds int `mapstructure:"stream_keepalive_interval_seconds"`
 }
 
 // LookupFirstTokenTimeout resolves the per-provider/model override for the
@@ -386,6 +417,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.total_deadline_seconds", 90)
 	v.SetDefault("fallback.first_token_timeout_seconds", 30)
 	v.SetDefault("fallback.stream_idle_timeout_seconds", 30)
+	v.SetDefault("fallback.queue_wait_seconds", 90)
+	v.SetDefault("fallback.queue_max_waiters", 64)
+	v.SetDefault("fallback.stream_keepalive_after_seconds", 5)
+	v.SetDefault("fallback.stream_keepalive_interval_seconds", 15)
+	v.SetDefault("models.model_refresh_minutes", 20)
 	v.SetDefault("models.canonicalization.enabled", true)
 	v.SetDefault("models.canonicalization.free_only", true)
 	v.SetDefault("models.expose_raw", true)

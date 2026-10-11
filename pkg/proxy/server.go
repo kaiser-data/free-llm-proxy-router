@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -74,6 +75,12 @@ type Server struct {
 	// short-timeout client to exercise timeout classification without
 	// slowing the suite.
 	chainHTTPClient *http.Client
+
+	// slotLimit reserves RPM request slots per candidate (task L0); queues
+	// parks slotless requests FIFO per model group until the earliest
+	// next_available timer wakes them. Both are shared across all requests.
+	slotLimit *SlotLimiter
+	queues    *queueManager
 }
 
 // NewServer creates a new proxy Server.
@@ -95,6 +102,8 @@ func NewServer(
 	s.catalog.Store(cat)
 	s.cache = NewResponseCache(cfg.Proxy.CacheTTL)
 	s.aliasRes.Store(buildAliasResolver(cfg, cat))
+	s.slotLimit = NewSlotLimiter()
+	s.queues = newQueueManager(s.slotLimit)
 	return s
 }
 
@@ -202,6 +211,72 @@ func (s *Server) proxyWriteTimeout() time.Duration {
 		seconds = 120
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+// adjustedRequestConfig returns the config the request walks with. When
+// slot queueing is on (task L0) it raises the total deadline to the queue
+// floor — effective_total >= queue_wait + the per-attempt ceiling — so a
+// queued request can wait its full budget and still get one attempt. The
+// copy shares every slice; only TotalDeadlineSeconds is written.
+func (s *Server) adjustedRequestConfig(cfg *config.Config) *config.Config {
+	qw := cfg.Fallback.QueueWaitSeconds
+	if qw <= 0 {
+		return cfg
+	}
+	attempt := cfg.Fallback.ProviderTimeoutSeconds
+	if attempt <= 0 {
+		attempt = 120 // mirror the viper default for zeroed structs
+	}
+	for i := range cfg.Providers {
+		if !cfg.Providers[i].Enabled {
+			continue
+		}
+		if d := cfg.Providers[i].ResolvedTimeout(); int(d.Seconds()) > attempt {
+			attempt = int(d.Seconds())
+		}
+	}
+	floor := qw + attempt
+	if cfg.Fallback.TotalDeadlineSeconds >= floor {
+		return cfg
+	}
+	adj := *cfg
+	adj.Fallback.TotalDeadlineSeconds = floor
+	return &adj
+}
+
+// candidatesBlocked parks a request whose entire candidate list was
+// skipped for lack of RPM slots (task L0): it waits FIFO in the model
+// group's queue — woken by the earliest next_available timer — and returns
+// whether the route may walk its candidates again. When the wait cannot
+// continue the response is finished here: the exhaustion 503 + Retry-After
+// (or the structured SSE error event when the keepalive header already
+// went out); false with errClientGone means nobody is left to answer.
+func (s *Server) candidatesBlocked(ctx context.Context, w http.ResponseWriter, group, clientModel string, keys []string) bool {
+	c := s.cfg.Load()
+	if s.queues == nil || c.Fallback.QueueWaitSeconds <= 0 {
+		return false
+	}
+	earliest, _ := s.slotLimit.Earliest(keys)
+	served, err := s.queues.wait(ctx, group, keys, earliest, time.Duration(c.Fallback.QueueWaitSeconds)*time.Second, queueMaxWaiters(c), true)
+	if served {
+		log.Printf("slot queue: group %s handed its turn to %q", group, clientModel)
+		return true
+	}
+	if errors.Is(err, errClientGone) {
+		log.Printf("slot queue: group %s client gone — left the queue, no slot held", group)
+		return false
+	}
+	s.writeExhaustionError(w, clientModel, err)
+	return false
+}
+
+// queueMaxWaiters returns the effective per-queue waiter cap (viper
+// default 64 for zeroed Config structs).
+func queueMaxWaiters(c *config.Config) int {
+	if s := c.Fallback.QueueMaxWaiters; s > 0 {
+		return s
+	}
+	return 64
 }
 
 // firstTokenTimeout returns the streaming pre-commit hold cap from
@@ -325,6 +400,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.cfg.Load()
 	cat := s.catalog.Load()
+	// Slot-queue floor (task L0): when queueing is on, the request's total
+	// deadline must not be lower than queue_wait + one attempt, otherwise a
+	// queued request could never wait its budget and still get an attempt.
+	cfg = s.adjustedRequestConfig(cfg)
 
 	// Resolve agent profile: if model field matches a named profile, apply defaults/overrides.
 	if profile, ok := cfg.Proxy.Agents[req.Model]; ok {
@@ -416,61 +495,83 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		HTTPClient:         s.upstreamHTTPClient(),
 		StreamHTTPClient:   s.streamHTTPClient(),
 		Resolver:           resolver,
+		Slots:              s.slotLimit,
+		Queues:             s.queues,
 	}
 
 	found := false
-	for _, e := range cat.Entries {
-		if !matchEntry(e, req.Model, targetProvider, targetModel) {
-			continue
-		}
-		found = true
-		provCfg := findProviderCfg(cfg, e.ProviderID)
-		if provCfg == nil {
-			continue
-		}
-		body := copyMap(raw)
-		body["model"] = e.ModelID
-		for _, f := range anthropicOnlyFields {
-			delete(body, f)
-		}
-		if req.Stream {
-			// Streaming request: same SSE pass-through and fallback
-			// semantics as the alias route. canonicalModel is empty here —
-			// the direct route reports no X-Used-Model on success, matching
-			// its buffered behavior.
-			if !s.streamOneCandidate(w, r, provCfg, body, "", req.Model, "direct route", req.RequestID) {
+	for {
+		entered, blockedKeys := 0, []string{}
+		for _, e := range cat.Entries {
+			if !matchEntry(e, req.Model, targetProvider, targetModel) {
 				continue
 			}
-			return
-		}
-		delete(body, "stream") // buffered path: fallback requires complete JSON
-		resp, err := chain.callProvider(r.Context(), *provCfg, body)
-		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(resp.StatusCode)
-			w.Write(resp.Body)
-			return
-		}
-		// Route decision comes from ClassifyFailure like every other route
-		// (task H — no route keeps its own failure table): fail-fast
-		// client/request defects (400, 413, content-policy, …) surface
-		// immediately with no masked success; 401/403 cool the provider down
-		// and keep walking; every other retryable class (rate limits, 5xx,
-		// transport) also walks to the next catalog entry.
-		switch finalFailureDecision(resp, err) {
-		case FailFast:
-			if resp != nil {
-				log.Printf("direct route: %s/%s fail-fast status %d — surfacing to client", e.ProviderID, e.ModelID, resp.StatusCode)
-				s.writeUpstreamError(w, req.Model, resp)
-			} else {
-				log.Printf("direct route: %s/%s request canceled — aborting walk", e.ProviderID, e.ModelID)
+			found = true
+			provCfg := findProviderCfg(cfg, e.ProviderID)
+			if provCfg == nil {
+				continue
 			}
-			return
-		default:
-			if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-				noteAuthFailure(s.rateLimiter, e.ProviderID, e.ModelID, resp.StatusCode)
+			// RPM slot gate (task L0): entering the candidate consumes one
+			// atomic reservation; a slotless candidate is collected for the
+			// group queue and costs no hop and no attempt.
+			if !slotEnter(s.slotLimit, provCfg, e.ModelID, &blockedKeys) {
+				continue
 			}
-			// Try the next catalog entry.
+			entered++
+			body := copyMap(raw)
+			body["model"] = e.ModelID
+			for _, f := range anthropicOnlyFields {
+				delete(body, f)
+			}
+			if req.Stream {
+				// Streaming request: same SSE pass-through and fallback
+				// semantics as the alias route. canonicalModel is empty here —
+				// the direct route reports no X-Used-Model on success, matching
+				// its buffered behavior.
+				if !s.streamOneCandidate(w, r, provCfg, body, "", req.Model, "direct route", req.RequestID) {
+					continue
+				}
+				return
+			}
+			delete(body, "stream") // buffered path: fallback requires complete JSON
+			resp, err := chain.callProvider(r.Context(), *provCfg, body)
+			if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(resp.StatusCode)
+				w.Write(resp.Body)
+				return
+			}
+			// Route decision comes from ClassifyFailure like every other route
+			// (task H — no route keeps its own failure table): fail-fast
+			// client/request defects (400, 413, content-policy, …) surface
+			// immediately with no masked success; 401/403 cool the provider down
+			// and keep walking; every other retryable class (rate limits, 5xx,
+			// transport) also walks to the next catalog entry.
+			switch finalFailureDecision(resp, err) {
+			case FailFast:
+				if resp != nil {
+					log.Printf("direct route: %s/%s fail-fast status %d — surfacing to client", e.ProviderID, e.ModelID, resp.StatusCode)
+					s.writeUpstreamError(w, req.Model, resp)
+				} else {
+					log.Printf("direct route: %s/%s request canceled — aborting walk", e.ProviderID, e.ModelID)
+				}
+				return
+			default:
+				if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+					noteAuthFailure(s.rateLimiter, e.ProviderID, e.ModelID, resp.StatusCode)
+				}
+				// Try the next catalog entry.
+			}
+		}
+		// No upstream was entered this round but matched candidates were
+		// skipped for quota: wait FIFO in the group queue instead of
+		// failing immediately (task L0). A handed turn walks again;
+		// otherwise the response is already finished.
+		if entered > 0 || len(blockedKeys) == 0 || !found {
+			break
+		}
+		if !s.candidatesBlocked(r.Context(), w, queueGroup(req), req.Model, blockedKeys) {
+			return
 		}
 	}
 	if !found {
@@ -514,74 +615,97 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 		HTTPClient:         s.upstreamHTTPClient(),
 		StreamHTTPClient:   s.streamHTTPClient(),
 		Resolver:           resolver,
+		Slots:              s.slotLimit,
+		Queues:             s.queues,
 	}
-	for _, u := range ups {
-		provCfg := findProviderCfg(cfg, u.ProviderID)
-		if provCfg == nil {
-			continue
-		}
-		body := copyMap(raw)
-		body["model"] = u.ModelID
-		for _, f := range anthropicOnlyFields {
-			delete(body, f)
-		}
-		if req.Stream {
-			// Streaming request: keep stream:true in the body and pass the
-			// upstream SSE through incrementally. streamOneCandidate only
-			// walks to the next candidate while nothing has been written
-			// downstream; once the stream starts the attempt is terminal.
-			if !s.streamOneCandidate(w, r, provCfg, body, req.Model, req.Model, "alias route", req.RequestID) {
+	for {
+		entered, blockedKeys := 0, []string{}
+		for _, u := range ups {
+			provCfg := findProviderCfg(cfg, u.ProviderID)
+			if provCfg == nil {
 				continue
 			}
-			return true
-		}
-		delete(body, "stream") // buffered path: fallback requires complete JSON
-		resp, err := chain.callProvider(r.Context(), *provCfg, body)
-		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			log.Printf("alias route: %s/%s served %q", u.ProviderID, u.ModelID, req.Model)
-			// Expose the raw upstream identity (documented contract) while
-			// X-Used-Model reports the canonical name. Only the router-owned
-			// headers are forwarded — upstream transport headers like
-			// Content-Length/Content-Encoding describe the buffered body
-			// callProvider read, not the bytes we are about to write.
-			if v := resp.Header.Get("X-Free-Router-Upstream-Provider"); v != "" {
-				w.Header().Set("X-Free-Router-Upstream-Provider", v)
+			// RPM slot gate (task L0): entering the candidate consumes one
+			// atomic reservation; a slotless candidate is collected for the
+			// group queue and costs no hop and no attempt.
+			if !slotEnter(s.slotLimit, provCfg, u.ModelID, &blockedKeys) {
+				continue
 			}
-			if v := resp.Header.Get("X-Free-Router-Upstream-Model"); v != "" {
-				w.Header().Set("X-Free-Router-Upstream-Model", v)
+			entered++
+			body := copyMap(raw)
+			body["model"] = u.ModelID
+			for _, f := range anthropicOnlyFields {
+				delete(body, f)
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Used-Model", req.Model)
-			w.WriteHeader(resp.StatusCode)
-			w.Write(resp.Body)
-			return true
-		}
-		// Route decision comes from ClassifyFailure like every other route
-		// (task H): fail-fast client/request defects surface the upstream
-		// response to the client verbatim; 401/403 cool the provider down
-		// and walk on; other retryable classes walk to the next candidate.
-		switch finalFailureDecision(resp, err) {
-		case FailFast:
-			if resp != nil {
-				log.Printf("alias route: %s/%s fail-fast status %d — surfacing to client, no further candidates", u.ProviderID, u.ModelID, resp.StatusCode)
-				s.writeUpstreamError(w, req.Model, resp)
+			if req.Stream {
+				// Streaming request: keep stream:true in the body and pass the
+				// upstream SSE through incrementally. streamOneCandidate only
+				// walks to the next candidate while nothing has been written
+				// downstream; once the stream starts the attempt is terminal.
+				if !s.streamOneCandidate(w, r, provCfg, body, req.Model, req.Model, "alias route", req.RequestID) {
+					continue
+				}
+				return true
+			}
+			delete(body, "stream") // buffered path: fallback requires complete JSON
+			resp, err := chain.callProvider(r.Context(), *provCfg, body)
+			if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				log.Printf("alias route: %s/%s served %q", u.ProviderID, u.ModelID, req.Model)
+				// Expose the raw upstream identity (documented contract) while
+				// X-Used-Model reports the canonical name. Only the router-owned
+				// headers are forwarded — upstream transport headers like
+				// Content-Length/Content-Encoding describe the buffered body
+				// callProvider read, not the bytes we are about to write.
+				if v := resp.Header.Get("X-Free-Router-Upstream-Provider"); v != "" {
+					w.Header().Set("X-Free-Router-Upstream-Provider", v)
+				}
+				if v := resp.Header.Get("X-Free-Router-Upstream-Model"); v != "" {
+					w.Header().Set("X-Free-Router-Upstream-Model", v)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Used-Model", req.Model)
+				w.WriteHeader(resp.StatusCode)
+				w.Write(resp.Body)
+				return true
+			}
+			// Route decision comes from ClassifyFailure like every other route
+			// (task H): fail-fast client/request defects surface the upstream
+			// response to the client verbatim; 401/403 cool the provider down
+			// and walk on; other retryable classes walk to the next candidate.
+			switch finalFailureDecision(resp, err) {
+			case FailFast:
+				if resp != nil {
+					log.Printf("alias route: %s/%s fail-fast status %d — surfacing to client, no further candidates", u.ProviderID, u.ModelID, resp.StatusCode)
+					s.writeUpstreamError(w, req.Model, resp)
+				} else {
+					log.Printf("alias route: %s/%s request canceled — aborting candidate walk", u.ProviderID, u.ModelID)
+				}
+				return true
+			default:
+				if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+					noteAuthFailure(s.rateLimiter, u.ProviderID, u.ModelID, resp.StatusCode)
+				}
+				// Retryable failure — try the next candidate.
+			}
+			// Retryable upstream failure — record the candidate and the
+			// failure class, then try the next one (cooldown/retry already
+			// handled by callProvider callers upstream of this point).
+			if err != nil {
+				log.Printf("alias route: %s/%s error: %v — trying next candidate", u.ProviderID, u.ModelID, err)
 			} else {
-				log.Printf("alias route: %s/%s request canceled — aborting candidate walk", u.ProviderID, u.ModelID)
+				log.Printf("alias route: %s/%s status %d — trying next candidate", u.ProviderID, u.ModelID, resp.StatusCode)
 			}
-			return true
-		default:
-			if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-				noteAuthFailure(s.rateLimiter, u.ProviderID, u.ModelID, resp.StatusCode)
-			}
-			// Retryable failure — try the next candidate.
 		}
-		// Retryable upstream failure — record the candidate and the
-		// failure class, then try the next one (cooldown/retry already
-		// handled by callProvider callers upstream of this point).
-		if err != nil {
-			log.Printf("alias route: %s/%s error: %v — trying next candidate", u.ProviderID, u.ModelID, err)
-		} else {
-			log.Printf("alias route: %s/%s status %d — trying next candidate", u.ProviderID, u.ModelID, resp.StatusCode)
+		// No upstream was entered this round but candidates were skipped
+		// for quota: wait FIFO in the group queue instead of failing
+		// immediately (task L0). A handed turn walks again; otherwise the
+		// response is already finished (503 + Retry-After, or the SSE
+		// error event when the keepalive header went out).
+		if entered > 0 || len(blockedKeys) == 0 {
+			break
+		}
+		if !s.candidatesBlocked(r.Context(), w, queueGroup(req), req.ClientModel, blockedKeys) {
+			return true
 		}
 	}
 	// All alias upstreams failed — fall back to the default strategy chain.
@@ -711,6 +835,8 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		HTTPClient:         s.upstreamHTTPClient(),
 		StreamHTTPClient:   s.streamHTTPClient(),
 		Resolver:           s.aliasRes.Load(),
+		Slots:              s.slotLimit,
+		Queues:             s.queues,
 	}
 
 	// Streaming requests run the SAME walk in streaming mode
@@ -906,4 +1032,3 @@ func findProviderCfg(cfg *config.Config, providerID string) *config.ProviderConf
 	}
 	return nil
 }
-
