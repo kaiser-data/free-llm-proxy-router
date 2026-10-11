@@ -475,10 +475,21 @@ func (fc *FallbackChain) streamTry(w http.ResponseWriter, req Request) candidate
 }
 
 // streamTryOnce is a single streaming attempt — the OpenRouter steps and
-// the HF cold-start re-attempt run without the retry ladder.
+// the HF cold-start re-attempt run without the retry ladder. They still
+// consume the attempt budget (task G) and emit the same per-attempt log
+// (task F) with the decision the walk acts on.
 func (fc *FallbackChain) streamTryOnce(w http.ResponseWriter, reqID string) candidateAttempt {
-	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, _ *int) (*Response, bool, error) {
-		return fc.streamAttemptOnce(ctx, w, callCfg, body, reqID)
+	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, bool, error) {
+		start := time.Now()
+		resp, committed, err := fc.streamAttemptOnce(ctx, w, callCfg, body, reqID)
+		dur := time.Since(start)
+		*attempt++
+		if committed || (err == nil && resp != nil && resp.StatusCode == http.StatusOK) {
+			fc.logAttempt(reqID, callCfg.ID, bodyModel(body), *attempt, dur, "ok", "ok")
+			return resp, committed, err
+		}
+		fc.logAttempt(reqID, callCfg.ID, bodyModel(body), *attempt, dur, failureCause(resp, err), finalFailureDecision(resp, err).String())
+		return resp, committed, err
 	}
 }
 

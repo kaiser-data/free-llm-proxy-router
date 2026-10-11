@@ -101,7 +101,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	if cancelTotal != nil {
 		defer cancelTotal()
 	}
-	resp, committed, err := fc.walk(ctx, req, fc.bufferedTry(req), fc.bufferedTryOnce())
+	resp, committed, err := fc.walk(ctx, req, fc.bufferedTry(req), fc.bufferedTryOnce(req.RequestID))
 	if committed {
 		// Unreachable for the buffered walk; kept for the shared signature.
 		return nil, nil
@@ -119,10 +119,21 @@ func (fc *FallbackChain) bufferedTry(req Request) candidateAttempt {
 }
 
 // bufferedTryOnce is a single buffered call — the OpenRouter steps and the
-// HF cold-start re-attempt run without the retry ladder, as before.
-func (fc *FallbackChain) bufferedTryOnce() candidateAttempt {
-	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, _ *int) (*Response, bool, error) {
+// HF cold-start re-attempt run without the retry ladder, as before. They
+// still consume the attempt budget (task G) and emit the same per-attempt
+// log (task F); on failure the walk decides with finalFailureDecision, so
+// that is the decision logged here.
+func (fc *FallbackChain) bufferedTryOnce(reqID string) candidateAttempt {
+	return func(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, attempt *int) (*Response, bool, error) {
+		start := time.Now()
 		resp, err := fc.callProvider(ctx, callCfg, body)
+		dur := time.Since(start)
+		*attempt++
+		if err == nil && resp.StatusCode == http.StatusOK {
+			fc.logAttempt(reqID, callCfg.ID, bodyModel(body), *attempt, dur, "ok", "ok")
+			return resp, false, err
+		}
+		fc.logAttempt(reqID, callCfg.ID, bodyModel(body), *attempt, dur, failureCause(resp, err), finalFailureDecision(resp, err).String())
 		return resp, false, err
 	}
 }
@@ -153,6 +164,12 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 	maxAttempts := fc.maxAttemptsBudget()
 	maxHops := fc.maxFallbackHops()
 	hops := 0
+	// attempt is the per-request upstream-call budget counter
+	// (fallback.max_attempts). EVERY upstream call consumes it — the ranked
+	// walk's attempts with their same-candidate retries AND the once-paths:
+	// the OpenRouter models[] step, the openrouter/free ultimate fallback,
+	// and the HuggingFace cold-start re-attempt (task G).
+	attempt := 0
 
 	// Step 1: Try OpenRouter with models[] array (native fallback)
 	if or := fc.findProvider("openrouter"); or != nil {
@@ -163,7 +180,10 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			if req.Stream {
 				body["stream"] = true // streaming walk keeps SSE end-to-end (NG3)
 			}
-			resp, committed, err := tryOnce(ctx, *or, body, new(int))
+			// The models[] request is one upstream call: it consumes the
+			// attempt budget like the ranked walk (task G). attempt is 0
+			// here and max_attempts >= 1, so this step always runs.
+			resp, committed, err := tryOnce(ctx, *or, body, &attempt)
 			if committed {
 				return nil, true, nil
 			}
@@ -191,7 +211,6 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 	// for that provider are skipped immediately. This prevents a large provider
 	// (e.g. NVIDIA NIM with 172 models) from exhausting maxAttempts before
 	// faster, more reliable providers (Groq, Cerebras, Gemini) are even tried.
-	attempt := 0
 	failedProviders := make(map[string]bool)
 	for _, r := range ranked {
 		if ctx.Err() != nil {
@@ -285,8 +304,11 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			if ctx.Err() != nil {
 				return nil, false, errRequestBudget(ctx)
 			}
-			// HuggingFace 503+loading: wait and retry SAME provider (cold start).
-			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
+			// HuggingFace 503+loading: wait and retry SAME provider (cold
+			// start). The re-attempt consumes the attempt budget like every
+			// other upstream call (task G) — with the budget spent, the 503
+			// drops through to the normal classification below.
+			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 && attempt < maxAttempts {
 				if waitMs := parseHFLoadingWait(resp.Body); waitMs > 0 {
 					log.Printf("fallback: huggingface model loading, waiting %dms", waitMs)
 					select {
@@ -371,8 +393,10 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 		return resp, committed, nil
 	}
 
-	// Step 5: Ultimate fallback — OpenRouter free router
-	if or := fc.findProvider("openrouter"); or != nil {
+	// Step 5: Ultimate fallback — OpenRouter free router. It is one more
+	// upstream call: it consumes the attempt budget like every other path
+	// (task G) and only runs while the budget lasts.
+	if or := fc.findProvider("openrouter"); or != nil && attempt < maxAttempts {
 		if hops >= maxHops {
 			return nil, false, fmt.Errorf("fallback hop ceiling %d reached — aborting walk", maxHops)
 		}
@@ -382,7 +406,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 		if req.Stream {
 			body["stream"] = true // streaming walk keeps SSE end-to-end (NG3)
 		}
-		resp, committed, err := tryOnce(ctx, *or, body, new(int))
+		resp, committed, err := tryOnce(ctx, *or, body, &attempt)
 		if committed {
 			return nil, true, nil
 		}
