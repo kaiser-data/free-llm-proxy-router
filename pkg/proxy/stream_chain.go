@@ -43,6 +43,10 @@ type streamClientParams struct {
 	FirstTokenTimeout time.Duration // 0 → 30s default
 	IdleTimeout       time.Duration // 0 → 30s default
 	RequestID         string        // X-Request-Id on commit (may be empty)
+	// FirstTokenTimeoutFor resolves the per-provider/model override of
+	// FirstTokenTimeout (fallback.first_token_timeouts, task J); nil keeps
+	// the global value everywhere.
+	FirstTokenTimeoutFor func(providerID, modelID string) time.Duration
 	// CanonicalFor resolves the X-Used-Model identity for a commit:
 	// (providerID, upstreamModel) → canonical name. Nil = identity.
 	CanonicalFor func(providerID, upstreamModel string) string
@@ -100,6 +104,13 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 	ttft := p.FirstTokenTimeout
 	if ttft <= 0 {
 		ttft = 30 * time.Second
+	}
+	// Per-provider/model override (fallback.first_token_timeouts, task J) —
+	// reasoning models routinely think longer than the global hold.
+	if p.FirstTokenTimeoutFor != nil {
+		if o := p.FirstTokenTimeoutFor(cfg.ID, upstreamModel); o > 0 {
+			ttft = o
+		}
 	}
 	ttftTimer := time.AfterFunc(ttft, cancelAttempt)
 	defer ttftTimer.Stop()
@@ -227,18 +238,51 @@ const (
 	sseUnusable                    // the first event is an error/empty stream — fail the attempt
 )
 
-// judgeFirstSSE decides whether the buffered bytes contain a usable first
-// event. Keepalive comments (":" prefix) and blank lines are skipped; the
-// decision waits for a complete event ("\n\n"). A first data payload of
-// "[DONE]" (empty stream) or an error-shaped payload / "event: error" fails
-// the attempt BEFORE any commit — the ladder then tries the next candidate.
-func judgeFirstSSE(buf []byte) (sseVerdict, string) {
-	end := bytes.Index(buf, []byte("\n\n"))
-	if end < 0 {
-		return sseUndecided, ""
+func (v sseVerdict) String() string {
+	switch v {
+	case sseUndecided:
+		return "undecided"
+	case sseUsable:
+		return "usable"
+	case sseUnusable:
+		return "unusable"
+	default:
+		return "unknown"
 	}
-	first := string(buf[:end])
-	for _, line := range strings.Split(first, "\n") {
+}
+
+// judgeFirstSSE decides whether the buffered bytes contain a usable first
+// event. Events are scanned one complete event ("\n\n") at a time — the hold
+// ends at the first USABLE event and the whole stream is never buffered
+// (task J):
+//
+//   - keepalive comments and event-only blocks are skipped;
+//   - an error object or a bare [DONE] first data payload fails the attempt
+//     BEFORE any commit — the ladder then tries the next candidate;
+//   - an OpenAI-style chunk with content / tool calls / finish_reason is
+//     usable — commit;
+//   - a ROLE-ONLY or empty-delta chunk (several providers open the stream
+//     with one) keeps the hold going — it is not "empty/error"; the NEXT
+//     event decides. The TTFT watchdog bounds the wait.
+func judgeFirstSSE(buf []byte) (sseVerdict, string) {
+	for offset := 0; ; {
+		end := bytes.Index(buf[offset:], []byte("\n\n"))
+		if end < 0 {
+			return sseUndecided, "" // no complete event yet — keep holding
+		}
+		end += offset
+		verdict, reason := judgeSSEEvent(string(buf[offset:end]))
+		if verdict != sseUndecided {
+			return verdict, reason
+		}
+		offset = end + 2
+	}
+}
+
+// judgeSSEEvent judges ONE complete SSE event block (without the trailing
+// blank line).
+func judgeSSEEvent(event string) (sseVerdict, string) {
+	for _, line := range strings.Split(event, "\n") {
 		line = strings.TrimRight(line, "\r")
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, ":") {
@@ -255,14 +299,84 @@ func judgeFirstSSE(buf []byte) (sseVerdict, string) {
 			if payload == "[DONE]" {
 				return sseUnusable, "first event was [DONE] (empty stream)"
 			}
-			if strings.Contains(payload, "\"error\"") {
+			usable, errorShaped := sseChunkSignal(payload)
+			if errorShaped {
 				return sseUnusable, "first event carried an error object"
 			}
-			return sseUsable, ""
+			if usable {
+				return sseUsable, ""
+			}
+			continue // role-only / empty delta — keep holding for real content
 		}
 	}
 	// A complete event without data lines — keep holding for real content.
 	return sseUndecided, ""
+}
+
+// sseChunkSignal reports what one OpenAI-style chunk data payload carries:
+// usable — a content / tool_calls / finish_reason signal (the "first usable
+// event" criterion, task J); errorShaped — an error object. Unparseable or
+// signal-free payloads (role-only and empty deltas) report false/false so
+// the hold continues and the next event decides.
+func sseChunkSignal(payload string) (usable, errorShaped bool) {
+	var chunk struct {
+		Error   json.RawMessage `json:"error"`
+		Choices []struct {
+			Delta struct {
+				Role      string          `json:"role"`
+				Content   json.RawMessage `json:"content"`
+				ToolCalls json.RawMessage `json:"tool_calls"`
+			} `json:"delta"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return false, false // not chunk JSON — the next event decides
+	}
+	if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+		return false, true
+	}
+	for _, c := range chunk.Choices {
+		if c.FinishReason != "" {
+			return true, false
+		}
+		if len(c.Delta.ToolCalls) > 0 && string(c.Delta.ToolCalls) != "null" {
+			return true, false
+		}
+		if contentHasText(c.Delta.Content) || contentHasText(c.Message.Content) {
+			return true, false
+		}
+	}
+	return false, false
+}
+
+// contentHasText reports whether a content JSON value carries text: a
+// non-empty string or a non-empty content-parts array (some providers
+// stream content as [{"type":"text","text":"…"}]). Any other non-null JSON
+// counts as content.
+func contentHasText(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s != ""
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) == nil {
+		for _, p := range parts {
+			if p.Text != "" {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // parseUsedModel extracts the "model" field of the first JSON data payload —
@@ -313,6 +427,18 @@ func (fc *FallbackChain) firstTokenTimeout() time.Duration {
 	return 30 * time.Second
 }
 
+// firstTokenTimeoutFor returns the pre-commit hold cap for one provider/model
+// pair: the fallback.first_token_timeouts override ("provider/model" then
+// "provider"), else the global fallback.first_token_timeout_seconds
+// (default 30) — reasoning models think longer than the global default
+// (task J).
+func (fc *FallbackChain) firstTokenTimeoutFor(providerID, modelID string) time.Duration {
+	if s := config.LookupFirstTokenTimeout(fc.Cfg.Fallback.FirstTokenTimeouts, providerID, modelID); s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return fc.firstTokenTimeout()
+}
+
 // streamIdleTimeout returns the post-commit per-read gap cap:
 // fallback.stream_idle_timeout_seconds (default 30).
 func (fc *FallbackChain) streamIdleTimeout() time.Duration {
@@ -352,11 +478,12 @@ func (fc *FallbackChain) streamAttemptOnce(ctx context.Context, w http.ResponseW
 	defer cancelP()
 
 	params := streamClientParams{
-		Client:            fc.StreamHTTPClient,
-		FirstTokenTimeout: fc.firstTokenTimeout(),
-		IdleTimeout:       fc.streamIdleTimeout(),
-		RequestID:         reqID,
-		CanonicalFor:      fc.canonicalForParams(),
+		Client:               fc.StreamHTTPClient,
+		FirstTokenTimeout:    fc.firstTokenTimeout(),
+		FirstTokenTimeoutFor: fc.firstTokenTimeoutFor,
+		IdleTimeout:          fc.streamIdleTimeout(),
+		RequestID:            reqID,
+		CanonicalFor:         fc.canonicalForParams(),
 	}
 	return streamUpstreamHeld(pctx, w, callCfg, body, params)
 }

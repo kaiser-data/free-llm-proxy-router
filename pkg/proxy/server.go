@@ -206,6 +206,16 @@ func (s *Server) proxyWriteTimeout() time.Duration {
 
 // firstTokenTimeout returns the streaming pre-commit hold cap from
 // fallback.first_token_timeout_seconds (default 30).
+// firstTokenTimeoutFor resolves the per-provider/model TTFT override
+// (fallback.first_token_timeouts, task J) against the loaded config,
+// falling back to the global first_token_timeout_seconds.
+func (s *Server) firstTokenTimeoutFor(providerID, modelID string) time.Duration {
+	if seconds := config.LookupFirstTokenTimeout(s.cfg.Load().Fallback.FirstTokenTimeouts, providerID, modelID); seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return s.firstTokenTimeout()
+}
+
 func (s *Server) firstTokenTimeout() time.Duration {
 	if seconds := s.cfg.Load().Fallback.FirstTokenTimeoutSeconds; seconds > 0 {
 		return time.Duration(seconds) * time.Second

@@ -189,3 +189,39 @@ func TestTimeoutConfigParsing(t *testing.T) {
 		t.Errorf("write_timeout_seconds = %d, want 700", cfg.Proxy.WriteTimeoutSeconds)
 	}
 }
+
+// TestLookupFirstTokenTimeout: the per-provider/model override resolution
+// for the streaming first-token timeout (task J) — exact "provider/model"
+// key wins, then the provider-wide "provider" key, else 0 (= the caller
+// falls back to the global first_token_timeout_seconds). Zero/negative
+// values are ignored.
+func TestLookupFirstTokenTimeout(t *testing.T) {
+	m := map[string]int{
+		"provider-a":                 60,
+		"provider-a/reasoning-model": 120,
+		"provider-b/another-model":   90,
+		"provider-c/broken":          -5,
+	}
+	cases := []struct {
+		provider, model string
+		want            int
+	}{
+		{"provider-a", "reasoning-model", 120}, // exact provider/model wins over the provider-wide key
+		{"provider-a", "other-model", 60},      // provider-wide fallback
+		{"provider-b", "another-model", 90},    // exact key without a provider-wide one
+		{"provider-b", "unknown-model", 0},     // nothing matches → global default
+		{"provider-c", "broken", 0},            // negative values are ignored
+		{"provider-z", "any-model", 0},         // absent → global default
+	}
+	for _, tt := range cases {
+		if got := LookupFirstTokenTimeout(m, tt.provider, tt.model); got != tt.want {
+			t.Errorf("LookupFirstTokenTimeout(%q, %q) = %d, want %d", tt.provider, tt.model, got, tt.want)
+		}
+	}
+	if got := LookupFirstTokenTimeout(nil, "provider-a", "reasoning-model"); got != 0 {
+		t.Errorf("LookupFirstTokenTimeout(nil, …) = %d, want 0", got)
+	}
+	if got := LookupFirstTokenTimeout(map[string]int{}, "provider-a", "reasoning-model"); got != 0 {
+		t.Errorf("LookupFirstTokenTimeout(empty, …) = %d, want 0", got)
+	}
+}

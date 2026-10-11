@@ -207,11 +207,40 @@ type FallbackConfig struct {
 	// Default 30.
 	FirstTokenTimeoutSeconds int `mapstructure:"first_token_timeout_seconds"`
 
+	// FirstTokenTimeouts overrides FirstTokenTimeoutSeconds per provider
+	// (key = provider ID) or provider/model (key = "provider/model") —
+	// reasoning models routinely think longer than the global pre-commit
+	// hold (task J). Values are seconds; keys are matched exactly, the
+	// provider ID as configured and the upstream model ID as routed.
+	// Lookup order: "provider/model" → "provider" → FirstTokenTimeoutSeconds
+	// (default 30). Zero/negative values are ignored.
+	FirstTokenTimeouts map[string]int `mapstructure:"first_token_timeouts"`
+
 	// StreamIdleTimeoutSeconds bounds the silent gap between chunks on a
 	// committed stream (after the first token). Exceeding it ends the
 	// stream with an OpenAI-style SSE error event + [DONE] — never a
 	// silently truncated completion. Default 30.
 	StreamIdleTimeoutSeconds int `mapstructure:"stream_idle_timeout_seconds"`
+}
+
+// LookupFirstTokenTimeout resolves the per-provider/model override for the
+// streaming first-token timeout (fallback.first_token_timeouts, task J):
+// the exact "provider/model" key first, then the provider-wide "provider"
+// key, else 0 — the caller falls back to the global
+// first_token_timeout_seconds. Zero/negative map values are ignored.
+func LookupFirstTokenTimeout(m map[string]int, providerID, modelID string) int {
+	if len(m) == 0 {
+		return 0
+	}
+	if modelID != "" {
+		if v, ok := m[providerID+"/"+modelID]; ok && v > 0 {
+			return v
+		}
+	}
+	if v, ok := m[providerID]; ok && v > 0 {
+		return v
+	}
+	return 0
 }
 
 // mu guards the current config pointer for concurrent hot-reload.

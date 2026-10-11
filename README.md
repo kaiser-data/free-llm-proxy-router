@@ -319,6 +319,18 @@ held before anything reaches the client:
   (same-candidate retry, then the next candidate) runs exactly as on the
   buffered path. The commit (SSE headers + first bytes + flush) happens
   exactly once per request.
+- **First usable event**: the commit waits for the first event that actually
+  carries a signal — `content`, `tool_calls`, or a `finish_reason`. A
+  role-only or empty-delta opening chunk (several providers send one first)
+  is not treated as "empty/error": the hold simply continues to the next
+  event, bounded by the TTFT timeout, and the buffered role-only events are
+  forwarded in order at the commit. The whole stream is never buffered.
+- **Per-provider/model TTFT overrides**: reasoning models routinely think
+  longer than the global hold. `fallback.first_token_timeouts` maps
+  `"provider"` or `"provider/model"` keys (upstream model id as routed) to
+  seconds — lookup falls back provider/model → provider → the global
+  `first_token_timeout_seconds`, e.g.
+  `first_token_timeouts: {"openrouter/deepseek/deepseek-r1:free": 120}`.
 - **Post-commit** the attempt is terminal: an upstream that dies
   mid-stream, stalls past `fallback.stream_idle_timeout_seconds`
   (default 30), or closes without `data: [DONE]` ends the stream with an

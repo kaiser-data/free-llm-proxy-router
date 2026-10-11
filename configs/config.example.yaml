@@ -108,6 +108,13 @@ fallback:
   # event (time to first token). The attempt is dropped and the retry
   # ladder runs — the client has received nothing yet.
   first_token_timeout_seconds: 30
+  # Per-provider/model overrides of first_token_timeout_seconds (seconds):
+  # reasoning models think longer than the global pre-commit hold. Keys are
+  # "provider" or "provider/model" (upstream model id as routed); lookup
+  # falls back provider/model → provider → the global value above.
+  # first_token_timeouts:
+  #   "openrouter/deepseek/deepseek-r1:free": 120
+  #   groq: 60
   # Streaming: max silent gap between chunks on a started stream. Exceeding
   # it ends the stream with an OpenAI-style SSE error event + [DONE].
   stream_idle_timeout_seconds: 30

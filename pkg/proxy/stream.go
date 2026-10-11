@@ -36,8 +36,12 @@ func (e *UpstreamStreamError) Error() string {
 type StreamProxy struct {
 	HTTPClient        *http.Client
 	FirstTokenTimeout time.Duration // 0 → 30s default
-	IdleTimeout       time.Duration // 0 → 30s default
-	RequestID         string        // X-Request-Id on commit (may be empty)
+	// FirstTokenTimeoutFor resolves the per-provider/model override of
+	// FirstTokenTimeout (fallback.first_token_timeouts, task J); nil keeps
+	// the global value everywhere.
+	FirstTokenTimeoutFor func(providerID, modelID string) time.Duration
+	IdleTimeout          time.Duration // 0 → 30s default
+	RequestID            string        // X-Request-Id on commit (may be empty)
 }
 
 // Forward proxies a streaming chat-completions request to the given
@@ -70,10 +74,11 @@ func (sp *StreamProxy) Forward(ctx context.Context, w http.ResponseWriter, cfg c
 	body["stream"] = true
 
 	p := streamClientParams{
-		Client:            sp.HTTPClient,
-		FirstTokenTimeout: sp.FirstTokenTimeout,
-		IdleTimeout:       sp.IdleTimeout,
-		RequestID:         sp.RequestID,
+		Client:               sp.HTTPClient,
+		FirstTokenTimeout:    sp.FirstTokenTimeout,
+		FirstTokenTimeoutFor: sp.FirstTokenTimeoutFor,
+		IdleTimeout:          sp.IdleTimeout,
+		RequestID:            sp.RequestID,
 		// Direct/alias contract: X-Used-Model is the caller-computed
 		// canonical identity (empty on the direct route — buffered-path
 		// parity), not a canonicalization of the chunk's model field.
@@ -129,10 +134,11 @@ func setStreamContractHeaders(w http.ResponseWriter, canonicalModel, providerID 
 func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, provCfg *config.ProviderConfig, body map[string]any, canonicalModel, clientModel, route, requestID string) bool {
 	modelID, _ := body["model"].(string)
 	sp := &StreamProxy{
-		HTTPClient:        s.streamHTTPClient(),
-		FirstTokenTimeout: s.firstTokenTimeout(),
-		IdleTimeout:       s.streamIdleTimeout(),
-		RequestID:         requestID,
+		HTTPClient:           s.streamHTTPClient(),
+		FirstTokenTimeout:    s.firstTokenTimeout(),
+		FirstTokenTimeoutFor: s.firstTokenTimeoutFor,
+		IdleTimeout:          s.streamIdleTimeout(),
+		RequestID:            requestID,
 	}
 	err := sp.Forward(r.Context(), w, *provCfg, body, canonicalModel)
 	if err == nil {
