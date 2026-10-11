@@ -73,12 +73,12 @@ type Response struct {
 
 // Execute runs the fallback chain for the given request.
 //
-// Returns the first successful response, the first non-retryable upstream
-// error response (client/request errors such as 400/401/403 are surfaced to
-// the caller as-is instead of being retried — see classifyUpstreamFailure),
-// or an error when every candidate failed with a retryable failure. Only
-// genuine candidate exhaustion produces an error; callers turn that into the
-// exhaustion response.
+// Returns the first successful response, the first fail-fast upstream error
+// response (genuine payload defects such as 400/413/content-policy refusals
+// are surfaced to the caller as-is instead of being retried or walked —
+// see ClassifyFailure), or an error when every candidate failed with a
+// retryable failure. Only genuine candidate exhaustion produces an error;
+// callers turn that into the exhaustion response.
 func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, error) {
 	freeEntries := fc.Catalog.FreeEntries()
 	stratReq := strategy.Request{
@@ -102,10 +102,12 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 				fc.ReliabilityTracker.Record("openrouter", true)
 				return resp, nil
 			}
-			// Non-retryable client/request errors abort the whole chain —
-			// no other step can succeed with the same payload.
-			if classifyUpstreamFailure(resp, err) == nonRetryable && resp != nil {
-				log.Printf("fallback: openrouter models[] non-retryable status %d — surfacing to client, aborting chain", resp.StatusCode)
+			// Fail-fast client/request errors abort the whole chain — no
+			// other step can succeed with the same payload. Auth/model
+			// failures fall through to the next candidate instead
+			// (three-way classification, task C).
+			if finalFailureDecision(resp, err) == FailFast && resp != nil {
+				log.Printf("fallback: openrouter models[] fail-fast status %d — surfacing to client, aborting chain", resp.StatusCode)
 				fc.ReliabilityTracker.Record("openrouter", false)
 				return resp, nil
 			}
@@ -225,15 +227,15 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					log.Printf("fallback: %s model %s not found — cooldown 5min", r.ProviderID, r.ModelID)
 				}
 			}
-			// Non-retryable upstream error: the request itself was
-			// rejected. Walking more providers cannot fix it and would
-			// mask the real error behind the exhaustion response, so
-			// abort the chain and surface the upstream response as-is.
-			// (Per-status cooldowns above still apply so future requests
-			// avoid a misconfigured provider.)
-			if classifyUpstreamFailure(resp, err) == nonRetryable {
+			// Fail-fast upstream error: the request itself was rejected.
+			// Walking more providers cannot fix it and would mask the real
+			// error behind the exhaustion response, so abort the chain and
+			// surface the upstream response as-is. Auth/model failures are
+			// classified FallbackNext and continue below with the cooldowns
+			// above already applied.
+			if finalFailureDecision(resp, err) == FailFast {
 				if resp != nil {
-					log.Printf("fallback: %s/%s non-retryable status %d — surfacing to client, aborting chain", r.ProviderID, r.ModelID, resp.StatusCode)
+					log.Printf("fallback: %s/%s fail-fast status %d — surfacing to client, aborting chain", r.ProviderID, r.ModelID, resp.StatusCode)
 					fc.ReliabilityTracker.Record(r.ProviderID, false)
 					return resp, nil
 				}
@@ -279,10 +281,10 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			return resp, nil
 		}
 		fc.ReliabilityTracker.Record("openrouter", false)
-		// A non-retryable error from the last step still surfaces the real
+		// A fail-fast error from the last step still surfaces the real
 		// upstream response instead of degrading into the exhaustion path.
-		if classifyUpstreamFailure(resp, err) == nonRetryable && resp != nil {
-			log.Printf("fallback: openrouter/free non-retryable status %d — surfacing to client", resp.StatusCode)
+		if finalFailureDecision(resp, err) == FailFast && resp != nil {
+			log.Printf("fallback: openrouter/free fail-fast status %d — surfacing to client", resp.StatusCode)
 			return resp, nil
 		}
 	}
@@ -320,14 +322,16 @@ func (fc *FallbackChain) callProviderWithRetries(ctx context.Context, callCfg co
 // retrySameCandidate retries the SAME provider/model up to
 // fallback.retries_per_candidate times, sleeping between attempts with
 // ratelimit.ExponentialBackoff + DefaultBackoffParams (exponential backoff
-// with jitter — previously dead code, gap G4). Failure classes are gated by
-// fallback.retry_on_429 / fallback.retry_on_5xx (both flags existed with
-// default true but were never read — dead config, NG4): a 429 retries only
-// when retry_on_429, a 5xx only when retry_on_5xx; transport errors, 408
-// and 404 retry unconditionally (transient availability failures without a
-// dedicated flag). The HuggingFace 503-loading recovery in Execute owns that
-// case with its dedicated estimated-time wait, so it is excluded here to
-// avoid double-retrying in front of it.
+// with jitter — previously dead code, gap G4). The three-way classifier
+// (ClassifyFailure) now owns the failure classes the old two-gate
+// (classifyUpstreamFailure + sameCandidateRetryAllowed) used to split:
+// 429 follows fallback.retry_on_429, 5xx follows fallback.retry_on_5xx,
+// transport errors and 408 retry while retries remain, 404/401/403 and
+// genuine payload errors fall straight through to the walk. A backoff sleep
+// never runs past the request's remaining total deadline. The HuggingFace
+// 503-loading recovery in Execute owns that case with its dedicated
+// estimated-time wait, so it is excluded here to avoid double-retrying in
+// front of it.
 func (fc *FallbackChain) retrySameCandidate(ctx context.Context, callCfg config.ProviderConfig, body map[string]any, resp *Response, err error, attempt *int) (*Response, error) {
 	maxRetries := fc.Cfg.Fallback.RetriesPerCandidate
 	if maxRetries < 0 {
@@ -340,12 +344,16 @@ func (fc *FallbackChain) retrySameCandidate(ctx context.Context, callCfg config.
 		return resp, err
 	}
 	modelID, _ := body["model"].(string)
+	timeouts := 0
+	if err != nil && isTimeoutErr(err) {
+		timeouts = 1
+	}
 	for retryIdx := 0; retryIdx < maxRetries; retryIdx++ {
-		if classifyUpstreamFailure(resp, err) != retryable {
-			return resp, err // client error or canceled context — never retried
-		}
-		if !fc.sameCandidateRetryAllowed(resp) {
-			return resp, err
+		switch ClassifyFailure(fc.classifierInput(ctx, resp, err, retryIdx, maxRetries, timeouts)) {
+		case FailFast, FallbackNext:
+			return resp, err // client/request defect or class says move on
+		case RetrySame:
+			// fall through to the retry below
 		}
 		// Hard budget ceiling: the outer walk only checks max_attempts
 		// between candidates, so without this check one candidate's retry
@@ -357,6 +365,12 @@ func (fc *FallbackChain) retrySameCandidate(ctx context.Context, callCfg config.
 		}
 		base, maxDelay := ratelimit.DefaultBackoffParams()
 		delay := ratelimit.ExponentialBackoff(retryIdx, base, maxDelay)
+		// Never sleep past the request's total deadline: a backoff that
+		// would not fit the remaining budget is treated as "candidate
+		// done" and the walk continues on the next one.
+		if rem := remainingBudget(ctx); rem > 0 && delay >= rem {
+			return resp, err
+		}
 		log.Printf("fallback: %s/%s retryable failure — same-candidate retry %d/%d after %v", callCfg.ID, modelID, retryIdx+1, maxRetries, delay)
 		select {
 		case <-ctx.Done():
@@ -365,6 +379,9 @@ func (fc *FallbackChain) retrySameCandidate(ctx context.Context, callCfg config.
 		}
 		resp, err = fc.callProvider(ctx, callCfg, body)
 		*attempt++
+		if err != nil && isTimeoutErr(err) {
+			timeouts++
+		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			return resp, nil
 		}
@@ -372,22 +389,30 @@ func (fc *FallbackChain) retrySameCandidate(ctx context.Context, callCfg config.
 	return resp, err
 }
 
-// sameCandidateRetryAllowed gates the same-candidate retry by failure class:
-// 429 follows fallback.retry_on_429 and 5xx follows fallback.retry_on_5xx;
-// transport errors (resp == nil), 408 and 404 stay retry-eligible.
-func (fc *FallbackChain) sameCandidateRetryAllowed(resp *Response) bool {
-	if resp == nil {
-		return true
+// classifierInput assembles the pure classifier's input for a failed
+// buffered attempt: Retry-After is parsed from the failure response headers
+// (429/503) and the remaining budget from the request context's deadline
+// (set by fallback.total_deadline_seconds when configured).
+func (fc *FallbackChain) classifierInput(ctx context.Context, resp *Response, err error, retriesDone, maxRetries, timeouts int) FailureInput {
+	in := FailureInput{
+		Err:             err,
+		RetriesDone:     retriesDone,
+		MaxRetries:      maxRetries,
+		RetryOn429:      fc.Cfg.Fallback.RetryOn429,
+		RetryOn5xx:      fc.Cfg.Fallback.RetryOn5xx,
+		RemainingBudget: remainingBudget(ctx),
+		TimeoutsDone:    timeouts,
 	}
-	switch {
-	case resp.StatusCode == http.StatusTooManyRequests:
-		return fc.Cfg.Fallback.RetryOn429
-	case resp.StatusCode >= http.StatusInternalServerError:
-		return fc.Cfg.Fallback.RetryOn5xx
-	default:
-		return true
+	if resp != nil {
+		in.StatusCode = resp.StatusCode
+		in.Body = resp.Body
+		in.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 	}
+	return in
 }
+
+// sameCandidateRetryAllowed was folded into ClassifyFailure (task C): the
+// 429/5xx flags now gate the retry_same verdict inside the classifier.
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
 	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"

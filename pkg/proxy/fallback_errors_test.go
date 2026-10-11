@@ -65,12 +65,12 @@ func chainRequest() Request {
 	}
 }
 
-// TestFallbackChainClientErrorAbortsChain: a 400/401/403 from the first
-// provider is non-retryable — the chain must abort and return the upstream
-// response instead of walking the second provider or exhausting into the
-// canned 200.
+// TestFallbackChainClientErrorAbortsChain: a genuine payload defect (400,
+// 413) from the first provider is fail-fast — the chain must abort and
+// return the upstream response instead of walking the second provider or
+// exhausting into the canned 200.
 func TestFallbackChainClientErrorAbortsChain(t *testing.T) {
-	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden} {
+	for _, status := range []int{http.StatusBadRequest, http.StatusRequestEntityTooLarge} {
 		t.Run(fmt.Sprintf("%d", status), func(t *testing.T) {
 			var secondHits int32
 			failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,13 +87,51 @@ func TestFallbackChainClientErrorAbortsChain(t *testing.T) {
 			fc, _ := newTwoProviderChain(failSrv.URL, okSrv.URL)
 			resp, err := fc.Execute(context.Background(), chainRequest())
 			if err != nil {
-				t.Fatalf("Execute error = %v, want the non-retryable upstream response", err)
+				t.Fatalf("Execute error = %v, want the fail-fast upstream response", err)
 			}
 			if resp.StatusCode != status {
 				t.Errorf("status = %d, want %d", resp.StatusCode, status)
 			}
 			if got := atomic.LoadInt32(&secondHits); got != 0 {
-				t.Errorf("second provider hits = %d, want 0 (client error must not walk further providers)", got)
+				t.Errorf("second provider hits = %d, want 0 (payload defect must not walk further providers)", got)
+			}
+		})
+	}
+}
+
+// TestFallbackChainAuthErrorFallsThrough: 401/403 are provider-availability
+// failures under the three-way classification (second P0 pass, task C) — the
+// provider gets a 10-minute cooldown and the walk continues to the next
+// candidate, which serves the request. The old contract aborted the whole
+// chain on auth errors even though other providers could still serve.
+func TestFallbackChainAuthErrorFallsThrough(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("%d", status), func(t *testing.T) {
+			var secondHits int32
+			failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				fmt.Fprintf(w, `{"error":{"message":"auth error %d"}}`, status)
+			}))
+			defer failSrv.Close()
+			okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&secondHits, 1)
+				w.Write([]byte(`{"choices":[]}`))
+			}))
+			defer okSrv.Close()
+
+			fc, rl := newTwoProviderChain(failSrv.URL, okSrv.URL)
+			resp, err := fc.Execute(context.Background(), chainRequest())
+			if err != nil {
+				t.Fatalf("Execute error = %v, want the second provider's 200", err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("status = %d, want 200 (auth error must fall through to the next candidate)", resp.StatusCode)
+			}
+			if got := atomic.LoadInt32(&secondHits); got != 1 {
+				t.Errorf("second provider hits = %d, want 1", got)
+			}
+			if !rl.IsOnCooldown("provider-one") {
+				t.Errorf("provider-one not on cooldown after auth error %d — the walk must mark it", status)
 			}
 		})
 	}

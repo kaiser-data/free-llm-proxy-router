@@ -258,34 +258,43 @@ candidate among **all** currently discovered free chat-capable models
 
 ### Error classification
 
-Failures during candidate routing are classified once, and the class decides
-between "try the next candidate" and "return immediately":
+Failures during candidate routing run through one pure classifier
+(`pkg/proxy/classify.go`, `ClassifyFailure`) whose verdict is one of
+`retry_same`, `fallback`, or `fail_fast`:
 
-- **Retryable** — `408`, `429`, all `5xx`, upstream timeouts, and connection
-  failures: the same candidate is first retried up to
-  `fallback.retries_per_candidate` times (default 1) with exponential
-  backoff — a 429 retry gated by `fallback.retry_on_429`, a 5xx retry by
-  `fallback.retry_on_5xx` — and then the walk continues to the next
-  candidate (per-status cooldowns still apply). Retries consume the
-  `max_attempts` budget. Only when every candidate fails with a retryable
-  failure does the request get a `503 Service Unavailable` with a
-  `Retry-After` hint (seconds, `fallback.retry_after_seconds`, default 5) and
-  an OpenAI-style JSON error body (`type: "server_error"`,
-  `code: "all_candidates_exhausted"`) — never a masked 200 completion.
-- **Non-retryable** — `400`, `401`, `403`, and every other `4xx` except
-  `404`/`408`/`429`: the upstream response is returned to the client
-  verbatim. No further candidates are walked and a client error is never
-  masked behind a fake successful response.
+- **retry_same** — transient failures on the candidate that just failed:
+  connection reset / EOF before any response byte, `408`, first timeout, and
+  `429`/`5xx` (incl. `502`/`503`/`504`/`529`) while retries remain. The same
+  candidate is retried up to `fallback.retries_per_candidate` times
+  (default 1) with exponential backoff — a 429 retry gated by
+  `fallback.retry_on_429`, a 5xx retry by `fallback.retry_on_5xx`. Retries
+  consume the `max_attempts` budget and never sleep past the request's
+  remaining total deadline.
+- **fallback** — this candidate is done, try the next one: retries spent,
+  `429` whose `Retry-After` exceeds the request's remaining budget (never
+  sleep-wait), `404` (model gone for this provider — the entry is flagged
+  for reverification), and `401`/`403` (the provider's credentials are its
+  own problem; it goes on a 10-minute cooldown while other candidates may
+  still serve the request).
+- **fail_fast** — retrying or falling back cannot fix it: genuine `400`
+  payload defects, `413`, content-policy refusals, and a canceled client
+  context. The upstream response is returned to the client verbatim and no
+  further candidates are walked — a client error is never masked behind a
+  fake successful response. A `400` that clearly complains about context
+  length or unsupported modalities is classified `fallback` instead —
+  another candidate may support the request shape.
 
-`404` is deliberately treated as retryable: during a candidate walk it means
-"this provider does not serve this model" (catalog staleness), so other
-candidates are tried and the entry is flagged for reverification. A `404`
-caused by request semantics — a model that is neither in the catalog nor a
-canonical alias — is answered immediately by the proxy itself, before any
-upstream call. Note that upstream `401`/`403` stem from the proxy's own
-provider credentials; they are surfaced instead of silently retried so a
-misconfiguration is visible, and the provider is put on a 10-minute cooldown
-either way.
+Only when every candidate fails with a retryable/fallback-class failure does
+the request get a `503 Service Unavailable` with a `Retry-After` hint
+(seconds, `fallback.retry_after_seconds`, default 5) and an OpenAI-style
+JSON error body (`type: "server_error"`,
+`code: "all_candidates_exhausted"`) — never a masked 200 completion.
+
+`404` during a candidate walk means "this provider does not serve this
+model" (catalog staleness), so other candidates are tried and the entry is
+flagged for reverification. A `404` caused by request semantics — a model
+that is neither in the catalog nor a canonical alias — is answered
+immediately by the proxy itself, before any upstream call.
 
 ## Catalog management
 

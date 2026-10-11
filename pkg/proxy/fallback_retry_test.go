@@ -11,7 +11,6 @@ import (
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
-	"github.com/kaiser-data/free-llm-proxy-router/pkg/models"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
@@ -224,18 +223,6 @@ func TestRetriesConsumeMaxAttemptsBudget(t *testing.T) {
 	}
 }
 
-// twoCandidateStrategy ranks two different providers — used to verify the
-// max_attempts ceiling across candidate boundaries.
-type twoCandidateStrategy struct{}
-
-func (twoCandidateStrategy) Name() string { return "two-candidate-mock" }
-func (twoCandidateStrategy) Rank(_ strategy.Request, _ []catalog.CatalogEntry, _ *models.EnrichedCatalog) []strategy.RankedEntry {
-	return []strategy.RankedEntry{
-		{ProviderID: "provider-a", ModelID: "model-a"},
-		{ProviderID: "provider-b", ModelID: "model-b"},
-	}
-}
-
 // TestRetriesStopAtMaxAttemptsCeiling: retries share the max_attempts budget
 // AND the ceiling holds inside one candidate's retry chain — the total number
 // of upstream calls never exceeds max_attempts. Before the ceiling check was
@@ -275,8 +262,11 @@ func TestRetriesStopAtMaxAttemptsCeiling(t *testing.T) {
 		},
 	}
 	fc := &FallbackChain{
-		Cfg:                cfg,
-		Strategy:           twoCandidateStrategy{},
+		Cfg: cfg,
+		Strategy: &multiMockStrategy{entries: []strategy.RankedEntry{
+			{ProviderID: "provider-a", ModelID: "model-a"},
+			{ProviderID: "provider-b", ModelID: "model-b"},
+		}},
 		Catalog:            cat,
 		RateLimiter:        rl,
 		ReliabilityTracker: reliability.New(),
