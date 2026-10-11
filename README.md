@@ -365,6 +365,20 @@ held before anything reaches the client:
   `code: "upstream_stream_interrupted"`) followed by `data: [DONE]` — never
   a silently truncated completion and never text stitched together from
   another provider.
+- **SSE keepalive while WAITING** (task P): a streaming request that ends
+  up waiting — in the slot queue (task L0) or in the pre-commit hold — gets
+  the 200 SSE header plus `": keepalive"` comment events once the wait
+  passes `fallback.stream_keepalive_after_seconds` (default 5, `0`
+  disables), repeated every `fallback.stream_keepalive_interval_seconds`
+  (default 15) and flushed each time. Comments are not data: silent
+  fallback across candidates still works after they start, and no
+  completion byte is committed until the first usable event. Two states
+  are tracked separately — "header sent" (the 200 went out; errors must
+  become SSE events from here on) and "data committed" (the first
+  completion byte; the walk is terminal). A failure after the header ends
+  in the structured OpenAI-style SSE error event + `data: [DONE]`.
+  Non-streaming requests never get the keepalive: they wait silently
+  within the deadline and answer with their real status code.
 - The whole streaming attempt stays capped by
   `fallback.stream_timeout_seconds` (0 inherits
   `provider_timeout_seconds`) — independent of

@@ -257,6 +257,9 @@ func (s *Server) candidatesBlocked(ctx context.Context, w http.ResponseWriter, g
 		return false
 	}
 	earliest, _ := s.slotLimit.Earliest(keys)
+	// The queue wait is a WAITING phase (task P): a streaming request
+	// parks with the SSE keepalive armed.
+	armKeepalive(w)
 	served, err := s.queues.wait(ctx, group, keys, earliest, time.Duration(c.Fallback.QueueWaitSeconds)*time.Second, queueMaxWaiters(c), true)
 	if served {
 		log.Printf("slot queue: group %s handed its turn to %q", group, clientModel)
@@ -277,6 +280,45 @@ func queueMaxWaiters(c *config.Config) int {
 		return s
 	}
 	return 64
+}
+
+// wrapStream installs the SSE keepalive writer on a streaming request
+// (task P). It returns the writer the route must use and the wrapper
+// itself — nil when keepalive is disabled (after=0) or already installed.
+// Non-streaming requests are never wrapped: they wait silently within the
+// deadline and answer with their real status code.
+func (s *Server) wrapStream(w http.ResponseWriter, requestID string) (http.ResponseWriter, *keepaliveWriter) {
+	if keepaliveOf(w) != nil {
+		return w, nil
+	}
+	c := s.cfg.Load()
+	after := time.Duration(c.Fallback.StreamKeepaliveAfterSeconds) * time.Second
+	if after <= 0 {
+		return w, nil
+	}
+	interval := time.Duration(c.Fallback.StreamKeepaliveIntervalSeconds) * time.Second
+	kw := newKeepaliveWriter(w, requestID, after, interval)
+	return kw, kw
+}
+
+// finishStreamRoute ends a streaming route after the walk failed. Before
+// any header: the exhaustion 503 + Retry-After (the status is still free).
+// After the keepalive header went out (task P): the structured OpenAI-style
+// SSE error event + data: [DONE] — the status can no longer change, and a
+// fake success is out of the question either way.
+func (s *Server) finishStreamRoute(kw *keepaliveWriter, w http.ResponseWriter, clientModel string, err error) {
+	if kw != nil && kw.HeaderSent() {
+		log.Printf("stream route: keepalive header already sent — ending with the SSE error event + [DONE]")
+		flusher, canFlush := flusherOf(w)
+		writeSSEErrorEventMsg(w, flusher, canFlush,
+			fmt.Sprintf("request failed after the response started: %v", err),
+			"upstream_failed_after_header")
+		return
+	}
+	if errors.Is(err, errClientGone) {
+		return // nobody left to answer
+	}
+	s.writeExhaustionError(w, clientModel, err)
 }
 
 // firstTokenTimeout returns the streaming pre-commit hold cap from
@@ -397,6 +439,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Request id: honor the client's X-Request-Id or mint one — the response
 	// header and every per-attempt log line carry it (task F).
 	req.RequestID = requestIDFor(w, r)
+
+	// SSE keepalive (task P): a streaming request that ends up WAITING —
+	// slot queue or pre-commit hold — past stream_keepalive_after_seconds
+	// gets the 200 header + ": keepalive" comments. One wrapper for the
+	// whole request; every route writes through it.
+	var kw *keepaliveWriter
+	if req.Stream {
+		w, kw = s.wrapStream(w, req.RequestID)
+		if kw != nil {
+			defer kw.stop()
+		}
+	}
 
 	cfg := s.cfg.Load()
 	cat := s.catalog.Load()
@@ -848,10 +902,11 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		_, committed, err := chain.ExecuteStream(r.Context(), req, w)
 		if err != nil {
 			log.Printf("fallback chain exhausted (stream): %v", err)
-			// Same exhaustion contract as the buffered path: 503 +
-			// Retry-After + OpenAI-style error body. Allowed here because
-			// the pre-commit hold guarantees no headers were written yet.
-			s.writeExhaustionError(w, req.ClientModel, err)
+			// Before any header: 503 + Retry-After + OpenAI-style error
+			// body (the pre-commit hold guarantees nothing was written).
+			// After the keepalive header went out (task P): the structured
+			// SSE error event + [DONE] — the status can no longer change.
+			s.finishStreamRoute(keepaliveOf(w), w, req.ClientModel, err)
 			return
 		}
 		_ = committed // a committed stream already answered the client

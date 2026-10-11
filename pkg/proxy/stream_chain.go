@@ -67,6 +67,11 @@ const sseChunkSize = 4096
 //	err != nil, !committed  — transport-level failure before any byte:
 //	                        classify and let the ladder decide
 func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.ProviderConfig, body map[string]any, p streamClientParams) (*Response, bool, error) {
+	// The pre-commit hold is a WAITING phase (task P): arm the SSE
+	// keepalive — if the wait passes stream_keepalive_after_seconds the
+	// client gets the 200 header + ": keepalive\n\n" comments while the
+	// hold keeps every data byte buffered.
+	armKeepalive(w)
 	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 	upstreamModel, _ := body["model"].(string)
 	data, err := json.Marshal(body)
@@ -598,6 +603,9 @@ func (fc *FallbackChain) ExecuteStream(ctx context.Context, req Request, w http.
 		if !ok {
 			return resp, committed, err
 		}
+		// The queue wait is a WAITING phase (task P): arm the SSE
+		// keepalive while the request parks.
+		armKeepalive(w)
 		served, qerr := fc.waitInQueue(ctx, req, busy, false)
 		if !served {
 			return nil, false, qerr
@@ -695,7 +703,18 @@ func pumpCommittedStream(ctx context.Context, w http.ResponseWriter, body io.Rea
 // a silently truncated completion. Write failures (client already gone) are
 // ignored — there is nobody left to tell.
 func writeSSEErrorEvent(w http.ResponseWriter, flusher http.Flusher, canFlush bool) {
-	errEvent := `data: {"error":{"message":"upstream stream interrupted after the response started","type":"server_error","code":"upstream_stream_interrupted"}}` + "\n\n"
+	writeSSEErrorEventMsg(w, flusher, canFlush,
+		"upstream stream interrupted after the response started", "upstream_stream_interrupted")
+}
+
+// writeSSEErrorEventMsg is the parameterized form — the post-header terminal
+// for every route: interrupted streams, surfaced fail-fast upstream errors,
+// slot-queue timeouts. The message/code are JSON-escaped here so callers
+// can carry status details safely.
+func writeSSEErrorEventMsg(w http.ResponseWriter, flusher http.Flusher, canFlush bool, message, code string) {
+	msgJSON, _ := json.Marshal(message)
+	codeJSON, _ := json.Marshal(code)
+	errEvent := `data: {"error":{"message":` + string(msgJSON) + `,"type":"server_error","code":` + string(codeJSON) + `}}` + "\n\n"
 	if _, err := w.Write([]byte(errEvent)); err != nil {
 		return
 	}

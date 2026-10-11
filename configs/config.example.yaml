@@ -118,6 +118,15 @@ fallback:
   # Streaming: max silent gap between chunks on a started stream. Exceeding
   # it ends the stream with an OpenAI-style SSE error event + [DONE].
   stream_idle_timeout_seconds: 30
+  # SSE keepalive while WAITING (task P): a streaming request that ends up
+  # waiting — slot queue or pre-commit hold — gets the 200 SSE header plus
+  # ": keepalive" comment events once the wait passes
+  # stream_keepalive_after_seconds (0 disables), repeated every
+  # stream_keepalive_interval_seconds. Comments are not data: silent
+  # fallback still works, and a failure after the header ends in the SSE
+  # error event + [DONE].
+  stream_keepalive_after_seconds: 5
+  stream_keepalive_interval_seconds: 15
   # Slot queue (task L0): when providers[].rpm_limit gates an upstream and
   # every eligible candidate lacks a free slot, the request waits FIFO in
   # its model group's queue — woken by a single timer at the earliest

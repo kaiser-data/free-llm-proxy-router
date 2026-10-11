@@ -66,7 +66,8 @@ func (h *hitRecorder) handler() http.HandlerFunc {
 
 // queuedServer builds a Server with one rpm=1 provider and slot queueing
 // enabled; the limiter window is shortened for the test.
-func queuedServer(t *testing.T, waitSeconds int) (*Server, *hitRecorder) {
+// keepaliveAfterSeconds is fallback.stream_keepalive_after_seconds.
+func queuedServer(t *testing.T, waitSeconds, keepaliveAfterSeconds int) (*Server, *hitRecorder) {
 	t.Helper()
 	rec := &hitRecorder{}
 	srv := httptest.NewServer(rec.handler())
@@ -76,7 +77,7 @@ func queuedServer(t *testing.T, waitSeconds int) (*Server, *hitRecorder) {
 	cfg.Proxy.Strategy = "adaptive"
 	cfg.Fallback.QueueWaitSeconds = waitSeconds
 	cfg.Fallback.QueueMaxWaiters = 10
-	cfg.Fallback.StreamKeepaliveAfterSeconds = 0 // keepalive is task P — off here
+	cfg.Fallback.StreamKeepaliveAfterSeconds = keepaliveAfterSeconds
 	cfg.Providers = []config.ProviderConfig{{
 		ID: "tp", BaseURL: srv.URL, Enabled: true, RPM: 1,
 	}}
@@ -97,7 +98,7 @@ func queuedServer(t *testing.T, waitSeconds int) (*Server, *hitRecorder) {
 // window (shortened here from one minute). Every request ends with a REAL
 // 200 answer — the queue replaces the instant-503 path (task L0).
 func TestSlotQueueIntegrationBufferedFIFO(t *testing.T) {
-	s, rec := queuedServer(t, 5)
+	s, rec := queuedServer(t, 5, 0)
 
 	t0 := time.Now()
 	var wg sync.WaitGroup
@@ -135,7 +136,7 @@ func TestSlotQueueIntegrationBufferedFIFO(t *testing.T) {
 // same quota pressure — queued requests wait, then each client sees real
 // SSE with a 200 and a real completion (no fake 200 anywhere).
 func TestSlotQueueStreamRouteRealSSEAfterWait(t *testing.T) {
-	s, rec := queuedServer(t, 5)
+	s, rec := queuedServer(t, 5, 0)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {

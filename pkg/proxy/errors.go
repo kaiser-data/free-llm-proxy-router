@@ -17,8 +17,17 @@ import (
 // client verbatim: the status code and body are preserved so the client sees
 // the real validation/auth error instead of a masked success. Only
 // router-owned headers are set — upstream transport headers describe the
-// buffered body callProvider already consumed.
+// buffered body callProvider already consumed. When the keepalive header
+// already went out on a streaming request (task P) the status is no longer
+// free — the error becomes the structured SSE error event + [DONE] instead.
 func (s *Server) writeUpstreamError(w http.ResponseWriter, canonicalModel string, resp *Response) {
+	if kw := keepaliveOf(w); kw != nil && kw.HeaderSent() {
+		flusher, canFlush := flusherOf(w)
+		writeSSEErrorEventMsg(w, flusher, canFlush,
+			fmt.Sprintf("upstream rejected the request with status %d after the response started", resp.StatusCode),
+			"upstream_fail_fast_after_header")
+		return
+	}
 	if v := resp.Header.Get("X-Free-Router-Upstream-Provider"); v != "" {
 		w.Header().Set("X-Free-Router-Upstream-Provider", v)
 	}
@@ -45,6 +54,16 @@ func (s *Server) writeUpstreamError(w http.ResponseWriter, canonicalModel string
 // report); the first NG1 commit shipped this as 502, which this spec pass
 // corrects to 503.
 func (s *Server) writeExhaustionError(w http.ResponseWriter, clientModel string, cause error) {
+	// Streaming request with the keepalive header already out (task P):
+	// the status is no longer free — end with the structured SSE error
+	// event + [DONE] instead of a 503 the wire can no longer carry.
+	if kw := keepaliveOf(w); kw != nil && kw.HeaderSent() {
+		flusher, canFlush := flusherOf(w)
+		writeSSEErrorEventMsg(w, flusher, canFlush,
+			fmt.Sprintf("all provider candidates exhausted: %v", cause),
+			"all_candidates_exhausted")
+		return
+	}
 	retryAfter := s.cfg.Load().Fallback.RetryAfterSeconds
 	if retryAfter <= 0 {
 		retryAfter = 5 // mirror the viper default for zeroed Config structs
