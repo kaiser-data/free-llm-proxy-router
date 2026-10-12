@@ -231,6 +231,15 @@ type FallbackConfig struct {
 	// 0 disables the cap. Default 90.
 	TotalDeadlineSeconds int `mapstructure:"total_deadline_seconds"`
 
+	// ModelBlocklist removes upstream model IDs from ranking entirely —
+	// they are never selected for any request (round 8: models like
+	// "ling-3.0-flash-sante:free" kept returning HTTP 400s on the free
+	// tier). Keys match CatalogEntry.ModelID exactly. Applied per
+	// request at the gate, so a config hot-reload takes effect
+	// immediately. Empty/nil disables.
+	ModelBlocklist []string `mapstructure:"model_blocklist"`
+
+
 	// FirstTokenTimeoutSeconds bounds how long a streaming attempt may sit
 	// on a 200 response without producing a usable first event (time to
 	// first token). The attempt is dropped and the retry ladder runs —

@@ -126,10 +126,26 @@ func entryPassesGate(e catalog.CatalogEntry, d capabilityDemand) bool {
 	return true
 }
 
-// gateEntries filters a candidate list through the gate.
-func gateEntries(entries []catalog.CatalogEntry, d capabilityDemand) []catalog.CatalogEntry {
+// gateEntries filters a candidate list through the gate. blocklist (round
+// 8) removes upstream model IDs from selection entirely — a model the
+// operator has proven broken (e.g. a model that keeps answering HTTP 400)
+// is never ranked, regardless of its advertised capabilities. Keys match
+// CatalogEntry.ModelID exactly; an empty/nil blocklist disables the filter.
+func gateEntries(entries []catalog.CatalogEntry, d capabilityDemand, blocklist []string) []catalog.CatalogEntry {
+	var blocked map[string]struct{}
+	if len(blocklist) > 0 {
+		blocked = make(map[string]struct{}, len(blocklist))
+		for _, id := range blocklist {
+			blocked[id] = struct{}{}
+		}
+	}
 	out := make([]catalog.CatalogEntry, 0, len(entries))
 	for _, e := range entries {
+		if blocked != nil {
+			if _, bad := blocked[e.ModelID]; bad {
+				continue
+			}
+		}
 		if entryPassesGate(e, d) {
 			out = append(out, e)
 		}

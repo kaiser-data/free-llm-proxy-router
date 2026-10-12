@@ -939,7 +939,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	// never waits in the slot queue, because waiting cannot grow a context
 	// window or add a missing capability.
 	demand := demandOf(req.Raw, req.Messages, req.MaxTokens)
-	if len(gateEntries(cat.FreeEntries(), demand)) == 0 {
+	if len(gateEntries(cat.FreeEntries(), demand, cfg.Fallback.ModelBlocklist)) == 0 {
 		log.Printf("strategy chain: req=%s no candidate passes the capability gate for %q", req.RequestID, req.ClientModel)
 		s.writeNoCapableCandidate(w, req.ClientModel, demand)
 		return

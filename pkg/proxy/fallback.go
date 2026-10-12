@@ -223,7 +223,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 	// context fit and tools/vision also filter. An empty surviving set
 	// reaches the routes' immediate no-capable-candidate error, never a
 	// queue wait.
-	freeEntries = gateEntries(freeEntries, fc.gateDemand())
+	freeEntries = gateEntries(freeEntries, fc.gateDemand(), fc.Cfg.Fallback.ModelBlocklist)
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
 		EstimatedPromptTokens: estimateTokens(req.Messages),
