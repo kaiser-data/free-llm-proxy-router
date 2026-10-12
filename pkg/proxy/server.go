@@ -658,9 +658,15 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			continue
 		}
 		if gateSkipped > 0 {
-			// Every matched entry failed the capability gate (NG8 /
-			// context / tools / vision): a clear immediate error — the
-			// request never waits in the slot queue (task Q).
+			// Round 9: a tools/vision-only mismatch is relaxed and the
+			// entries are re-entered — the upstream verdict beats stale
+			// metadata (an upstream tools-400 then walks on via
+			// bad400Tools). Only a context/NG8-only mismatch answers the
+			// immediate no-capable-candidate error (task Q).
+			if chain.Gate.tools || chain.Gate.vision {
+				*chain.Gate = relaxCapabilityDemand(*chain.Gate)
+				continue
+			}
 			s.writeNoCapableCandidate(w, req.Model, *chain.Gate)
 			return
 		}
@@ -911,18 +917,27 @@ func (s *Server) rankPoolCandidates(cfg *config.Config, req Request, resolver *a
 
 // gateUpstreams filters the alias/pool candidate list through the request's
 // capability gate (task Q): NG8 exclusion, context fit, tools/vision — the
-// same rule the ranked walk applies.
+// same rule the ranked walk applies. Round 9: a tools/vision-only mismatch
+// that empties the set is relaxed — the same two-pass rule gateEntries
+// applies.
 func (s *Server) gateUpstreams(cat *catalog.Catalog, req Request, ups []alias.Upstream) []alias.Upstream {
 	d := demandOf(req.Raw, req.Messages, req.MaxTokens)
-	out := make([]alias.Upstream, 0, len(ups))
-	for _, u := range ups {
-		e := cat.Find(u.ProviderID, u.ModelID)
-		if e == nil {
-			continue // entry vanished from the catalog mid-flight
+	keep := func(d capabilityDemand) []alias.Upstream {
+		out := make([]alias.Upstream, 0, len(ups))
+		for _, u := range ups {
+			e := cat.Find(u.ProviderID, u.ModelID)
+			if e == nil {
+				continue // entry vanished from the catalog mid-flight
+			}
+			if entryPassesGate(*e, d) {
+				out = append(out, u)
+			}
 		}
-		if entryPassesGate(*e, d) {
-			out = append(out, u)
-		}
+		return out
+	}
+	out := keep(d)
+	if len(out) == 0 && (d.tools || d.vision) {
+		out = keep(relaxCapabilityDemand(d))
 	}
 	return out
 }

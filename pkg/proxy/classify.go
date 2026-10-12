@@ -241,7 +241,7 @@ func classifyBadRequest(in FailureInput) FailureDecision {
 	switch classifyBadRequestSubtype(in.Body) {
 	case bad400ContentPolicy:
 		return FailFast
-	case bad400ContextLength:
+	case bad400ContextLength, bad400Tools:
 		return FallbackNext
 	default:
 		if in.Policy == policyCrossModelConfirm && in.ConfirmN > 0 && in.SeenDistinct < in.ConfirmN {
@@ -267,6 +267,7 @@ const (
 	bad400Unknown badRequestKind = iota
 	bad400ContentPolicy
 	bad400ContextLength
+	bad400Tools
 )
 
 // classifyBadRequestSubtype is the pure body→subclass split shared by
@@ -278,6 +279,9 @@ func classifyBadRequestSubtype(body []byte) badRequestKind {
 	}
 	if containsAnyMarker(body, contextLengthMarkers) || containsAnyMarker(body, modalityMarkers) {
 		return bad400ContextLength
+	}
+	if containsAnyMarker(body, toolsUnsupportedMarkers) {
+		return bad400Tools
 	}
 	return bad400Unknown
 }
@@ -326,6 +330,29 @@ var modalityMarkers = []string{
 	"image input", "audio input", "video input",
 	"does not support image", "does not support audio", "does not support video",
 	"multimodal", "unsupported modality",
+}
+
+// toolsUnsupportedMarkers detect "this model cannot answer with tools /
+// function calling" (round 9) — same reasoning as modality: another
+// candidate may support them, so the walk moves on. PHRASE-level on
+// purpose: bare "tools", "function", or "tool_choice" also appear inside
+// payload-defect validation errors ("tools must be an array", "invalid
+// type for tool_choice") that no candidate can fix, which would misroute
+// genuine payload defects into the fallback path. Shapes per provider
+// family:
+//
+//	OpenRouter: "Model qwen/qwen3 does not support tools."
+//	Groq: "The model `llama-3.1-8b-instant` does not support function calling."
+//	Gemini: "Function calling is not enabled for this model."
+//	vLLM/others: "tool use is not supported by this model"
+var toolsUnsupportedMarkers = []string{
+	"does not support tool",     // covers "…tools" / "tool use" / "tool calls"
+	"does not support function", // Groq: "…does not support function calling"
+	"not support tools",         // "do not support tools", "models not support tools"
+	"tools not supported", "tool use not supported", "tool use is not supported",
+	"tool_choice is not supported",
+	"function calling is not supported", "function calling not supported",
+	"function calling is not enabled", // Gemini
 }
 
 func containsAnyMarker(body []byte, markers []string) bool {

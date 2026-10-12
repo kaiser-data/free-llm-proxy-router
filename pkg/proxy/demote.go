@@ -194,7 +194,21 @@ func (fc *FallbackChain) filterDemotedUpstreams(ups []alias.Upstream) []alias.Up
 // statuses) is decided identically to finalFailureDecision.
 func (fc *FallbackChain) failureDecisionWalk(resp *Response, err error, providerID, modelID string, seenUnknown400 map[string]bool) FailureDecision {
 	in := finalFailureInput(resp, err)
-	if in.StatusCode != http.StatusBadRequest || seenUnknown400 == nil {
+	if in.StatusCode != http.StatusBadRequest {
+		return ClassifyFailure(in)
+	}
+	// Tools-unsupported 400 (round 9): a deterministic MODEL defect — the
+	// walk moves on regardless of the unknown-400 policy, and the model is
+	// parked so the next request's ranking skips it (the unknown-400
+	// demotion lesson, without the confirm dance).
+	if classifyBadRequestSubtype(in.Body) == bad400Tools {
+		if fc.Demotions != nil && fc.demotionTTL() > 0 {
+			fc.Demotions.demote(providerID, modelID, time.Now())
+			log.Printf("fallback: %s/%s demoted for %s (tools-unsupported)", providerID, modelID, fc.demotionTTL())
+		}
+		return ClassifyFailure(in) // bad400Tools → FallbackNext
+	}
+	if seenUnknown400 == nil {
 		return ClassifyFailure(in)
 	}
 	if fc.Cfg.Fallback.Unknown400Policy != policyCrossModelConfirm || fc.Cfg.Fallback.Unknown400ConfirmN <= 0 {

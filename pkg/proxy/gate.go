@@ -126,6 +126,16 @@ func entryPassesGate(e catalog.CatalogEntry, d capabilityDemand) bool {
 	return true
 }
 
+// relaxCapabilityDemand drops the tools/vision demands, keeping the context
+// window and NG8 checks (round 9). Used only when a tools/vision mismatch
+// emptied the candidate set: a tool-less-advertised model is tried rather
+// than answering 400 — the upstream verdict (accept, or a bad400Tools walk)
+// beats trusting stale metadata.
+func relaxCapabilityDemand(d capabilityDemand) capabilityDemand {
+	d.tools, d.vision = false, false
+	return d
+}
+
 // gateEntries filters a candidate list through the gate. blocklist (round
 // 8) removes upstream model IDs from selection entirely — a model the
 // operator has proven broken (e.g. a model that keeps answering HTTP 400)
@@ -139,16 +149,26 @@ func gateEntries(entries []catalog.CatalogEntry, d capabilityDemand, blocklist [
 			blocked[id] = struct{}{}
 		}
 	}
-	out := make([]catalog.CatalogEntry, 0, len(entries))
-	for _, e := range entries {
-		if blocked != nil {
-			if _, bad := blocked[e.ModelID]; bad {
-				continue
+	keep := func(d capabilityDemand) []catalog.CatalogEntry {
+		out := make([]catalog.CatalogEntry, 0, len(entries))
+		for _, e := range entries {
+			if blocked != nil {
+				if _, bad := blocked[e.ModelID]; bad {
+					continue
+				}
+			}
+			if entryPassesGate(e, d) {
+				out = append(out, e)
 			}
 		}
-		if entryPassesGate(e, d) {
-			out = append(out, e)
-		}
+		return out
+	}
+	out := keep(d)
+	if len(out) == 0 && (d.tools || d.vision) {
+		// Round 9: a tools/vision-only mismatch is tried, not fatal —
+		// the metadata is often stale, and an upstream tools-400 walks
+		// on (classify bad400Tools). Context/NG8 mismatches stay fatal.
+		out = keep(relaxCapabilityDemand(d))
 	}
 	return out
 }
