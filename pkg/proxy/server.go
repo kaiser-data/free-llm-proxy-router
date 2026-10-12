@@ -244,7 +244,7 @@ func (s *Server) adjustedRequestConfig(cfg *config.Config) *config.Config {
 // continue the response is finished here: the exhaustion 503 + Retry-After
 // (or the structured SSE error event when the keepalive header already
 // went out); false with errClientGone means nobody is left to answer.
-func (s *Server) candidatesBlocked(ctx context.Context, w http.ResponseWriter, group, clientModel string, keys []string) bool {
+func (s *Server) candidatesBlocked(ctx context.Context, w http.ResponseWriter, group, clientModel, requestID string, keys []string) bool {
 	c := s.cfg.Load()
 	if s.queues == nil || c.Fallback.QueueWaitSeconds <= 0 {
 		return false
@@ -255,11 +255,11 @@ func (s *Server) candidatesBlocked(ctx context.Context, w http.ResponseWriter, g
 	armKeepalive(w)
 	served, err := s.queues.wait(ctx, group, keys, earliest, time.Duration(c.Fallback.QueueWaitSeconds)*time.Second, queueMaxWaiters(c), true)
 	if served {
-		log.Printf("slot queue: group %s handed its turn to %q", group, clientModel)
+		log.Printf("slot queue: req=%s group %s handed its turn to %q", requestID, group, clientModel)
 		return true
 	}
 	if errors.Is(err, errClientGone) {
-		log.Printf("slot queue: group %s client gone — left the queue, no slot held", group)
+		log.Printf("slot queue: req=%s group %s client gone — left the queue, no slot held", requestID, group)
 		return false
 	}
 	s.writeExhaustionError(w, clientModel, err)
@@ -299,9 +299,9 @@ func (s *Server) wrapStream(w http.ResponseWriter, requestID string) (http.Respo
 // After the keepalive header went out (task P): the structured OpenAI-style
 // SSE error event + data: [DONE] — the status can no longer change, and a
 // fake success is out of the question either way.
-func (s *Server) finishStreamRoute(kw *keepaliveWriter, w http.ResponseWriter, clientModel string, err error) {
+func (s *Server) finishStreamRoute(kw *keepaliveWriter, w http.ResponseWriter, clientModel, requestID string, err error) {
 	if kw != nil && kw.HeaderSent() {
-		log.Printf("stream route: keepalive header already sent — ending with the SSE error event + [DONE]")
+		log.Printf("stream route: req=%s keepalive header already sent — ending with the SSE error event + [DONE]", requestID)
 		flusher, canFlush := flusherOf(w)
 		writeSSEErrorEventMsg(w, flusher, canFlush,
 			fmt.Sprintf("request failed after the response started: %v", err),
@@ -639,7 +639,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			// Matched candidates were skipped for quota: wait FIFO in the
 			// group queue instead of failing immediately (task L0). A
 			// handed turn walks again; otherwise the response is finished.
-			if !s.candidatesBlocked(r.Context(), w, queueGroup(req), req.Model, blockedKeys) {
+			if !s.candidatesBlocked(r.Context(), w, queueGroup(req), req.Model, req.RequestID, blockedKeys) {
 				return
 			}
 			continue
@@ -795,7 +795,7 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 		if entered > 0 || len(blockedKeys) == 0 {
 			break
 		}
-		if !s.candidatesBlocked(r.Context(), w, queueGroup(req), req.ClientModel, blockedKeys) {
+		if !s.candidatesBlocked(r.Context(), w, queueGroup(req), req.ClientModel, req.RequestID, blockedKeys) {
 			return true
 		}
 	}
@@ -940,7 +940,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	// window or add a missing capability.
 	demand := demandOf(req.Raw, req.Messages, req.MaxTokens)
 	if len(gateEntries(cat.FreeEntries(), demand)) == 0 {
-		log.Printf("strategy chain: no candidate passes the capability gate for %q", req.ClientModel)
+		log.Printf("strategy chain: req=%s no candidate passes the capability gate for %q", req.RequestID, req.ClientModel)
 		s.writeNoCapableCandidate(w, req.ClientModel, demand)
 		return
 	}
@@ -968,12 +968,12 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	if req.Stream {
 		_, committed, err := chain.ExecuteStream(r.Context(), req, w)
 		if err != nil {
-			log.Printf("fallback chain exhausted (stream): %v", err)
+			log.Printf("fallback chain exhausted (stream): req=%s %v", req.RequestID, err)
 			// Before any header: 503 + Retry-After + OpenAI-style error
 			// body (the pre-commit hold guarantees nothing was written).
 			// After the keepalive header went out (task P): the structured
 			// SSE error event + [DONE] — the status can no longer change.
-			s.finishStreamRoute(keepaliveOf(w), w, req.ClientModel, err)
+			s.finishStreamRoute(keepaliveOf(w), w, req.ClientModel, req.RequestID, err)
 			return
 		}
 		_ = committed // a committed stream already answered the client

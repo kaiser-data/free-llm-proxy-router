@@ -142,7 +142,7 @@ func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, prov
 	}
 	err := sp.Forward(r.Context(), w, *provCfg, body, canonicalModel)
 	if err == nil {
-		log.Printf("%s: %s/%s streamed for %q", route, provCfg.ID, modelID, clientModel)
+		log.Printf("%s: req=%s %s/%s streamed for %q", route, requestID, provCfg.ID, modelID, clientModel)
 		return true
 	}
 	var use *UpstreamStreamError
@@ -156,14 +156,14 @@ func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, prov
 		// fail-fast defects surface verbatim; 401/403 cool the provider
 		// down and the walk continues; other retryable classes walk on.
 		if finalFailureDecision(resp, nil) == FailFast {
-			log.Printf("%s: %s/%s fail-fast status %d (stream) — surfacing to client, no further candidates", route, provCfg.ID, modelID, use.StatusCode)
+			log.Printf("%s: req=%s %s/%s fail-fast status %d (stream) — surfacing to client, no further candidates", route, requestID, provCfg.ID, modelID, use.StatusCode)
 			s.writeUpstreamError(w, clientModel, resp)
 			return true
 		}
 		if use.StatusCode == http.StatusUnauthorized || use.StatusCode == http.StatusForbidden {
 			noteAuthFailure(s.rateLimiter, provCfg.ID, modelID, use.StatusCode)
 		}
-		log.Printf("%s: %s/%s status %d (stream) — trying next candidate", route, provCfg.ID, modelID, use.StatusCode)
+		log.Printf("%s: req=%s %s/%s status %d (stream) — trying next candidate", route, requestID, provCfg.ID, modelID, use.StatusCode)
 		return false
 	}
 	// Transport-level failure: timeout, connection failure, or a canceled
@@ -171,9 +171,9 @@ func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, prov
 	// the client is gone and no further attempt is meaningful (the same
 	// ClassifyFailure verdict every route applies, task H).
 	if finalFailureDecision(nil, err) == FailFast {
-		log.Printf("%s: %s/%s stream request canceled — aborting candidate walk", route, provCfg.ID, modelID)
+		log.Printf("%s: req=%s %s/%s stream request canceled — aborting candidate walk", route, requestID, provCfg.ID, modelID)
 		return true
 	}
-	log.Printf("%s: %s/%s stream error: %v — trying next candidate", route, provCfg.ID, modelID, err)
+	log.Printf("%s: req=%s %s/%s stream error: %v — trying next candidate", route, requestID, provCfg.ID, modelID, err)
 	return false
 }

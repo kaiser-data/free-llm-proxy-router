@@ -208,7 +208,7 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 				if _, werr := w.Write(buf.Bytes()); werr != nil {
 					// The client vanished in the commit window — the
 					// attempt is terminal either way.
-					log.Printf("stream: client write error at commit (no fallback after commit): %v", werr)
+					log.Printf("stream: req=%s client write error at commit (no fallback after commit): %v", p.RequestID, werr)
 					return nil, true, nil
 				}
 				if flusher, ok := flusherOf(w); ok {
@@ -553,7 +553,7 @@ func (fc *FallbackChain) retryStreamCandidate(ctx context.Context, w http.Respon
 		}
 		base, maxDelay := ratelimit.DefaultBackoffParams()
 		delay := ratelimit.ExponentialBackoff(retriesDone, base, maxDelay)
-		log.Printf("stream fallback: %s/%s retryable failure — same-candidate retry %d/%d after %v", callCfg.ID, modelID, retriesDone+1, maxRetries, delay)
+		log.Printf("stream fallback: req=%s %s/%s retryable failure — same-candidate retry %d/%d after %v", reqID, callCfg.ID, modelID, retriesDone+1, maxRetries, delay)
 		select {
 		case <-ctx.Done():
 			return resp, false, err
@@ -675,7 +675,7 @@ func pumpCommittedStream(ctx context.Context, w http.ResponseWriter, body io.Rea
 			idleTimer.Reset(idle)
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				// Client gone mid-stream: no fallback after stream start.
-				log.Printf("stream: client write error (stream aborted, no fallback after commit): %v", werr)
+				log.Printf("stream: req=%s client write error (stream aborted, no fallback after commit): %v", p.RequestID, werr)
 				return
 			}
 			if canFlush {
@@ -688,10 +688,10 @@ func pumpCommittedStream(ctx context.Context, w http.ResponseWriter, body io.Rea
 			}
 			if ctx.Err() != nil {
 				// Client gone: an error event has no audience.
-				log.Printf("stream: upstream ended after commit with client gone: %v", rerr)
+				log.Printf("stream: req=%s upstream ended after commit with client gone: %v", p.RequestID, rerr)
 				return
 			}
-			log.Printf("stream: upstream interrupted after commit (sawDone=%v): %v", sawDone, rerr)
+			log.Printf("stream: req=%s upstream interrupted after commit (sawDone=%v): %v", p.RequestID, sawDone, rerr)
 			writeSSEErrorEvent(w, flusher, canFlush)
 			return
 		}
