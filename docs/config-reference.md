@@ -54,6 +54,40 @@ clamped to the request ceiling (`writedeadline.go:22-27`).
 in-band SSE error event + `[DONE]` (`stream_chain.go:694-706`) — never a
 silent fake success. Raise it for long generations.
 
+## Unknown-400 policy (round 8)
+
+| Key | YAML position | Default | Read at | Hot reload |
+|---|---|---|---|---|
+| `fallback.unknown_400_policy` | fallback | `cross_model_confirm` | `pkg/config/config.go:253`; `pkg/proxy/classify.go:247` (`classifyBadRequest`), `pkg/proxy/demote.go` (`failureDecisionWalk`) | yes |
+| `fallback.unknown_400_confirm_n` | fallback | 2 | `pkg/config/config.go:260`; `pkg/proxy/demote.go` (`failureDecisionWalk`) | yes |
+| `fallback.unknown_400_demotion_seconds` | fallback | 600 | `pkg/config/config.go:269`; `pkg/proxy/demote.go` (`demotionTTL`, `filterDemotedEntries`, `filterDemotedUpstreams`) | yes |
+
+How an UNRECOGNIZED 400 (no content-policy / context-length / modality
+marker matched) is handled:
+
+- `cross_model_confirm` (the default, and the only recognized value): the
+  walk moves to the NEXT candidate — a different upstream model — instead
+  of surfacing the 400. Only when `unknown_400_confirm_n` DISTINCT models
+  have answered the same unrecognized 400 does the walk fail-fast and
+  surface the real upstream error verbatim. Wired at every multi-candidate
+  walk: the ranked walk, the direct route's catalog-entry loop, and the
+  alias route's upstream loop (pool-alias traffic). The openrouter
+  `models[]` step and the `openrouter/free` ultimate fallback keep the
+  legacy fail-fast (a multi-model request cannot confirm across models).
+- Any other value — empty, `fail_fast`, a typo — keeps the historical
+  behavior: the first unrecognized 400 surfaces immediately. Values fail
+  closed; there is no normalize/validate pass in `pkg/config`.
+- `unknown_400_demotion_seconds` additionally parks an unrecognized-400
+  model out of EVERY walk (cross-request) for this many seconds. The
+  demotion registry is in-memory, bounded at 64 entries; the OLDEST
+  demotion is handed back FIFO when full, entries re-enter ranking when
+  the TTL lapses (lazy expiry), and when every candidate is demoted they
+  are handed back (last chance) rather than starving the request.
+  `0` disables cross-request demotion.
+
+Each policy-rerouted model is also demoted (same registry), so the next
+request skips it without waiting for a fresh confirm cycle.
+
 ## Persistence
 
 | Key | YAML position | Default | Read at | Hot reload |
