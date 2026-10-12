@@ -88,6 +88,41 @@ marker matched) is handled:
 Each policy-rerouted model is also demoted (same registry), so the next
 request skips it without waiting for a fresh confirm cycle.
 
+## Slow-TTFT circuit breaker + payload trimming (round 10)
+
+| Key | YAML position | Default | Read at | Hot reload |
+|---|---|---|---|---|
+| `fallback.ttft_slow_threshold_seconds` | fallback | 10 | `ttftSlowThresholdFrom` `pkg/proxy/latency.go` | yes — read per observation |
+| `fallback.ttft_breaker_trips` | fallback | 3 | `ttftBreakerTripsFrom` `pkg/proxy/latency.go` | yes |
+| `fallback.ttft_breaker_min_samples` | fallback | 3 | `ttftBreakerMinSamplesFrom` `pkg/proxy/latency.go` | yes |
+| `fallback.context_truncation.enabled` | fallback | true | `applyContextTruncation` `pkg/proxy/truncate.go` | yes |
+| `fallback.context_truncation.prompt_token_ceiling` | fallback | 8000 | `applyContextTruncation` | yes |
+| `fallback.context_truncation.keep_recent_turns` | fallback | 6 | `applyContextTruncation` | yes |
+
+How it works (`pkg/proxy/latency.go`):
+
+- **TTFT measurement** — streaming: attempt start → the commit point (first
+  usable event); a TTFT-watchdog abort records a FORCED slow observation.
+  Buffered: attempt start → the response headers. Observed on every route
+  (strategy chain, direct, alias/pool) through
+  `streamClientParams.OnTTFT` / `callProvider`.
+- **Latency EMA** — per `provider/model` (α = 0.25), in-memory like the
+  demotion registry. Snapshots: `GET /debug/latency`.
+- **Soft deprioritization** — candidates whose EMA TTFT ≥
+  `ttft_slow_threshold_seconds` with ≥ `ttft_breaker_min_samples` samples
+  move to the BACK of the ranking (stable, never dropped) on every request.
+- **Circuit breaker** — `ttft_breaker_trips` consecutive slow observations
+  demote the model into the round-8 demotion registry (same TTL as
+  `unknown_400_demotion_seconds`, same FIFO hand-off and last-chance rule);
+  the next request skips it at ranking until the TTL lapses.
+- **Context truncation** (`pkg/proxy/truncate.go`) — history over
+  `prompt_token_ceiling` (4 chars ≈ 1 token) is sliding-windowed to every
+  system message + the last `keep_recent_turns` turns; a still-oversized
+  single string message is trimmed head+tail with an explicit
+  `[context truncated]` marker. Tool-calling requests are never truncated.
+  The capability gate still ranks the FULL prompt — only what is sent is
+  trimmed.
+
 ## Persistence
 
 | Key | YAML position | Default | Read at | Hot reload |
@@ -163,6 +198,7 @@ systemctl is-active free-llm-proxy
 curl -s http://127.0.0.1:8080/health                 # {"status":"ok"}
 curl -s http://127.0.0.1:8080/v1/models              # pool alias list
 curl -s http://127.0.0.1:8080/debug/pool             # upstream candidates backing the alias
+curl -s http://127.0.0.1:8080/debug/latency          # per-model TTFT EMA / slow streaks / breaker trips (round 10)
 cat ~/.free-llm-proxy-router/slots.json              # per-model slot state (version 1)
 journalctl -u free-llm-proxy --since "10 min ago" | grep -ciE "panic|error"   # expect 0
 ```

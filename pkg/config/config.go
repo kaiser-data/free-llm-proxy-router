@@ -179,6 +179,25 @@ type RefreshConfig struct {
 	OutputMerge string `mapstructure:"output_merge"`
 }
 
+// ContextTruncationConfig trims oversized chat histories before they
+// leave for fragile free upstreams (round 10): a sliding window keeps the
+// system messages and the most recent turns; a still-oversized single
+// message is trimmed head+tail with an explicit marker. Tool-calling
+// requests are never truncated (dropped context breaks tool-call pairing
+// upstream).
+type ContextTruncationConfig struct {
+	// Enabled turns payload trimming on. Default true.
+	Enabled bool `mapstructure:"enabled"`
+
+	// PromptTokenCeiling is the estimated prompt (4 chars ≈ 1 token)
+	// above which the history is trimmed. Default 8000.
+	PromptTokenCeiling int `mapstructure:"prompt_token_ceiling"`
+
+	// KeepRecentTurns is how many recent non-system messages the sliding
+	// window always keeps (plus every system message). Default 6.
+	KeepRecentTurns int `mapstructure:"keep_recent_turns"`
+}
+
 // FallbackConfig controls retry and fallback behaviour.
 type FallbackConfig struct {
 	RetryOn429               bool `mapstructure:"retry_on_429"`
@@ -283,6 +302,31 @@ type FallbackConfig struct {
 	// Lookup order: "provider/model" → "provider" → FirstTokenTimeoutSeconds
 	// (default 30). Zero/negative values are ignored.
 	FirstTokenTimeouts map[string]int `mapstructure:"first_token_timeouts"`
+
+	// TTFTSlowThresholdSeconds marks an upstream attempt SLOW when its
+	// measured time-to-first-token reached this many seconds (round 10).
+	// Slow observations feed the per-model latency EMA and the
+	// consecutive-slow circuit breaker; the EMA also deprioritizes slow
+	// candidates to the BACK of the ranking (never dropped). Default 10.
+	TTFTSlowThresholdSeconds int `mapstructure:"ttft_slow_threshold_seconds"`
+
+	// TTFTBreakerTrips opens the per-model slow-TTFT circuit breaker
+	// after this many CONSECUTIVE slow observations (TTFT ≥
+	// ttft_slow_threshold_seconds, or a TTFT-watchdog abort): the model
+	// joins the cross-request demotion registry (same registry and TTL
+	// as unknown_400_demotion_seconds) and every later request skips it
+	// at ranking until the TTL lapses. Any fast observation resets the
+	// streak. Default 3.
+	TTFTBreakerTrips int `mapstructure:"ttft_breaker_trips"`
+
+	// TTFTBreakerMinSamples is how many TTFT samples a candidate needs
+	// before the EMA-based deprioritization trusts its measurement.
+	// Default 3.
+	TTFTBreakerMinSamples int `mapstructure:"ttft_breaker_min_samples"`
+
+	// ContextTruncation trims oversized chat histories before they leave
+	// for fragile free upstreams (round 10). See ContextTruncationConfig.
+	ContextTruncation ContextTruncationConfig `mapstructure:"context_truncation"`
 
 	// StreamIdleTimeoutSeconds bounds the silent gap between chunks on a
 	// committed stream (after the first token). Exceeding it ends the
@@ -487,6 +531,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.unknown_400_policy", "cross_model_confirm")
 	v.SetDefault("fallback.unknown_400_confirm_n", 2)
 	v.SetDefault("fallback.unknown_400_demotion_seconds", 600)
+	v.SetDefault("fallback.ttft_slow_threshold_seconds", 10)
+	v.SetDefault("fallback.ttft_breaker_trips", 3)
+	v.SetDefault("fallback.ttft_breaker_min_samples", 3)
+	v.SetDefault("fallback.context_truncation.enabled", true)
+	v.SetDefault("fallback.context_truncation.prompt_token_ceiling", 8000)
+	v.SetDefault("fallback.context_truncation.keep_recent_turns", 6)
 	v.SetDefault("models.model_refresh_minutes", 20)
 	v.SetDefault("models.canonicalization.enabled", true)
 	v.SetDefault("models.canonicalization.free_only", true)

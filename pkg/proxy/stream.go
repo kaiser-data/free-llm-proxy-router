@@ -42,6 +42,10 @@ type StreamProxy struct {
 	FirstTokenTimeoutFor func(providerID, modelID string) time.Duration
 	IdleTimeout          time.Duration // 0 → 30s default
 	RequestID            string        // X-Request-Id on commit (may be empty)
+	// OnTTFT, when non-nil, receives the measured time-to-first-token of
+	// every attempt (round 10): commit points and TTFT-watchdog aborts
+	// (forced=true). Nil disables the latency tracking.
+	OnTTFT func(providerID, modelID string, ttft time.Duration, forced bool)
 }
 
 // Forward proxies a streaming chat-completions request to the given
@@ -79,6 +83,7 @@ func (sp *StreamProxy) Forward(ctx context.Context, w http.ResponseWriter, cfg c
 		FirstTokenTimeoutFor: sp.FirstTokenTimeoutFor,
 		IdleTimeout:          sp.IdleTimeout,
 		RequestID:            sp.RequestID,
+		OnTTFT:               sp.OnTTFT,
 		// Direct/alias contract: X-Used-Model is the caller-computed
 		// canonical identity (empty on the direct route — buffered-path
 		// parity), not a canonicalization of the chunk's model field.
@@ -139,6 +144,7 @@ func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, prov
 		FirstTokenTimeoutFor: s.firstTokenTimeoutFor,
 		IdleTimeout:          s.streamIdleTimeout(),
 		RequestID:            requestID,
+		OnTTFT:               s.recordTTFT,
 	}
 	err := sp.Forward(r.Context(), w, *provCfg, body, canonicalModel)
 	if err == nil {

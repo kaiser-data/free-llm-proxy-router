@@ -132,6 +132,35 @@ fallback:
   # first_token_timeouts:
   #   "openrouter/deepseek/deepseek-r1:free": 120
   #   groq: 60
+  # --- Slow-TTFT circuit breaker (round 10) ---
+  # An attempt whose measured time-to-first-token reaches this threshold
+  # counts as a SLOW observation for that exact provider/model pair
+  # (streaming: first usable event; buffered: response headers). The EMA
+  # of the measurements deprioritizes slow candidates to the BACK of the
+  # ranking in real time — they are skipped, never dropped.
+  # ttft_slow_threshold_seconds: 10
+  # N consecutive slow observations (or TTFT-watchdog aborts) open the
+  # per-model breaker: the model joins the cross-request demotion registry
+  # (same registry and TTL as unknown_400_demotion_seconds) and every
+  # later request skips it at ranking until the TTL lapses. Any fast
+  # observation resets the streak.
+  # ttft_breaker_trips: 3
+  # TTFT samples a candidate needs before the EMA-based deprioritization
+  # trusts its measurement. Live state: GET /debug/latency.
+  # ttft_breaker_min_samples: 3
+  # --- Context truncation (round 10) ---
+  # Fragile free upstreams queue hard on oversized prompts: before a
+  # request leaves, chat history over prompt_token_ceiling (estimated at
+  # 4 chars ≈ 1 token) is sliding-windowed down to every system message
+  # plus the most recent keep_recent_turns turns; a still-oversized single
+  # message is trimmed head+tail with an explicit "[context truncated]"
+  # marker. Tool-calling requests are never truncated (dropped context
+  # breaks tool-call pairing upstream). Set enabled: false to send
+  # payloads verbatim.
+  context_truncation:
+    enabled: true
+    prompt_token_ceiling: 8000
+    keep_recent_turns: 6
   # Streaming: max silent gap between chunks on a started stream. Exceeding
   # it ends the stream with an OpenAI-style SSE error event + [DONE].
   stream_idle_timeout_seconds: 30

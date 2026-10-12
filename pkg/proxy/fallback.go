@@ -65,6 +65,13 @@ type FallbackChain struct {
 	// are handed back FIFO when the TTL lapses or the registry overflows.
 	// Nil disables demotion (tests build bare chains).
 	Demotions *demotionRegistry
+	// Latencies, when non-nil, is the cross-request slow-TTFT tracker
+	// (round 10): every attempt's measured time-to-first-token feeds a
+	// per-model EMA and the consecutive-slow circuit breaker (breaker
+	// trips demote into the Demotions registry), and slow-EMA candidates
+	// are deprioritized to the back of the ranking. Nil disables (tests
+	// build bare chains).
+	Latencies *latencyRegistry
 	// Gate, when non-nil, is the request's capability demand (task Q) — the
 	// walk ranks only entries passing it (NG8 exclusion, context fit,
 	// tools/vision). Nil keeps the old full-catalog ranking.
@@ -244,6 +251,12 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 	}
 
 	ranked := fc.Strategy.Rank(stratReq, freeEntries, nil)
+	// Slow-TTFT deprioritization (round 10): candidates whose measured
+	// EMA TTFT sits at/above fallback.ttft_slow_threshold_seconds move to
+	// the BACK of the walk (never dropped) — a free upstream that answers
+	// in 45s loses the first hop to every faster sibling without any
+	// config change, while still serving as a last resort.
+	ranked = fc.deprioritizeSlowRanked(ranked)
 	maxAttempts := fc.maxAttemptsBudget()
 	maxHops := fc.maxFallbackHops()
 	hops := 0
@@ -861,11 +874,22 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		req.Header.Set(k, val)
 	}
 
+	start := time.Now()
 	resp, err := fc.HTTPClient.Do(req)
 	if err != nil {
+		// A transport timeout burned the whole wait without one usable
+		// byte — the hardest TTFT observation there is (forced slow,
+		// round 10).
+		if isTimeoutErr(err) {
+			fc.recordTTFT(cfg.ID, bodyModel(body), time.Since(start), true)
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
+	// TTFT for buffered calls ≈ time to the response headers (round 10):
+	// the body read that follows is generation time, not latency to the
+	// first token.
+	fc.recordTTFT(cfg.ID, bodyModel(body), time.Since(start), false)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -952,6 +976,12 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 	for _, f := range anthropicOnlyFields {
 		delete(body, f)
 	}
+
+	// Context truncation (round 10): fragile free upstreams queue hard
+	// on oversized prompts — slide the history window down before the
+	// first byte leaves. The capability gate ranked the FULL prompt; this
+	// only trims what is sent. Tool-calling requests pass untouched.
+	applyContextTruncation(fc.Cfg, body)
 
 	// Apply max_tokens_cap from strategy_overrides if the strategy has one configured
 	// and the client hasn't already requested fewer tokens.

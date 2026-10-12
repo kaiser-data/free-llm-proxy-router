@@ -86,6 +86,13 @@ type Server struct {
 	// 8 steps 3–4) shared by every request's fallback chain; the TTL is
 	// read from the live config so a hot-reload takes effect immediately.
 	demotions *demotionRegistry
+
+	// latencies is the cross-request slow-TTFT tracker (round 10) shared
+	// by every request's fallback chain and the direct/alias streaming
+	// routes: per-model TTFT EMA + consecutive-slow circuit breaker.
+	// The breaker demotes into `demotions`; snapshots are exposed at
+	// GET /debug/latency.
+	latencies *latencyRegistry
 }
 
 // NewServer creates a new proxy Server.
@@ -110,6 +117,7 @@ func NewServer(
 	s.slotLimit = NewSlotLimiter()
 	s.queues = newQueueManager(s.slotLimit)
 	s.demotions = newDemotionRegistry()
+	s.latencies = newLatencyRegistry()
 	return s
 }
 
@@ -361,6 +369,11 @@ func (s *Server) Start(ctx context.Context) error {
 	// which provider/model pairs currently back it. Model identities only —
 	// no credentials. Protected by the auth middleware when configured.
 	mux.HandleFunc("/debug/pool", s.handleDebugPool)
+	// Operator visibility into the slow-TTFT tracker (round 10): per
+	// provider/model TTFT EMA, samples, consecutive-slow streaks and
+	// breaker trips. Model identities and timings only — no credentials,
+	// no prompt content. Protected by the auth middleware when configured.
+	mux.HandleFunc("/debug/latency", s.handleDebugLatency)
 	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -561,6 +574,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		Slots:              s.slotLimit,
 		Queues:             s.queues,
 		Demotions:          s.demotions,
+		Latencies:          s.latencies,
 		Gate:               &directDemand,
 	}
 
@@ -600,6 +614,9 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			for _, f := range anthropicOnlyFields {
 				delete(body, f)
 			}
+			// Context truncation (round 10): the direct route speaks to
+			// the same fragile free upstreams — trim before sending.
+			applyContextTruncation(cfg, body)
 			if req.Stream {
 				// Streaming request: same SSE pass-through and fallback
 				// semantics as the alias route. canonicalModel is empty here —
@@ -727,6 +744,7 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 		Slots:              s.slotLimit,
 		Queues:             s.queues,
 		Demotions:          s.demotions,
+		Latencies:          s.latencies,
 		Gate:               &demand,
 	}
 	// unknown400Seen is the per-request cross-model confirm state (round 8
@@ -739,6 +757,11 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 		// until their TTL lapses; when every candidate is demoted they are
 		// handed back (last chance) rather than starving the request.
 		ups = chain.filterDemotedUpstreams(ups)
+		// Slow-TTFT deprioritization (round 10): candidates whose
+		// measured EMA TTFT sits at/above the slow threshold move to the
+		// back of the candidate list (never dropped) — the same real-time
+		// rule the ranked walk applies to its ranking.
+		ups = chain.deprioritizeSlowUpstreams(ups)
 		for _, u := range ups {
 			provCfg := findProviderCfg(cfg, u.ProviderID)
 			if provCfg == nil {
@@ -756,6 +779,9 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 			for _, f := range anthropicOnlyFields {
 				delete(body, f)
 			}
+			// Context truncation (round 10): the alias/pool route speaks
+			// to the same fragile free upstreams — trim before sending.
+			applyContextTruncation(cfg, body)
 			if req.Stream {
 				// Streaming request: keep stream:true in the body and pass the
 				// upstream SSE through incrementally. streamOneCandidate only
@@ -997,6 +1023,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		Slots:              s.slotLimit,
 		Queues:             s.queues,
 		Demotions:          s.demotions,
+		Latencies:          s.latencies,
 		Gate:               &demand,
 	}
 
@@ -1178,6 +1205,65 @@ func (s *Server) handleDebugPool(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleDebugLatency exposes the slow-TTFT tracker (round 10) for
+// operators: every tracked provider/model pair's TTFT EMA, sample count,
+// consecutive-slow streak, breaker trips and current demotion state, plus
+// the effective thresholds. Model identities and timings only — never
+// credentials or prompt content.
+func (s *Server) handleDebugLatency(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	fb := config.FallbackConfig{}
+	if cfg := s.cfg.Load(); cfg != nil {
+		fb = cfg.Fallback
+	}
+	ttl := time.Duration(fb.Unknown400DemotionSeconds) * time.Second
+	now := time.Now()
+	snap := s.latencies.snapshot()
+	entries := make([]map[string]any, 0, len(snap))
+	for _, st := range snap {
+		provider, model := splitProviderModel(st.Key)
+		e := map[string]any{
+			"provider":      provider,
+			"model":         model,
+			"ttft_ema_ms":   st.TTFTemaMS,
+			"last_ttft_ms":  st.LastTTFTMS,
+			"samples":       st.Samples,
+			"slow_streak":   st.SlowStreak,
+			"breaker_trips": st.BreakerTrips,
+			"deprioritized": s.latencyDeprioritized(st),
+			"demoted":       s.demotions != nil && ttl > 0 && s.demotions.isDemoted(provider, model, now, ttl),
+			"last_updated":  st.LastUpdated,
+		}
+		entries = append(entries, e)
+	}
+	resp := map[string]any{
+		"upstreams": entries,
+		"config": map[string]any{
+			"ttft_slow_threshold_seconds": ttftSlowThresholdFrom(fb).Seconds(),
+			"ttft_breaker_trips":          ttftBreakerTripsFrom(fb),
+			"ttft_breaker_min_samples":    ttftBreakerMinSamplesFrom(fb),
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// latencyDeprioritized mirrors isSlowCandidate for the debug snapshot:
+// the pair currently ranks at the back of every walk.
+func (s *Server) latencyDeprioritized(st latencyStats) bool {
+	fb := config.FallbackConfig{}
+	if cfg := s.cfg.Load(); cfg != nil {
+		fb = cfg.Fallback
+	}
+	if st.Samples < int64(ttftBreakerMinSamplesFrom(fb)) {
+		return false
+	}
+	return st.TTFTemaMS >= float64(ttftSlowThresholdFrom(fb).Milliseconds())
 }
 
 // handleCompletions is a stub for text-completion requests.

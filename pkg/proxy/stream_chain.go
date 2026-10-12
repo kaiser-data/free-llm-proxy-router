@@ -50,6 +50,11 @@ type streamClientParams struct {
 	// CanonicalFor resolves the X-Used-Model identity for a commit:
 	// (providerID, upstreamModel) → canonical name. Nil = identity.
 	CanonicalFor func(providerID, upstreamModel string) string
+	// OnTTFT, when non-nil, receives every measured time-to-first-token
+	// observation (round 10): at the commit point and at every
+	// TTFT-watchdog abort. forced marks a watchdog abort — counted slow
+	// regardless of the configured threshold. Nil disables tracking.
+	OnTTFT func(providerID, modelID string, ttft time.Duration, forced bool)
 }
 
 // sseChunkSize is the pump read buffer.
@@ -74,6 +79,16 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 	armKeepalive(w)
 	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 	upstreamModel, _ := body["model"].(string)
+	// TTFT measurement (round 10): the whole attempt start → the commit
+	// point (or the watchdog abort) is the time-to-first-token the
+	// client experienced. Wired into the latency tracker + slow-TTFT
+	// circuit breaker via OnTTFT.
+	attemptStart := time.Now()
+	measureTTFT := func(forced bool) {
+		if p.OnTTFT != nil {
+			p.OnTTFT(cfg.ID, upstreamModel, time.Since(attemptStart), forced)
+		}
+	}
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, false, fmt.Errorf("encoding stream request: %w", err)
@@ -126,6 +141,7 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 			return nil, false, err // client/budget gone — parent ctx carries it
 		}
 		if attemptCtx.Err() != nil {
+			measureTTFT(true) // watchdog abort — the hardest slow observation
 			return nil, false, fmt.Errorf("stream attempt aborted by the TTFT watchdog: %w", context.DeadlineExceeded)
 		}
 		return nil, false, err
@@ -173,6 +189,7 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 		if upstreamModel != "" {
 			w.Header().Set("X-Free-Router-Upstream-Model", upstreamModel)
 		}
+		measureTTFT(false) // buffered-JSON passthrough: commit = first token
 		w.WriteHeader(http.StatusOK)
 		w.Write(b)
 		if flusher, ok := flusherOf(w); ok {
@@ -204,6 +221,7 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 				if p.RequestID != "" {
 					w.Header().Set("X-Request-Id", p.RequestID)
 				}
+				measureTTFT(false) // commit = the client's first token
 				w.WriteHeader(http.StatusOK)
 				if _, werr := w.Write(buf.Bytes()); werr != nil {
 					// The client vanished in the commit window — the
@@ -224,6 +242,7 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 				return nil, false, rerr // client/budget gone
 			}
 			if attemptCtx.Err() != nil {
+				measureTTFT(true) // pre-commit hold outran the TTFT watchdog
 				return nil, false, fmt.Errorf("no first token within %v: %w", ttft, context.DeadlineExceeded)
 			}
 			if rerr == io.EOF {
@@ -488,6 +507,7 @@ func (fc *FallbackChain) streamAttemptOnce(ctx context.Context, w http.ResponseW
 		FirstTokenTimeoutFor: fc.firstTokenTimeoutFor,
 		IdleTimeout:          fc.streamIdleTimeout(),
 		RequestID:            reqID,
+		OnTTFT:               fc.recordTTFT,
 		CanonicalFor:         fc.canonicalForParams(),
 	}
 	return streamUpstreamHeld(pctx, w, callCfg, body, params)
