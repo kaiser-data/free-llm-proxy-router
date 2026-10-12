@@ -81,6 +81,11 @@ type Server struct {
 	// next_available timer wakes them. Both are shared across all requests.
 	slotLimit *SlotLimiter
 	queues    *queueManager
+
+	// demotions is the cross-request unknown-400 demotion registry (round
+	// 8 steps 3–4) shared by every request's fallback chain; the TTL is
+	// read from the live config so a hot-reload takes effect immediately.
+	demotions *demotionRegistry
 }
 
 // NewServer creates a new proxy Server.
@@ -104,6 +109,7 @@ func NewServer(
 	s.aliasRes.Store(buildAliasResolver(cfg, cat))
 	s.slotLimit = NewSlotLimiter()
 	s.queues = newQueueManager(s.slotLimit)
+	s.demotions = newDemotionRegistry()
 	return s
 }
 
@@ -554,6 +560,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		Resolver:           resolver,
 		Slots:              s.slotLimit,
 		Queues:             s.queues,
+		Demotions:          s.demotions,
 		Gate:               &directDemand,
 	}
 
@@ -707,6 +714,7 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 		Resolver:           resolver,
 		Slots:              s.slotLimit,
 		Queues:             s.queues,
+		Demotions:          s.demotions,
 		Gate:               &demand,
 	}
 	for {
@@ -957,6 +965,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		Resolver:           s.aliasRes.Load(),
 		Slots:              s.slotLimit,
 		Queues:             s.queues,
+		Demotions:          s.demotions,
 		Gate:               &demand,
 	}
 

@@ -59,6 +59,12 @@ type FallbackChain struct {
 	// fallback.queue_wait_seconds are set, the errAllSlotsBusy sentinel
 	// waits in its model group's queue instead of failing immediately.
 	Queues *queueManager
+	// Demotions, when non-nil, is the cross-request unknown-400 demotion
+	// registry (round 8 steps 3–4): models that answered an unrecognized
+	// 400 leave the ranking for fallback.unknown_400_demotion_seconds and
+	// are handed back FIFO when the TTL lapses or the registry overflows.
+	// Nil disables demotion (tests build bare chains).
+	Demotions *demotionRegistry
 	// Gate, when non-nil, is the request's capability demand (task Q) — the
 	// walk ranks only entries passing it (NG8 exclusion, context fit,
 	// tools/vision). Nil keeps the old full-catalog ranking.
@@ -224,6 +230,11 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 	// reaches the routes' immediate no-capable-candidate error, never a
 	// queue wait.
 	freeEntries = gateEntries(freeEntries, fc.gateDemand(), fc.Cfg.Fallback.ModelBlocklist)
+	// Unknown-400 demotion (round 8 steps 3–4): models that unrecognized-
+	// 400-ed an earlier request stay out of the ranking until their TTL
+	// lapses; when every candidate is demoted they come back (last chance)
+	// rather than starving the request.
+	freeEntries = fc.filterDemotedEntries(freeEntries)
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
 		EstimatedPromptTokens: estimateTokens(req.Messages),

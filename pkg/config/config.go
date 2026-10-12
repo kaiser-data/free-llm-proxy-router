@@ -239,6 +239,14 @@ type FallbackConfig struct {
 	// immediately. Empty/nil disables.
 	ModelBlocklist []string `mapstructure:"model_blocklist"`
 
+	// Unknown400DemotionSeconds parks a model that answered an
+	// unrecognized 400 OUT of every walk for this many seconds (round 8
+	// steps 3–4, cross-request demotion). The registry is in-memory,
+	// bounded at 64 entries (the oldest demotion is handed back FIFO
+	// when full), and entries re-enter ranking automatically when the
+	// TTL lapses. When every candidate is demoted the walk falls back to
+	// them rather than starving. 0 disables demotion. Default 600.
+	Unknown400DemotionSeconds int `mapstructure:"unknown_400_demotion_seconds"`
 
 	// FirstTokenTimeoutSeconds bounds how long a streaming attempt may sit
 	// on a 200 response without producing a usable first event (time to
@@ -456,6 +464,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.queue_max_waiters", 64)
 	v.SetDefault("fallback.stream_keepalive_after_seconds", 5)
 	v.SetDefault("fallback.stream_keepalive_interval_seconds", 15)
+	v.SetDefault("fallback.unknown_400_demotion_seconds", 600)
 	v.SetDefault("models.model_refresh_minutes", 20)
 	v.SetDefault("models.canonicalization.enabled", true)
 	v.SetDefault("models.canonicalization.free_only", true)
