@@ -319,9 +319,9 @@ Two walk-level budgets guard against runaway requests:
 - `fallback.total_deadline_seconds` (default 90, `0` disables) — the whole
   request's wall-clock budget covering every attempt and every backoff
   sleep: an attempt that outlives the budget is aborted mid-flight and the
-  request ends in the 503 exhaustion response instead of the write timeout
-  killing the connection. Keep it below `proxy.write_timeout_seconds`
-  (default 120) and raise both together when serving long generations.
+  request ends in the 503 exhaustion response instead of a write timeout
+  killing the connection. Keep it below `proxy.max_request_seconds` (the
+  per-request write ceiling, see task S) when serving long generations.
 - `fallback.queue_wait_seconds` (default 90, `0` disables queueing) and
   `fallback.queue_max_waiters` (default 64) — the RPM slot queue (task L0).
   When a provider opts into `rpm_limit` and every eligible candidate lacks a
@@ -332,9 +332,19 @@ Two walk-level budgets guard against runaway requests:
   request whose header already went out (keepalive, task P) ends in the
   structured SSE error event + `data: [DONE]` instead. While queueing is on,
   `total_deadline_seconds` is raised automatically to at least
-  `queue_wait_seconds` + one attempt — raise `proxy.write_timeout_seconds`
-  to match. A client that disconnects while waiting leaves the queue
-  immediately, holding no slot and no goroutine.
+  `queue_wait_seconds` + one attempt — the automatic
+  `proxy.max_request_seconds` ceiling already covers that. A client that
+  disconnects while waiting leaves the queue immediately, holding no slot
+  and no goroutine.
+- `proxy.write_idle_timeout_seconds` (default 30) and
+  `proxy.max_request_seconds` (default 0 = automatic queue_wait + attempt +
+  stream + idle computation) — the idle-based write deadlines (task S). The
+  http.Server-level WriteTimeout is DISABLED: every successful write or
+  flush moves the connection's write deadline to now + write-idle, capped by
+  the request's max-request ceiling. A stream that keeps flowing is never
+  cut by a fixed total timeout; a client that stops reading is cut after the
+  idle window. `proxy.write_timeout_seconds` is retired and ignored (the
+  boot logs a notice when it is set).
 
 ### Streaming with the pre-commit hold
 

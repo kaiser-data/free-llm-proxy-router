@@ -31,13 +31,28 @@ type ProxyConfig struct {
 	LogLevel  string `mapstructure:"log_level"`
 	Strategy  string `mapstructure:"strategy"`
 
-	// WriteTimeoutSeconds caps the http.Server write timeout — the hard
-	// ceiling on one request's total server-side time, including every
-	// fallback attempt. Previously hardcoded at 120s. Operators raising
-	// the per-attempt upstream timeouts (fallback.provider_timeout_seconds)
-	// must raise this too, or the server deadline cuts the response first.
-	// Default 120.
+	// WriteTimeoutSeconds is RETIRED (task S): it used to set the
+	// http.Server's WriteTimeout — a total ceiling that cut flowing streams
+	// and queued requests. The server-level WriteTimeout is now disabled;
+	// deadlines are per-request via http.ResponseController:
+	// proxy.write_idle_timeout_seconds after each successful write/flush,
+	// capped by proxy.max_request_seconds. The field is kept so old configs
+	// load unchanged; the boot logs a notice when it is set.
 	WriteTimeoutSeconds int `mapstructure:"write_timeout_seconds"`
+
+	// WriteIdleTimeoutSeconds is the post-write idle window (task S):
+	// after every successful response write/flush the write deadline moves
+	// to now + this value, so a stream that keeps flowing is never cut by
+	// a fixed total timeout, while a stalled client (not reading) is cut
+	// after the idle window. Default 30.
+	WriteIdleTimeoutSeconds int `mapstructure:"write_idle_timeout_seconds"`
+
+	// MaxRequestSeconds is the request's total write ceiling (task S): the
+	// initial per-request write deadline. 0 (default) computes it
+	// automatically as queue_wait + attempt ceiling + stream ceiling +
+	// write_idle. An explicit value below the slot-queue floor
+	// (queue_wait + attempt) triggers a boot warning.
+	MaxRequestSeconds int `mapstructure:"max_request_seconds"`
 
 	// StrategyOverrides allows per-strategy config tweaks.
 	StrategyOverrides map[string]map[string]any `mapstructure:"strategy_overrides"`
@@ -402,7 +417,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.cache_ttl", 300)
 	v.SetDefault("proxy.log_level", "info")
 	v.SetDefault("proxy.strategy", "adaptive")
-	v.SetDefault("proxy.write_timeout_seconds", 120)
+	v.SetDefault("proxy.write_timeout_seconds", 120) // retired no-op (task S)
+	v.SetDefault("proxy.write_idle_timeout_seconds", 30)
+	v.SetDefault("proxy.max_request_seconds", 0) // 0 = automatic ceiling (task S)
 	v.SetDefault("catalog.path", expandHome("~/.free-llm-proxy-router/catalog.json"))
 	v.SetDefault("catalog.enriched_path", expandHome("~/.free-llm-proxy-router/enriched.json"))
 	v.SetDefault("catalog.max_age_hours", 24)

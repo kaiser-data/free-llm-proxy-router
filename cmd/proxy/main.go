@@ -190,13 +190,13 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	return srv.Start(ctx)
 }
 
-// warnQueueTimeoutConfig checks the slot-queue knobs for the one missetup
-// that turns a queued wait into a connection cut: the request's effective
-// deadline (queue_wait + one attempt) exceeding proxy.write_timeout_seconds
-// would let the server kill the connection BEFORE the clean 503/SSE error
-// can be written. The walk raises total_deadline_seconds automatically
-// (task L0); the write timeout is set at server construction and must be
-// raised by the operator.
+// warnQueueTimeoutConfig checks the slot-queue knobs against the NEW
+// per-request deadline mechanism (task S): the write deadline starts at
+// proxy.max_request_seconds and refreshes on every successful write, so the
+// one missetup left is an explicit max_request_seconds BELOW the queue
+// floor (queue_wait + attempt ceiling) — queued waits would be cut by the
+// ceiling instead of ending in the clean 503/SSE error. The retired
+// proxy.write_timeout_seconds is reported as a no-op when set.
 func warnQueueTimeoutConfig(cfg *config.Config) {
 	if cfg.Fallback.QueueWaitSeconds <= 0 {
 		return
@@ -211,7 +211,15 @@ func warnQueueTimeoutConfig(cfg *config.Config) {
 		effective = floor
 		log.Printf("WARN slot queue: total_deadline_seconds raised to %d (queue_wait %d + attempt ceiling %d)", effective, cfg.Fallback.QueueWaitSeconds, attempt)
 	}
-	if cfg.Proxy.WriteTimeoutSeconds > 0 && effective > cfg.Proxy.WriteTimeoutSeconds {
-		log.Printf("WARN slot queue: effective request deadline %ds exceeds proxy.write_timeout_seconds %d — raise write_timeout_seconds or queued waits end in a connection cut instead of a clean error", effective, cfg.Proxy.WriteTimeoutSeconds)
+	if cfg.Proxy.MaxRequestSeconds > 0 {
+		if floor > cfg.Proxy.MaxRequestSeconds {
+			log.Printf("WARN slot queue: proxy.max_request_seconds %d is BELOW the slot-queue floor %d (queue_wait %d + attempt ceiling %d) — queued requests get cut at the ceiling; raise max_request_seconds", cfg.Proxy.MaxRequestSeconds, floor, cfg.Fallback.QueueWaitSeconds, attempt)
+		}
+	} else {
+		auto := proxy.EffectiveMaxRequestSeconds(cfg)
+		log.Printf("slot queue: proxy.max_request_seconds unset — automatic write ceiling %ds (queue_wait + attempt + stream + write idle)", int(auto.Seconds()))
+	}
+	if cfg.Proxy.WriteTimeoutSeconds > 0 {
+		log.Printf("proxy.write_timeout_seconds is retired (no-op since task S) — the server-level WriteTimeout is disabled; use proxy.write_idle_timeout_seconds and proxy.max_request_seconds")
 	}
 }

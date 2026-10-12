@@ -11,10 +11,23 @@ proxy:
   strategy: "adaptive" # Default strategy: adaptive, performance, speed, volume, balanced,
                         # small, tiny, coding, long_context, similar, parallel, reliable, economical
 
-  # Hard ceiling on one request's total server-side time (seconds),
-  # including every fallback attempt. Keep it at or above the per-attempt
-  # timeouts configured under fallback. Previously hardcoded at 120s.
+  # RETIRED (task S): kept for config compatibility, ignored. The
+  # server-level WriteTimeout is disabled; response write deadlines are
+  # per-request — see write_idle_timeout_seconds / max_request_seconds
+  # below. A boot notice is logged when this is set.
   write_timeout_seconds: 120
+
+  # Idle-based write deadlines (task S): after every successful response
+  # write/flush the connection's write deadline moves to now + this window
+  # (seconds), so a stream that keeps flowing is never cut by a fixed total
+  # timeout, while a client that stops reading is cut after the idle
+  # window. Default 30.
+  write_idle_timeout_seconds: 30
+  # The request's total write ceiling (seconds): the initial write deadline
+  # set at request start. 0 = automatic — queue_wait + attempt ceiling +
+  # stream ceiling + write idle — large enough to queue the full budget and
+  # still stream the longest accepted generation.
+  max_request_seconds: 0
 
   strategy_overrides:
     performance:   { max_tokens_cap: 2048 }
@@ -105,8 +118,8 @@ fallback:
   # Whole-request wall-clock budget in seconds — covers every attempt and
   # backoff sleep. An attempt that outlives it is aborted and the request
   # ends in the 503 exhaustion response. Keep below
-  # proxy.write_timeout_seconds and raise both together for long
-  # generations. 0 disables the cap.
+  # proxy.max_request_seconds (the per-request write ceiling, task S) for
+  # long generations. 0 disables the cap.
   total_deadline_seconds: 90
   # Streaming: how long an attempt may sit on a 200 without a usable first
   # event (time to first token). The attempt is dropped and the retry
@@ -138,7 +151,8 @@ fallback:
   # queue_wait_seconds bounds the wait (0 disables queueing: instant 503);
   # queue_max_waiters caps concurrent waiters per queue. When queueing is
   # on, total_deadline_seconds is automatically raised to at least
-  # queue_wait + one attempt — raise proxy.write_timeout_seconds to match.
+  # queue_wait + one attempt — the automatic proxy.max_request_seconds
+  # ceiling (task S) already covers that.
   queue_wait_seconds: 90
   queue_max_waiters: 64
   # Cerebras-specific: add spacing between requests to avoid RPS spikes

@@ -201,17 +201,10 @@ func (s *Server) streamHTTPClient() *http.Client {
 	return &http.Client{Timeout: s.providerTimeout()}
 }
 
-// proxyWriteTimeout returns the http.Server write timeout from
-// proxy.write_timeout_seconds (default 120). It is the hard ceiling on a
-// request's total server-side time — including all fallback attempts — so
-// operators raising the per-attempt timeouts must raise this too.
-func (s *Server) proxyWriteTimeout() time.Duration {
-	seconds := s.cfg.Load().Proxy.WriteTimeoutSeconds
-	if seconds <= 0 {
-		seconds = 120
-	}
-	return time.Duration(seconds) * time.Second
-}
+// proxyWriteTimeout was REMOVED (task S): the retired
+// proxy.write_timeout_seconds knob no longer sets anything — the
+// server-level WriteTimeout is disabled and deadlines are per-request
+// (write_idle_timeout_seconds + max_request_seconds, writedeadline.go).
 
 // adjustedRequestConfig returns the config the request walks with. When
 // slot queueing is on (task L0) it raises the total deadline to the queue
@@ -372,13 +365,22 @@ func (s *Server) Start(ctx context.Context) error {
 	handler = loggingMiddleware(handler)
 	handler = recoveryMiddleware(handler)
 	handler = authMiddleware(cfg.Proxy.AuthToken, handler)
+	// Task S: outermost so EVERY response write path (auth errors, logs,
+	// buffered bodies, SSE keepalive comments, stream chunks) carries the
+	// idle-refreshing write deadline.
+	handler = s.withWriteDeadlines(handler)
 
+	// Task S: the server-level WriteTimeout is DISABLED — it was a total
+	// ceiling that cut flowing streams mid-generation. Deadlines are
+	// per-request: the outer withWriteDeadlines middleware sets each
+	// request's initial ceiling (proxy.max_request_seconds) and refreshes
+	// it (proxy.write_idle_timeout_seconds) after every successful write —
+	// see writedeadline.go.
 	s.httpServer = &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Proxy.Port),
-		Handler:      handler,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: s.proxyWriteTimeout(),
-		IdleTimeout:  60 * time.Second,
+		Addr:        fmt.Sprintf(":%d", cfg.Proxy.Port),
+		Handler:     handler,
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 60 * time.Second,
 	}
 
 	log.Printf("free-llm-proxy listening on :%d (strategy: %s)", cfg.Proxy.Port, cfg.Proxy.Strategy)
