@@ -124,6 +124,14 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	// Create server
 	srv := proxy.NewServer(cfg, cat, stratReg, rateLimiter, geminiTracker, reliabilityTracker)
 
+	// Restore RPM slot state (task T-7): active per-model reservations and
+	// 429-driven blocks survive a graceful restart, so the proxy never
+	// re-hits a quota it just exhausted. Missing file = fresh start.
+	slotsPath := "~/.free-llm-proxy-router/slots.json"
+	if err := srv.SlotLimiter().LoadState(slotsPath); err != nil {
+		log.Printf("loading slots state (starting fresh): %v", err)
+	}
+
 	// Handle graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -180,6 +188,11 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	go func() {
 		<-sigCh
 		log.Printf("proxy: shutting down...")
+		// Save RPM slot state on shutdown (task T-7): the next boot must
+		// not re-hit a model whose quota this run just exhausted.
+		if err := srv.SlotLimiter().SaveState(slotsPath); err != nil {
+			log.Printf("saving slots state: %v", err)
+		}
 		// Save reliability stats on shutdown
 		if err := reliability.Save(reliabilityTracker, relPath); err != nil {
 			log.Printf("saving reliability: %v", err)

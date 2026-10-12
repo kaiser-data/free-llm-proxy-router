@@ -155,7 +155,10 @@ OpenAI-compatible wire format:
   once — and an upstream 429 adjusts the slot's next-available time. When
   every eligible candidate lacks a free slot, the request waits FIFO in its
   model group's queue instead of getting an instant 503 (see
-  `fallback.queue_wait_seconds` under Error classification).
+  `fallback.queue_wait_seconds` under Error classification). The per-model
+  slot state (window reservations + 429 blocks) persists to
+  `~/.free-llm-proxy-router/slots.json` on graceful shutdown and reloads on
+  boot, so a restart never re-hits a quota the previous run just exhausted.
 - **Live :free refresh** — with `discovery.refresh: true` the proxy calls
   `GET /v1/models` for UnoRouter at boot and every
   `models.model_refresh_minutes` (default 20): new `:free` ids join their
