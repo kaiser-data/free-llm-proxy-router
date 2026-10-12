@@ -27,7 +27,10 @@ import (
 // window is a fixed one minute in production; tests shorten it. All
 // methods are safe for concurrent use.
 type SlotLimiter struct {
-	mu     sync.Mutex
+	mu sync.Mutex
+	// saveMu serializes SaveState: the periodic saver and the shutdown
+	// save can overlap, and two writers must never share the tmp file.
+	saveMu sync.Mutex
 	window time.Duration
 	states map[string]*slotState
 }

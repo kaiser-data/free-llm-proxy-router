@@ -136,6 +136,13 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Periodic slots save (T-7 hardening): a hard crash (SIGKILL/OOM/power
+	// loss) loses at most proxy.slot_persist_interval_seconds of quota
+	// protection; the SIGTERM path below stays the final, complete write.
+	// Boot-time interval — a config hot reload does not re-arm the ticker.
+	srv.SlotLimiter().StartPeriodicSave(ctx, slotsPath,
+		time.Duration(cfg.Proxy.SlotPersistIntervalSeconds)*time.Second)
+
 	// Watch catalog file for hot-reload (triggered by git-sync pull or manual update).
 	stopCatalogWatch, err := catalog.Watch(cfg.Catalog.Path, func(newCat *catalog.Catalog) {
 		srv.UpdateCatalog(newCat)

@@ -54,6 +54,14 @@ type ProxyConfig struct {
 	// (queue_wait + attempt) triggers a boot warning.
 	MaxRequestSeconds int `mapstructure:"max_request_seconds"`
 
+	// SlotPersistIntervalSeconds is how often the RPM slot state is saved
+	// to ~/.free-llm-proxy-router/slots.json while the proxy runs (T-7
+	// hardening): a hard crash (SIGKILL/OOM/power loss) then loses at most
+	// one interval of quota protection instead of everything since boot.
+	// The graceful-shutdown save stays the final, complete write. Viper
+	// default 10; a negative value disables the periodic save.
+	SlotPersistIntervalSeconds int `mapstructure:"slot_persist_interval_seconds"`
+
 	// StrategyOverrides allows per-strategy config tweaks.
 	StrategyOverrides map[string]map[string]any `mapstructure:"strategy_overrides"`
 
@@ -420,6 +428,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.write_timeout_seconds", 120) // retired no-op (task S)
 	v.SetDefault("proxy.write_idle_timeout_seconds", 30)
 	v.SetDefault("proxy.max_request_seconds", 0) // 0 = automatic ceiling (task S)
+	v.SetDefault("proxy.slot_persist_interval_seconds", 10)
 	v.SetDefault("catalog.path", expandHome("~/.free-llm-proxy-router/catalog.json"))
 	v.SetDefault("catalog.enriched_path", expandHome("~/.free-llm-proxy-router/enriched.json"))
 	v.SetDefault("catalog.max_age_hours", 24)
