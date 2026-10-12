@@ -57,6 +57,9 @@ type FailureInput struct {
 	// MaxRetries is the clamped fallback.retries_per_candidate.
 	MaxRetries int
 	// RetryOn429 / RetryOn5xx mirror fallback.retry_on_429 / retry_on_5xx.
+	// RetryOn429 is RETIRED (no-op): a 429 never retries the same candidate
+	// — per-model quotas make that a pure sleep against a burned slot. The
+	// field stays so existing constructors keep compiling; it is ignored.
 	RetryOn429 bool
 	RetryOn5xx bool
 	// RetryAfter is the parsed Retry-After value of the failure response
@@ -108,10 +111,12 @@ func noteAuthFailure(setter cooldownSetter, providerID, modelID string, status i
 //	context.Canceled (client gone)                             → FailFast
 //	408                                                        → RetrySame
 //	  while retries remain, then FallbackNext
-//	429                                                        → RetrySame
-//	  (gated by retry_on_429) unless the Retry-After exceeds the remaining
-//	  request budget — sleeping it off would blow the deadline, so the walk
-//	  falls back instead of waiting
+//	429                                                        → FallbackNext
+//	  immediately — the free quota is PER MODEL (e.g. UnoRouter:
+//	  1 request/minute/model), so the same-model retry would only sleep
+//	  against a burned quota. The model parks on its per-model cooldown +
+//	  slot next_available; other models of the provider stay walkable.
+//	  fallback.retry_on_429 is retired (no-op — see the 429 case).
 //	404                                                        → FallbackNext
 //	  (model gone for this provider — per-model availability, not a request
 //	  defect; the walk marks the entry for reverification)
@@ -152,18 +157,18 @@ func ClassifyFailure(in FailureInput) FailureDecision {
 		// Not a failure; callers handle success before classifying.
 		return RetrySame
 	case sc == http.StatusTooManyRequests:
-		if !in.RetryOn429 {
-			return FallbackNext
-		}
-		// A Retry-After longer than the remaining request budget means the
-		// backoff sleep would blow the deadline — fall back instead of
-		// sleeping past the budget.
-		if in.RetryAfter > 0 && in.RemainingBudget > 0 && in.RetryAfter >= in.RemainingBudget {
-			return FallbackNext
-		}
-		if in.RetriesDone < in.MaxRetries {
-			return RetrySame
-		}
+		// 429 is a PER-MODEL quota signal (confirmed: the UnoRouter free
+		// quota is 1 request/minute PER MODEL, not per provider). The quota
+		// for this model is already burned for this window — a same-model
+		// retry can only sleep against it, and sleeping is forbidden: the
+		// walk must move to the NEXT candidate immediately. The model waits
+		// out its quota via the per-model cooldown + the slot limiter's
+		// next_available (fallback.go's 429 branch); the provider's other
+		// models stay walkable (separate slots).
+		//
+		// fallback.retry_on_429 is retired: the flag no longer changes this
+		// verdict (kept in config parsing for compatibility, documented as
+		// a no-op).
 		return FallbackNext
 	case sc == http.StatusRequestTimeout: // 408 — upstream request timeout
 		if in.RetriesDone < in.MaxRetries {

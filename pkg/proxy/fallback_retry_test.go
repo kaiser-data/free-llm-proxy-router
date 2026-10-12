@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
@@ -153,27 +154,34 @@ func TestRetryOn429FlagGatesRetry(t *testing.T) {
 	}
 }
 
-// Test429RetriesWhenFlagOn: retry_on_429 = true (the production default)
-// gives a 429 one same-candidate retry; on success no model cooldown is set.
-func Test429RetriesWhenFlagOn(t *testing.T) {
+// Test429NeverRetriesSameCandidate: a 429 is a per-model quota signal
+// (confirmed: UnoRouter free = 1 request/minute PER MODEL) — the same-model
+// retry is gone even with retry_on_429 = true (the retired production
+// default): one upstream call, no backoff sleep, then the walk moves on.
+// With a single candidate that means immediate exhaustion.
+func Test429NeverRetriesSameCandidate(t *testing.T) {
 	handler, hits := statusThenOKHandler(http.StatusTooManyRequests)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	fc, rl := newRetryChain(srv.URL, 1, 1, 0)
+	fc, rl := newRetryChain(srv.URL, 1, 1, 1)
 
-	resp, err := fc.Execute(context.Background(), retryRequest())
-	if err != nil {
-		t.Fatalf("Execute error = %v, want success after same-candidate retry", err)
+	start := time.Now()
+	_, err := fc.Execute(context.Background(), retryRequest())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected exhaustion — a 429 must not retry the same candidate")
 	}
-	if got := atomic.LoadInt32(hits); got != 2 {
-		t.Errorf("upstream hits = %d, want 2", got)
+	if got := atomic.LoadInt32(hits); got != 1 {
+		t.Errorf("upstream hits = %d, want 1 (no same-candidate retry on 429)", got)
 	}
-	if rl.IsOnCooldown("testprovider/test-model") {
-		t.Error("model cooldown must not be set when the same-candidate retry succeeds")
+	// No sleeping: the backoff retry would have waited ~1s+; the walk must
+	// move on (here: exhaust) at once.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("Execute took %s — a 429 must not sleep before falling back", elapsed)
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
+	if !rl.IsOnCooldown("testprovider/test-model") {
+		t.Error("the per-model cooldown (from the walk's 429 branch) must be set")
 	}
 }
 

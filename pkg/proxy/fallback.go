@@ -292,10 +292,14 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 
 	// Step 2–4: Try one model per provider in ranked order.
 	//
-	// Key invariant: once a provider returns any error, ALL remaining entries
-	// for that provider are skipped immediately. This prevents a large provider
-	// (e.g. NVIDIA NIM with 172 models) from exhausting maxAttempts before
-	// faster, more reliable providers (Groq, Cerebras, Gemini) are even tried.
+	// Key invariant: once a provider returns an error, ALL remaining entries
+	// for that provider are skipped immediately — EXCEPT a 429, which is a
+	// per-model quota signal (confirmed fact: the free quota is per model,
+	// e.g. UnoRouter 1 request/minute/model): the provider stays walkable
+	// for its other models, each holding its own slot. The provider-level
+	// skip still prevents a large broken provider (e.g. NVIDIA NIM with 172
+	// models) from exhausting maxAttempts before faster, more reliable
+	// providers (Groq, Cerebras, Gemini) are even tried.
 	failedProviders := make(map[string]bool)
 	for _, r := range ranked {
 		if ctx.Err() != nil {
@@ -421,7 +425,12 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			if resp != nil {
 				switch resp.StatusCode {
 				case 429:
-					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
+					// 429 is the per-model quota signal (confirmed:
+					// 1 request/minute PER MODEL on UnoRouter free) —
+					// deliberately NOT MarkNeedsReverification (that is
+					// reserved for 404 "model gone"): a quota hit must not
+					// remove the model from the pool; it recovers at
+					// next_available below.
 					info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
 					waitDur := info.WaitDuration()
 					until := time.Now().Add(waitDur)
@@ -466,13 +475,20 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			if resp != nil {
 				statusCode = resp.StatusCode
 			}
-			log.Printf("fallback: %s/%s status %d — skipping provider", r.ProviderID, r.ModelID, statusCode)
+			log.Printf("fallback: %s/%s status %d — skipping candidate", r.ProviderID, r.ModelID, statusCode)
 			fc.ReliabilityTracker.RecordOutcome(r.ProviderID, failureOutcome(resp, err))
 			if fc.ReliabilityTracker.ShouldCooldown(r.ProviderID) {
 				fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(30*time.Second))
 				log.Printf("fallback: %s reliability below 50%% â short cooldown", r.ProviderID)
 			}
-			failedProviders[r.ProviderID] = true // don't try other models from this provider
+			if statusCode != http.StatusTooManyRequests {
+				// 429 is a PER-MODEL quota signal (confirmed fact: the free quota
+				// is per model): the provider stays walkable — its other models
+				// hold separate slots. The model itself is parked by the per-model
+				// cooldown + slot next_available above. Every other failure class
+				// keeps the provider-level skip.
+				failedProviders[r.ProviderID] = true // don't try other models from this provider
+			}
 			continue
 		}
 
@@ -697,9 +713,10 @@ func successOutcome(dur time.Duration) reliability.Outcome {
 // with jitter — previously dead code, gap G4). The three-way classifier
 // (ClassifyFailure) now owns the failure classes the old two-gate
 // (classifyUpstreamFailure + sameCandidateRetryAllowed) used to split:
-// 429 follows fallback.retry_on_429, 5xx follows fallback.retry_on_5xx,
-// transport errors and 408 retry while retries remain, 404/401/403 and
-// genuine payload errors fall straight through to the walk. A backoff sleep
+// 5xx follows fallback.retry_on_5xx, transport errors and 408 retry while
+// retries remain, and a 429 NEVER retries the same candidate (per-model
+// quota — it falls back immediately, no sleep). 404/401/403 and genuine
+// payload errors fall straight through to the walk. A backoff sleep
 // never runs past the request's remaining total deadline. The HuggingFace
 // 503-loading recovery in Execute owns that case with its dedicated
 // estimated-time wait, so it is excluded here to avoid double-retrying in
@@ -773,10 +790,11 @@ func (fc *FallbackChain) classifierInput(ctx context.Context, resp *Response, er
 		Err:             err,
 		RetriesDone:     retriesDone,
 		MaxRetries:      maxRetries,
-		RetryOn429:      fc.Cfg.Fallback.RetryOn429,
 		RetryOn5xx:      fc.Cfg.Fallback.RetryOn5xx,
 		RemainingBudget: remainingBudget(ctx),
 		TimeoutsDone:    timeouts,
+		// RetryOn429 retired (no-op): a 429 always falls back immediately —
+		// per-model quota; sleeping against it is pointless.
 	}
 	if resp != nil {
 		in.StatusCode = resp.StatusCode

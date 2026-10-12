@@ -68,7 +68,27 @@ type ProviderConfig struct {
 	// requests enter upstreams ungated and rely on upstream 429 handling
 	// exactly as before. Set it to the provider's documented per-model
 	// per-minute quota (UnoRouter: 1).
+	//
+	// The quota this models is PER MODEL, not per provider: the same number
+	// applies to every model of the provider, but each model id counts its
+	// own slots (SlotLimiter keys by "provider/model").
 	RPM int `mapstructure:"rpm_limit"`
+
+	// RPMLimits overrides RPM for specific model IDs
+	// (providers[].rpm_limit_overrides: {"model-id": 3}). A key present in
+	// the map wins over RPM for that model; a value of 0 removes slot
+	// limiting for that model entirely. Models absent from the map keep the
+	// provider-wide RPM.
+	RPMLimits map[string]int `mapstructure:"rpm_limit_overrides"`
+}
+
+// RPMFor resolves the effective slot cap for one model of this provider:
+// the per-model override when present, the provider-wide RPM otherwise.
+func (p *ProviderConfig) RPMFor(modelID string) int {
+	if v, ok := p.RPMLimits[modelID]; ok {
+		return v
+	}
+	return p.RPM
 }
 
 // NativeFeatures lists provider-native request capabilities.

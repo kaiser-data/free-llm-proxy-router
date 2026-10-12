@@ -167,14 +167,21 @@ func (l *SlotLimiter) activeCount(key string) int {
 
 // slotEnter is the one gate every route iteration applies before entering a
 // candidate (task L0). When the provider opts into slot limiting
-// (providers[].rpm_limit > 0) it atomically reserves the slot; a denied
-// candidate is collected into `skips` for the group queue and the caller
-// moves on without spending a hop or an attempt.
+// (providers[].rpm_limit > 0, or a per-model rpm_limit_overrides entry) it
+// atomically reserves the slot under the "provider/model" key — one slot
+// pool PER MODEL, never per provider; a denied candidate is collected into
+// `skips` for the group queue and the caller moves on without spending a
+// hop or an attempt. An override value of 0 disables limiting for that
+// specific model.
 func slotEnter(l *SlotLimiter, provCfg *config.ProviderConfig, modelID string, keys *[]string) bool {
-	if l == nil || provCfg == nil || provCfg.RPM <= 0 {
+	if l == nil || provCfg == nil {
 		return true
 	}
-	granted, _ := l.Reserve(provCfg.ID+"/"+modelID, provCfg.RPM)
+	rpm := provCfg.RPMFor(modelID)
+	if rpm <= 0 {
+		return true
+	}
+	granted, _ := l.Reserve(provCfg.ID+"/"+modelID, rpm)
 	if granted {
 		return true
 	}

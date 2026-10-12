@@ -37,11 +37,12 @@ func TestClassifyFailure(t *testing.T) {
 		{"timeout gated by retry_on_5xx", FailureInput{Err: timeoutErr, TimeoutsDone: 0, RetryOn5xx: false, RetriesDone: 0, MaxRetries: 1}, FallbackNext},
 		{"timeout with no retries left", FailureInput{Err: timeoutErr, TimeoutsDone: 0, RetryOn5xx: true, RetriesDone: 1, MaxRetries: 1}, FallbackNext},
 
-		// --- 429 ---
-		{"429 flag on retries same", FailureInput{StatusCode: 429, RetryOn429: true, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		// --- 429 (per-model quota — never retries the same candidate;
+		// retry_on_429 is retired and ignored) ---
+		{"429 flag on falls back (flag retired)", FailureInput{StatusCode: 429, RetryOn429: true, RetriesDone: 0, MaxRetries: 1}, FallbackNext},
 		{"429 flag off falls back", FailureInput{StatusCode: 429, RetryOn429: false}, FallbackNext},
 		{"429 retry-after longer than budget", FailureInput{StatusCode: 429, RetryOn429: true, RetryAfter: 60 * time.Second, RemainingBudget: 10 * time.Second}, FallbackNext},
-		{"429 retry-after fits budget", FailureInput{StatusCode: 429, RetryOn429: true, RetryAfter: 2 * time.Second, RemainingBudget: 30 * time.Second, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		{"429 retry-after fits budget (still no same retry)", FailureInput{StatusCode: 429, RetryOn429: true, RetryAfter: 2 * time.Second, RemainingBudget: 30 * time.Second, RetriesDone: 0, MaxRetries: 1}, FallbackNext},
 		{"429 retries exhausted", FailureInput{StatusCode: 429, RetryOn429: true, RetriesDone: 1, MaxRetries: 1}, FallbackNext},
 
 		// --- 408 ---

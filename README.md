@@ -278,12 +278,16 @@ Failures during candidate routing run through one pure classifier
 
 - **retry_same** — transient failures on the candidate that just failed:
   connection reset / EOF before any response byte, `408`, first timeout, and
-  `429`/`5xx` (incl. `502`/`503`/`504`/`529`) while retries remain. The same
+  `5xx` (incl. `502`/`503`/`504`/`529`) while retries remain. The same
   candidate is retried up to `fallback.retries_per_candidate` times
-  (default 1) with exponential backoff — a 429 retry gated by
-  `fallback.retry_on_429`, a 5xx retry by `fallback.retry_on_5xx`. Retries
-  consume the `max_attempts` budget and never sleep past the request's
-  remaining total deadline.
+  (default 1) with exponential backoff — a 5xx retry gated by
+  `fallback.retry_on_5xx`. Retries consume the `max_attempts` budget and
+  never sleep past the request's remaining total deadline. A `429` is NEVER
+  retried on the same candidate: it is a per-model quota signal (the free
+  quota is 1 request/minute per model) — the walk falls back to the next
+  model immediately with no sleep, the hit model parks on its per-model
+  cooldown + slot next_available, and `fallback.retry_on_429` is retired
+  (a no-op kept for config compatibility).
 - **fallback** — this candidate is done, try the next one: retries spent,
   `429` whose `Retry-After` exceeds the request's remaining budget (never
   sleep-wait), `404` (model gone for this provider — the entry is flagged

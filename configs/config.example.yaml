@@ -72,6 +72,10 @@ proxy:
         max_tokens: 400
 
 fallback:
+  # RETIRED (no-op): a 429 never retries the same candidate — the free
+  # quota is per model (1 request/minute/model), so the walk falls back to
+  # the next model immediately with no sleep. Kept for config
+  # compatibility only.
   retry_on_429: true
   retry_on_5xx: true
   max_attempts: 5
@@ -266,8 +270,13 @@ providers:
     # Slot limiter (task L0): UnoRouter's free tier allows 1 request per
     # minute per model — the proxy reserves an atomic slot per routed model
     # before each attempt and queues slotless requests FIFO (see
-    # fallback.queue_wait_seconds).
+    # fallback.queue_wait_seconds). The quota is PER MODEL: the same number
+    # applies to every model, but each model id counts its own slots.
     rpm_limit: 1
+    # Per-model overrides of rpm_limit: {"model-id": rpm}. A present key
+    # wins for that model; 0 removes slot limiting for it.
+    # rpm_limit_overrides:
+    #   "deepseek/deepseek-r1:free": 2
     rate_limit_notes: "Independent OpenAI-compatible aggregator — NOT OpenRouter. Free models carry a ':free' ID suffix; model availability depends on the API key."
     discovery:
       # Free-tier detection: pricing metadata wins when the API exposes it;
