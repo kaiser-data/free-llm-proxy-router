@@ -489,7 +489,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			req.Model = ""
 			raw["model"] = ""
 		}
-		log.Printf("agent profile resolved: model=%q strategy=%q", profile.Model, profile.Strategy)
+		log.Printf("req=%s agent profile resolved: model=%q strategy=%q", req.RequestID, profile.Model, profile.Strategy)
 	}
 
 	// Check cache for non-streaming requests
@@ -615,10 +615,10 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			switch finalFailureDecision(resp, err) {
 			case FailFast:
 				if resp != nil {
-					log.Printf("direct route: %s/%s fail-fast status %d — surfacing to client", e.ProviderID, e.ModelID, resp.StatusCode)
+					log.Printf("direct route: req=%s %s/%s fail-fast status %d — surfacing to client", req.RequestID, e.ProviderID, e.ModelID, resp.StatusCode)
 					s.writeUpstreamError(w, req.Model, resp)
 				} else {
-					log.Printf("direct route: %s/%s request canceled — aborting walk", e.ProviderID, e.ModelID)
+					log.Printf("direct route: req=%s %s/%s request canceled — aborting walk", req.RequestID, e.ProviderID, e.ModelID)
 				}
 				return
 			default:
@@ -661,7 +661,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		return
 	}
 	// Model found but all direct attempts failed — fall back to strategy chain.
-	log.Printf("direct route: all providers failed for %q — falling back to strategy chain", req.Model)
+	log.Printf("direct route: req=%s all providers failed for %q — falling back to strategy chain", req.RequestID, req.Model)
 	req.Model = ""
 	raw["model"] = ""
 	s.executeStrategyChain(w, r, cfg, cat, req, raw)
@@ -684,15 +684,15 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 	demand := demandOf(req.Raw, req.Messages, req.MaxTokens)
 	ups = s.gateUpstreams(cat, req, ups)
 	if len(ups) == 0 {
-		log.Printf("alias route: %q — no candidate passes the capability gate (NG8/context/tools/vision)", req.Model)
+		log.Printf("alias route: req=%s %q — no candidate passes the capability gate (NG8/context/tools/vision)", req.RequestID, req.Model)
 		s.writeNoCapableCandidate(w, req.Model, demand)
 		return true
 	}
 	if resolver.IsPool(req.Model) {
-		log.Printf("pool alias: %q -> %d free candidate(s)", req.Model, len(ups))
+		log.Printf("pool alias: req=%s %q -> %d free candidate(s)", req.RequestID, req.Model, len(ups))
 		ups = s.rankPoolCandidates(cfg, req, resolver, cat, req.Model, ups)
 	} else {
-		log.Printf("canonical alias: %q -> %d upstream candidate(s)", req.Model, len(ups))
+		log.Printf("canonical alias: req=%s %q -> %d upstream candidate(s)", req.RequestID, req.Model, len(ups))
 	}
 
 	chain := &FallbackChain{
@@ -741,7 +741,7 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 			delete(body, "stream") // buffered path: fallback requires complete JSON
 			resp, err := chain.callProvider(r.Context(), *provCfg, body)
 			if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				log.Printf("alias route: %s/%s served %q", u.ProviderID, u.ModelID, req.Model)
+				log.Printf("alias route: req=%s %s/%s served %q", req.RequestID, u.ProviderID, u.ModelID, req.Model)
 				// Expose the raw upstream identity (documented contract) while
 				// X-Used-Model reports the canonical name. Only the router-owned
 				// headers are forwarded — upstream transport headers like
@@ -766,10 +766,10 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 			switch finalFailureDecision(resp, err) {
 			case FailFast:
 				if resp != nil {
-					log.Printf("alias route: %s/%s fail-fast status %d — surfacing to client, no further candidates", u.ProviderID, u.ModelID, resp.StatusCode)
+					log.Printf("alias route: req=%s %s/%s fail-fast status %d — surfacing to client, no further candidates", req.RequestID, u.ProviderID, u.ModelID, resp.StatusCode)
 					s.writeUpstreamError(w, req.Model, resp)
 				} else {
-					log.Printf("alias route: %s/%s request canceled — aborting candidate walk", u.ProviderID, u.ModelID)
+					log.Printf("alias route: req=%s %s/%s request canceled — aborting candidate walk", req.RequestID, u.ProviderID, u.ModelID)
 				}
 				return true
 			default:
@@ -782,9 +782,9 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 			// failure class, then try the next one (cooldown/retry already
 			// handled by callProvider callers upstream of this point).
 			if err != nil {
-				log.Printf("alias route: %s/%s error: %v — trying next candidate", u.ProviderID, u.ModelID, err)
+				log.Printf("alias route: req=%s %s/%s error: %v — trying next candidate", req.RequestID, u.ProviderID, u.ModelID, err)
 			} else {
-				log.Printf("alias route: %s/%s status %d — trying next candidate", u.ProviderID, u.ModelID, resp.StatusCode)
+				log.Printf("alias route: req=%s %s/%s status %d — trying next candidate", req.RequestID, u.ProviderID, u.ModelID, resp.StatusCode)
 			}
 		}
 		// No upstream was entered this round but candidates were skipped
@@ -800,7 +800,7 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 		}
 	}
 	// All alias upstreams failed — fall back to the default strategy chain.
-	log.Printf("alias route: all upstreams failed for %q — falling back to strategy chain", req.Model)
+	log.Printf("alias route: req=%s all upstreams failed for %q — falling back to strategy chain", req.RequestID, req.Model)
 	req.Model = ""
 	raw["model"] = ""
 	s.executeStrategyChain(w, r, cfg, cat, req, raw)
@@ -930,7 +930,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 
 	strat, err := s.strategyReg.Get(stratName)
 	if err != nil {
-		log.Printf("unknown strategy %q, falling back to adaptive", stratName)
+		log.Printf("req=%s unknown strategy %q, falling back to adaptive", req.RequestID, stratName)
 		strat, _ = s.strategyReg.Get("adaptive")
 	}
 
@@ -982,7 +982,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 
 	resp, err := chain.Execute(r.Context(), req)
 	if err != nil {
-		log.Printf("fallback chain exhausted: %v", err)
+		log.Printf("fallback chain exhausted: req=%s %v", req.RequestID, err)
 		// Candidate exhaustion is an upstream availability failure: answer
 		// 503 with a JSON error body + Retry-After so clients (and agents)
 		// can tell a proxy outage apart from a real completion and know
