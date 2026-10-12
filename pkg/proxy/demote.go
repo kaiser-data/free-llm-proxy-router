@@ -1,9 +1,12 @@
 package proxy
 
 import (
+	"log"
+	"net/http"
 	"sync"
 	"time"
 
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/alias"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
 )
 
@@ -146,4 +149,74 @@ func (fc *FallbackChain) filterDemotedEntries(entries []catalog.CatalogEntry) []
 		return demoted // every candidate demoted — last chance beats starving
 	}
 	return kept
+}
+
+// filterDemotedUpstreams is the alias-route twin of filterDemotedEntries:
+// that route walks []alias.Upstream, not catalog entries. Same semantics —
+// demoted candidates are dropped unless EVERY candidate is demoted, in
+// which case they are handed back (last chance) rather than starving the
+// request.
+func (fc *FallbackChain) filterDemotedUpstreams(ups []alias.Upstream) []alias.Upstream {
+	ttl := fc.demotionTTL()
+	if ttl <= 0 || fc.Demotions == nil || len(ups) == 0 {
+		return ups
+	}
+	now := time.Now()
+	kept := make([]alias.Upstream, 0, len(ups))
+	var demoted []alias.Upstream
+	for _, u := range ups {
+		if fc.Demotions.isDemoted(u.ProviderID, u.ModelID, now, ttl) {
+			demoted = append(demoted, u)
+			continue
+		}
+		kept = append(kept, u)
+	}
+	if len(kept) == 0 {
+		return demoted // every candidate demoted — last chance beats starving
+	}
+	return kept
+}
+
+// failureDecisionWalk classifies a candidate's LAST failed attempt WITH the
+// cross-model unknown-400 policy (round 8 step 2). It is wired at every
+// genuine multi-candidate walk: the ranked walk (fallback.go), the direct
+// route's catalog-entry loop, and the alias route's upstream loop. The
+// openrouter models[] and openrouter/free ultimate-fallback steps keep
+// finalFailureDecision — they speak a multi-model / router-meta wire shape,
+// so "confirm across models" is meaningless there.
+//
+// On an UNRECOGNIZED 400 with fallback.unknown_400_policy=cross_model_confirm
+// the failing model joins the per-request seen-set and the cross-request
+// demotion registry; the classifier then reads the set size: below
+// unknown_400_confirm_n the walk moves to the next candidate, at the
+// ceiling it fail-fasts and surfaces the upstream 400 exactly as before.
+// Everything else (recognized 400 subclasses, transport errors, other
+// statuses) is decided identically to finalFailureDecision.
+func (fc *FallbackChain) failureDecisionWalk(resp *Response, err error, providerID, modelID string, seenUnknown400 map[string]bool) FailureDecision {
+	in := finalFailureInput(resp, err)
+	if in.StatusCode != http.StatusBadRequest || seenUnknown400 == nil {
+		return ClassifyFailure(in)
+	}
+	if fc.Cfg.Fallback.Unknown400Policy != policyCrossModelConfirm || fc.Cfg.Fallback.Unknown400ConfirmN <= 0 {
+		return ClassifyFailure(in)
+	}
+	if classifyBadRequestSubtype(in.Body) != bad400Unknown {
+		return ClassifyFailure(in)
+	}
+	key := demotionKey(providerID, modelID)
+	if !seenUnknown400[key] {
+		seenUnknown400[key] = true
+		if fc.Demotions != nil && fc.demotionTTL() > 0 {
+			fc.Demotions.demote(providerID, modelID, time.Now())
+			log.Printf("fallback: %s/%s demoted for %s (unknown-400)", providerID, modelID, fc.demotionTTL())
+		}
+	}
+	in.Policy = policyCrossModelConfirm
+	in.ConfirmN = fc.Cfg.Fallback.Unknown400ConfirmN
+	in.SeenDistinct = len(seenUnknown400)
+	d := ClassifyFailure(in)
+	if d == FallbackNext {
+		log.Printf("fallback: %s/%s unknown-400 (cross-model confirm %d/%d) — walking to another model", providerID, modelID, in.SeenDistinct, in.ConfirmN)
+	}
+	return d
 }

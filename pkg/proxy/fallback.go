@@ -260,6 +260,14 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 	// the OpenRouter models[] step, the openrouter/free ultimate fallback,
 	// and the HuggingFace cold-start re-attempt (task G).
 	attempt := 0
+	// unknown400Seen is the per-request cross-model confirm state (round 8
+	// step 2): the distinct upstream models ("provider/model") that
+	// answered an unrecognized 400 with this request's payload. The
+	// classifier reads its size through failureDecisionWalk — below
+	// unknown_400_confirm_n the walk moves to the next candidate, at the
+	// ceiling it fail-fasts and surfaces the upstream 400 exactly as
+	// before.
+	unknown400Seen := make(map[string]bool)
 
 	// Step 1: Try OpenRouter with models[] array (native fallback)
 	if or := fc.findProvider("openrouter"); or != nil {
@@ -474,7 +482,7 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 			// surface the upstream response as-is. Auth/model failures are
 			// classified FallbackNext and continue below with the cooldowns
 			// above already applied.
-			if finalFailureDecision(resp, err) == FailFast {
+			if fc.failureDecisionWalk(resp, err, r.ProviderID, r.ModelID, unknown400Seen) == FailFast {
 				if resp != nil {
 					log.Printf("fallback: %s/%s fail-fast status %d — surfacing to client, aborting chain", r.ProviderID, r.ModelID, resp.StatusCode)
 					fc.ReliabilityTracker.RecordOutcome(r.ProviderID, failureOutcome(resp, err))

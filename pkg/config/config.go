@@ -239,6 +239,26 @@ type FallbackConfig struct {
 	// immediately. Empty/nil disables.
 	ModelBlocklist []string `mapstructure:"model_blocklist"`
 
+	// Unknown400Policy decides what an UNRECOGNIZED 400 does (round 8
+	// step 2) — the recognized 400 subclasses keep their verdicts
+	// regardless (content-policy refusal → fail fast, context-length
+	// overflow / unsupported modality → fallback). The only recognized
+	// value is "cross_model_confirm": the ranked walk tries up to
+	// unknown_400_confirm_n DISTINCT upstream models with the same
+	// payload before declaring the payload broken and fail-fast
+	// surfacing the upstream 400. Any other value — including empty and
+	// "fail_fast" — keeps the historical behavior: the first unknown 400
+	// surfaces immediately. Unknown values fail closed; pkg/config has
+	// no normalize/validate pass.
+	Unknown400Policy string `mapstructure:"unknown_400_policy"`
+
+	// Unknown400ConfirmN is the distinct-model confirmation count for
+	// unknown_400_policy=cross_model_confirm. Default 2: the walk moves
+	// to another model after the first unknown 400 and fail-fasts when a
+	// second distinct model fails the same way. <=0 disables the policy
+	// (fail_fast).
+	Unknown400ConfirmN int `mapstructure:"unknown_400_confirm_n"`
+
 	// Unknown400DemotionSeconds parks a model that answered an
 	// unrecognized 400 OUT of every walk for this many seconds (round 8
 	// steps 3–4, cross-request demotion). The registry is in-memory,
@@ -464,6 +484,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.queue_max_waiters", 64)
 	v.SetDefault("fallback.stream_keepalive_after_seconds", 5)
 	v.SetDefault("fallback.stream_keepalive_interval_seconds", 15)
+	v.SetDefault("fallback.unknown_400_policy", "cross_model_confirm")
+	v.SetDefault("fallback.unknown_400_confirm_n", 2)
 	v.SetDefault("fallback.unknown_400_demotion_seconds", 600)
 	v.SetDefault("models.model_refresh_minutes", 20)
 	v.SetDefault("models.canonicalization.enabled", true)

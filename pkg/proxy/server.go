@@ -565,6 +565,11 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 	}
 
 	found := false
+	// unknown400Seen is the per-request cross-model confirm state (round 8
+	// step 2) for the direct route's catalog-entry walk — the policy walks
+	// to the next entry until unknown_400_confirm_n distinct models failed
+	// the same unrecognized way.
+	directSeen400 := make(map[string]bool)
 	for {
 		entered, blockedKeys, gateSkipped := 0, []string{}, 0
 		for _, e := range cat.Entries {
@@ -618,8 +623,9 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			// client/request defects (400, 413, content-policy, …) surface
 			// immediately with no masked success; 401/403 cool the provider down
 			// and keep walking; every other retryable class (rate limits, 5xx,
-			// transport) also walks to the next catalog entry.
-			switch finalFailureDecision(resp, err) {
+			// transport) also walks to the next catalog entry. The unknown-400
+			// branch consults the cross-model confirm policy (round 8 step 2).
+			switch chain.failureDecisionWalk(resp, err, e.ProviderID, e.ModelID, directSeen400) {
 			case FailFast:
 				if resp != nil {
 					log.Printf("direct route: req=%s %s/%s fail-fast status %d — surfacing to client", req.RequestID, e.ProviderID, e.ModelID, resp.StatusCode)
@@ -717,8 +723,16 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 		Demotions:          s.demotions,
 		Gate:               &demand,
 	}
+	// unknown400Seen is the per-request cross-model confirm state (round 8
+	// step 2) for the alias route's candidate walk.
+	aliasSeen400 := make(map[string]bool)
 	for {
 		entered, blockedKeys := 0, []string{}
+		// Unknown-400 demotion (round 8 steps 3–4): models an earlier
+		// request proved unrecognized-400-broken leave the candidate list
+		// until their TTL lapses; when every candidate is demoted they are
+		// handed back (last chance) rather than starving the request.
+		ups = chain.filterDemotedUpstreams(ups)
 		for _, u := range ups {
 			provCfg := findProviderCfg(cfg, u.ProviderID)
 			if provCfg == nil {
@@ -771,7 +785,9 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 			// (task H): fail-fast client/request defects surface the upstream
 			// response to the client verbatim; 401/403 cool the provider down
 			// and walk on; other retryable classes walk to the next candidate.
-			switch finalFailureDecision(resp, err) {
+			// The unknown-400 branch consults the cross-model confirm policy
+			// (round 8 step 2).
+			switch chain.failureDecisionWalk(resp, err, u.ProviderID, u.ModelID, aliasSeen400) {
 			case FailFast:
 				if resp != nil {
 					log.Printf("alias route: req=%s %s/%s fail-fast status %d — surfacing to client, no further candidates", req.RequestID, u.ProviderID, u.ModelID, resp.StatusCode)

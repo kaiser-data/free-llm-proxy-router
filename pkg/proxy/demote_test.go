@@ -1,12 +1,21 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/models"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
 )
 
 // unknown400Body matches NO marker table — the unrecognized-400 class the
@@ -64,6 +73,190 @@ func TestDemotionRegistryRedemoteRefreshes(t *testing.T) {
 	}
 	if reg.isDemoted("p", "m1", base.Add(50*time.Second+2*time.Minute), time.Minute) {
 		t.Fatal("refreshed window must still lapse")
+	}
+}
+
+// TestFailureDecisionWalkCrossModelConfirm walks the ranked-walk classifier
+// through the whole policy: first distinct model walks on, second distinct
+// model fail-fasts, same-model re-entry does not grow the set, recognized
+// 400 subclasses are untouched, and the legacy (zero-policy) chain stays
+// fail-fast with an empty seen-set.
+func TestFailureDecisionWalkCrossModelConfirm(t *testing.T) {
+	fc := &FallbackChain{
+		Cfg: &config.Config{Fallback: config.FallbackConfig{
+			Unknown400Policy:          policyCrossModelConfirm,
+			Unknown400ConfirmN:        2,
+			Unknown400DemotionSeconds: 600,
+		}},
+		Demotions: newDemotionRegistry(),
+	}
+	resp := func() *Response {
+		return &Response{StatusCode: 400, Body: []byte(unknown400Body)}
+	}
+
+	seen := make(map[string]bool)
+	if got := fc.failureDecisionWalk(resp(), nil, "pa", "ma", seen); got != FallbackNext {
+		t.Fatalf("first distinct unknown-400 = %s, want fallback", got)
+	}
+	if len(seen) != 1 || !seen["pa/ma"] {
+		t.Fatalf("seen-set = %v, want {pa/ma}", seen)
+	}
+	if !fc.Demotions.isDemoted("pa", "ma", time.Now(), fc.demotionTTL()) {
+		t.Fatal("policy-rerouted model must join the demotion registry")
+	}
+	if got := fc.failureDecisionWalk(resp(), nil, "pb", "mb", seen); got != FailFast {
+		t.Fatalf("second distinct unknown-400 = %s, want fail_fast", got)
+	}
+	if !fc.Demotions.isDemoted("pb", "mb", time.Now(), fc.demotionTTL()) {
+		t.Fatal("confirming model must be demoted too")
+	}
+	if got := fc.failureDecisionWalk(resp(), nil, "pa", "ma", seen); got != FailFast {
+		t.Fatalf("same-model re-entry = %s, want fail_fast (set must not grow)", got)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("seen-set = %v, want 2 entries after re-entry", seen)
+	}
+
+	// Recognized subclasses: content-policy fail-fasts WITHOUT touching the
+	// set; a 500 is decided exactly like the legacy classifier.
+	seenPolicy := make(map[string]bool)
+	policy400 := &Response{StatusCode: 400, Body: []byte(`{"error":{"code":"content_filter","message":"safety system"}}`)}
+	if got := fc.failureDecisionWalk(policy400, nil, "pc", "mc", seenPolicy); got != FailFast || len(seenPolicy) != 0 {
+		t.Fatalf("content-policy 400 = %s len=%d, want fail_fast and untouched set", got, len(seenPolicy))
+	}
+	seen500 := make(map[string]bool)
+	if got := fc.failureDecisionWalk(&Response{StatusCode: 500, Body: []byte("boom")}, nil, "pd", "md", seen500); got != FallbackNext || len(seen500) != 0 {
+		t.Fatalf("500 = %s len=%d, want fallback and untouched set", got, len(seen500))
+	}
+	// Transport error (resp nil): context canceled → fail_fast, untouched.
+	seenErr := make(map[string]bool)
+	if got := fc.failureDecisionWalk(nil, context.Canceled, "pe", "me", seenErr); got != FailFast || len(seenErr) != 0 {
+		t.Fatalf("canceled = %s len=%d, want fail_fast and untouched set", got, len(seenErr))
+	}
+
+	// Legacy chain: zero policy → first unknown-400 fail-fasts, set empty.
+	fcZero := &FallbackChain{Cfg: &config.Config{}}
+	seenZero := make(map[string]bool)
+	if got := fcZero.failureDecisionWalk(resp(), nil, "pf", "mf", seenZero); got != FailFast || len(seenZero) != 0 {
+		t.Fatalf("legacy zero-policy = %s len=%d, want fail_fast and untouched set", got, len(seenZero))
+	}
+}
+
+// orderedStrategy ranks the catalog entries the WALK hands it, in slice
+// order — unlike mockStrategy it must respect the input list so the tests
+// can prove that demotion filtering actually removes entries before
+// ranking.
+type orderedStrategy struct{}
+
+func (orderedStrategy) Name() string { return "ordered" }
+func (orderedStrategy) Rank(_ strategy.Request, entries []catalog.CatalogEntry, _ *models.EnrichedCatalog) []strategy.RankedEntry {
+	out := make([]strategy.RankedEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, strategy.RankedEntry{Entry: e, ProviderID: e.ProviderID, ModelID: e.ModelID})
+	}
+	return out
+}
+
+// newDemoteChain builds a two-candidate chain (prova/model-a ranked first,
+// provb/model-b second) sharing the given demotion registry — mirroring
+// production where the registry outlives per-request chains.
+func newDemoteChain(aURL, bURL string, dem *demotionRegistry, demotionSeconds int) *FallbackChain {
+	return &FallbackChain{
+		Cfg: &config.Config{
+			Providers: []config.ProviderConfig{
+				{ID: "prova", BaseURL: aURL, Enabled: true},
+				{ID: "provb", BaseURL: bURL, Enabled: true},
+			},
+			Fallback: config.FallbackConfig{
+				MaxAttempts:               8,
+				Unknown400Policy:          policyCrossModelConfirm,
+				Unknown400ConfirmN:        2,
+				Unknown400DemotionSeconds: demotionSeconds,
+			},
+		},
+		Strategy: orderedStrategy{},
+		Catalog: &catalog.Catalog{Entries: []catalog.CatalogEntry{
+			{ProviderID: "prova", ModelID: "model-a", IsFree: true, TierType: "free"},
+			{ProviderID: "provb", ModelID: "model-b", IsFree: true, TierType: "free"},
+		}},
+		RateLimiter:        ratelimit.NewGlobalTracker(),
+		ReliabilityTracker: reliability.New(),
+		HTTPClient:         &http.Client{},
+		Demotions:          dem,
+	}
+}
+
+// TestWalkCrossModelConfirmRecovers is the end-to-end lock for round 8:
+// request 1 hits the unknown-400 model, the policy walks to the next model
+// and the request still succeeds; the failing model lands in the shared
+// registry; request 2 never touches it again (gate-level skip, not just
+// ordering).
+func TestWalkCrossModelConfirmRecovers(t *testing.T) {
+	var aHits int32
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&aHits, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(unknown400Body))
+	}))
+	defer bad.Close()
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"ok","choices":[{"index":0,"message":{"role":"assistant","content":"CONFIRM_OK"},"finish_reason":"stop"}]}`))
+	}))
+	defer ok.Close()
+
+	dem := newDemotionRegistry()
+
+	// Request 1: model-a unknown-400s → confirm walks to model-b → 200.
+	fc1 := newDemoteChain(bad.URL, ok.URL, dem, 600)
+	resp, err := fc1.Execute(context.Background(), retryRequest())
+	if err != nil {
+		t.Fatalf("request 1 error = %v, want success via the confirmed next model", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("request 1 status = %d, want 200", resp.StatusCode)
+	}
+	if got := atomic.LoadInt32(&aHits); got != 1 {
+		t.Fatalf("model-a hits after request 1 = %d, want 1", got)
+	}
+	if !dem.isDemoted("prova", "model-a", time.Now(), 600*time.Second) {
+		t.Fatal("model-a must be demoted after the unknown-400")
+	}
+
+	// Request 2 (fresh chain, SHARED registry): model-a is filtered at the
+	// gate — the bad upstream is never contacted again.
+	fc2 := newDemoteChain(bad.URL, ok.URL, dem, 600)
+	resp2, err := fc2.Execute(context.Background(), retryRequest())
+	if err != nil {
+		t.Fatalf("request 2 error = %v, want success via model-b", err)
+	}
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("request 2 status = %d, want 200", resp2.StatusCode)
+	}
+	if got := atomic.LoadInt32(&aHits); got != 1 {
+		t.Fatalf("model-a hits after request 2 = %d, want 1 (demoted model must be skipped)", got)
+	}
+}
+
+// TestWalkUnknown400FailsFastAtConfirmN: two DISTINCT models answering the
+// same unrecognized 400 ends the walk with the real upstream 400 surfaced —
+// exactly the legacy fail-fast, just two confirmations later.
+func TestWalkUnknown400FailsFastAtConfirmN(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(unknown400Body))
+	}))
+	defer bad.Close()
+
+	fc := newDemoteChain(bad.URL, bad.URL, newDemotionRegistry(), 600)
+	resp, err := fc.Execute(context.Background(), retryRequest())
+	if err != nil {
+		t.Fatalf("Execute error = %v, want the surfaced upstream 400", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 surfaced", resp.StatusCode)
+	}
+	if !strings.Contains(string(resp.Body), "mystery barrel") {
+		t.Fatalf("body = %q, want the real upstream error body", resp.Body)
 	}
 }
 

@@ -249,3 +249,38 @@ func TestFinalFailureDecision(t *testing.T) {
 		t.Errorf("final 401 = %s, want fallback", got)
 	}
 }
+
+// TestClassifyUnknown400Policy locks the round-8 cross-model confirm rows:
+// only the UNRECOGNIZED 400 branch consults FailureInput.Policy, and any
+// policy other than cross_model_confirm fails closed (historical FailFast).
+func TestClassifyUnknown400Policy(t *testing.T) {
+	unknown := []byte(`{"error":{"message":"mystery barrel exploded","code":400}}`)
+	policy := []byte(`{"error":{"code":"content_filter","message":"rejected by our safety system"}}`)
+	tests := []struct {
+		name string
+		in   FailureInput
+		want FailureDecision
+	}{
+		{"zero value keeps fail_fast", FailureInput{StatusCode: 400, Body: unknown}, FailFast},
+		{"empty policy keeps fail_fast", FailureInput{StatusCode: 400, Body: unknown, Policy: "", ConfirmN: 2, SeenDistinct: 0}, FailFast},
+		{"typo policy fails closed", FailureInput{StatusCode: 400, Body: unknown, Policy: "cross_model_cofirm", ConfirmN: 2, SeenDistinct: 0}, FailFast},
+		{"confirm 2 first distinct model walks on", FailureInput{StatusCode: 400, Body: unknown, Policy: policyCrossModelConfirm, ConfirmN: 2, SeenDistinct: 1}, FallbackNext},
+		{"confirm 2 second distinct model fail-fasts", FailureInput{StatusCode: 400, Body: unknown, Policy: policyCrossModelConfirm, ConfirmN: 2, SeenDistinct: 2}, FailFast},
+		{"confirm 3 keeps walking through two failures", FailureInput{StatusCode: 400, Body: unknown, Policy: policyCrossModelConfirm, ConfirmN: 3, SeenDistinct: 2}, FallbackNext},
+		{"confirm 0 disables the policy", FailureInput{StatusCode: 400, Body: unknown, Policy: policyCrossModelConfirm, ConfirmN: 0, SeenDistinct: 0}, FailFast},
+		{"policy never overrides content-policy refusal", FailureInput{StatusCode: 400, Body: policy, Policy: policyCrossModelConfirm, ConfirmN: 2, SeenDistinct: 1}, FailFast},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifyFailure(tt.in); got != tt.want {
+				t.Errorf("ClassifyFailure(%+v) = %s, want %s", tt.in, got, tt.want)
+			}
+		})
+	}
+	// Context-length stays FallbackNext under the policy — recognized
+	// subclasses keep their verdicts.
+	ctxBody := []byte(`{"error":{"message":"This model's maximum context length is 4096 tokens"}}`)
+	if got := ClassifyFailure(FailureInput{StatusCode: 400, Body: ctxBody, Policy: policyCrossModelConfirm, ConfirmN: 2, SeenDistinct: 9}); got != FallbackNext {
+		t.Errorf("context-length under policy = %s, want fallback", got)
+	}
+}

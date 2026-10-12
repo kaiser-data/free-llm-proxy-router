@@ -72,6 +72,23 @@ type FailureInput struct {
 	// only the FIRST timeout earns a same-candidate retry; a second
 	// consecutive timeout says the provider is too slow for this request.
 	TimeoutsDone int
+	// Unknown-400 policy (round 8 step 2) — only the bad400Unknown branch
+	// of classifyBadRequest consults these; every other row of the
+	// decision table ignores them, and the zero value keeps the
+	// historical FailFast, so existing constructors and tests are
+	// unaffected.
+	// Policy is fallback.unknown_400_policy; any value other than
+	// "cross_model_confirm" means fail_fast (documented fail-closed —
+	// pkg/config has no normalize/validate pass, so typos can never
+	// silently loosen the walk).
+	Policy string
+	// ConfirmN is fallback.unknown_400_confirm_n: how many DISTINCT
+	// upstream models must answer the same unrecognized 400 before the
+	// payload is declared broken. ConfirmN <= 0 disables the policy.
+	ConfirmN int
+	// SeenDistinct counts the distinct upstream models (the current one
+	// included) that already unknown-400-ed this request's payload.
+	SeenDistinct int
 }
 
 // cooldownSetter is the minimal cooldown surface the auth-failure handler
@@ -182,7 +199,7 @@ func ClassifyFailure(in FailureInput) FailureDecision {
 	case sc == http.StatusRequestEntityTooLarge:
 		return FailFast // 413 — shrinking the payload is the client's job
 	case sc == http.StatusBadRequest:
-		return classifyBadRequest(in.Body)
+		return classifyBadRequest(in)
 	case sc >= http.StatusInternalServerError:
 		// 500, 502, 503, 504, 529 (Cloudflare overloaded), …
 		if in.RetryOn5xx && in.RetriesDone < in.MaxRetries {
@@ -205,24 +222,64 @@ func ClassifyFailure(in FailureInput) FailureDecision {
 //	content-policy refusal          → FailFast (no provider may serve it)
 //	context-length overflow         → FallbackNext (a bigger window can)
 //	unsupported image/audio/video   → FallbackNext (a multimodal model can)
-//	anything else — a genuine       → FailFast (no candidate can fix the
-//	  payload defect (malformed       payload; an unknown 400 never
-//	  fields, bad types, unknown      becomes a silent fallback)
-//	  params)
+//	anything else — a genuine       → FailFast by default (no candidate can
+//	  payload defect (malformed       fix the payload; an unknown 400
+//	  fields, bad types, unknown      never becomes a silent fallback) —
+//	  params)                         UNLESS the cross-model confirm
+//	                                  policy is active: then the first
+//	                                  (ConfirmN−1) distinct-model unknown
+//	                                  400s walk on so another model can
+//	                                  prove the payload works (round 8
+//	                                  step 2); the ConfirmN-th distinct
+//	                                  failure fail-fasts as before.
 //
 // Detection is a best-effort lowercase substring match of the upstream error
 // body against the marker tables below — the single source of truth, with
 // the per-provider message shapes documented on each table. Anything not
-// confidently recognized defaults to FailFast so a broken payload is never
-// masked behind an exhaustion response.
-func classifyBadRequest(body []byte) FailureDecision {
-	if containsAnyMarker(body, contentPolicyMarkers) {
+// confidently recognized is bad400Unknown.
+func classifyBadRequest(in FailureInput) FailureDecision {
+	switch classifyBadRequestSubtype(in.Body) {
+	case bad400ContentPolicy:
+		return FailFast
+	case bad400ContextLength:
+		return FallbackNext
+	default:
+		if in.Policy == policyCrossModelConfirm && in.ConfirmN > 0 && in.SeenDistinct < in.ConfirmN {
+			return FallbackNext
+		}
 		return FailFast
 	}
-	if containsAnyMarker(body, contextLengthMarkers) || containsAnyMarker(body, modalityMarkers) {
-		return FallbackNext
+}
+
+// policyCrossModelConfirm is the only recognized unknown-400 policy
+// (fallback.unknown_400_policy, round 8 step 2). Any other value — empty,
+// "fail_fast", a typo — fails closed: the first unrecognized 400 surfaces
+// exactly as before.
+const policyCrossModelConfirm = "cross_model_confirm"
+
+// badRequestKind names the 400 subclass detected from the body (task I +
+// round 8 step 2).
+type badRequestKind int
+
+const (
+	// bad400Unknown: no marker matched — either the payload is broken
+	// (fail fast) or the upstream model is (cross-model confirm policy).
+	bad400Unknown badRequestKind = iota
+	bad400ContentPolicy
+	bad400ContextLength
+)
+
+// classifyBadRequestSubtype is the pure body→subclass split shared by
+// classifyBadRequest and the walk-level unknown-400 bookkeeping
+// (failureDecisionWalk).
+func classifyBadRequestSubtype(body []byte) badRequestKind {
+	if containsAnyMarker(body, contentPolicyMarkers) {
+		return bad400ContentPolicy
 	}
-	return FailFast
+	if containsAnyMarker(body, contextLengthMarkers) || containsAnyMarker(body, modalityMarkers) {
+		return bad400ContextLength
+	}
+	return bad400Unknown
 }
 
 // contentPolicyMarkers detect upstream refusals driven by usage policy.
@@ -336,16 +393,24 @@ func remainingBudget(ctx context.Context) time.Duration {
 // retry flags stay false on purpose — they gate only the same-candidate
 // retry, never the walk.
 func finalFailureDecision(resp *Response, err error) FailureDecision {
+	return ClassifyFailure(finalFailureInput(resp, err))
+}
+
+// finalFailureInput builds the walk-level FailureInput for a candidate's
+// LAST failed attempt — shared by finalFailureDecision (legacy walk steps)
+// and the policy-aware failureDecisionWalk. RetriesDone=1 is ≥
+// MaxRetries(0): no RetrySame is possible.
+func finalFailureInput(resp *Response, err error) FailureInput {
 	status := 0
 	if resp != nil {
 		status = resp.StatusCode
 	}
-	return ClassifyFailure(FailureInput{
+	return FailureInput{
 		StatusCode:  status,
 		Err:         err,
 		Body:        respBodyOf(resp),
 		RetriesDone: 1, // ≥ MaxRetries(0): no RetrySame possible
-	})
+	}
 }
 
 func respBodyOf(resp *Response) []byte {
