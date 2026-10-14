@@ -21,8 +21,8 @@ type Prober struct {
 
 // ProbeResult holds the outcome of a probe call.
 type ProbeResult struct {
-	ProviderID string
-	ModelID    string
+	ProviderID   string
+	ModelID      string
 	IsAccessible bool
 	StatusCode   int
 	ErrMsg       string

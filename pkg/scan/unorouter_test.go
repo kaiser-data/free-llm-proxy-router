@@ -89,9 +89,9 @@ func TestUnorouterFreeDetection(t *testing.T) {
 		return &unoPricing{Prompt: &prompt, Completion: &completion}
 	}
 	cases := []struct {
-		name    string
-		model   unoModel
-		want    bool
+		name  string
+		model unoModel
+		want  bool
 	}{
 		{"marker suffix, no metadata", unoModel{ID: "qwen/qwen3-235b-a22b:free"}, true},
 		{"bare paid id, no metadata", unoModel{ID: "mimo-v2.6-pro"}, false},

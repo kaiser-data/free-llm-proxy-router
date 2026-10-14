@@ -56,14 +56,14 @@ type unoPricing struct {
 // ID are optional — the endpoint is OpenAI-compatible but the exact
 // metadata returned depends on the API key.
 type unoModel struct {
-	ID                    string      `json:"id"`
-	Object                string      `json:"object"`
-	Created               int64       `json:"created"`
-	OwnedBy               string      `json:"owned_by"`
-	ContextLength         int         `json:"context_length"`
-	SupportedEndpointTypes []string   `json:"supported_endpoint_types"`
-	Pricing               *unoPricing `json:"pricing"`
-	IsFree                *bool       `json:"is_free"`
+	ID                     string      `json:"id"`
+	Object                 string      `json:"object"`
+	Created                int64       `json:"created"`
+	OwnedBy                string      `json:"owned_by"`
+	ContextLength          int         `json:"context_length"`
+	SupportedEndpointTypes []string    `json:"supported_endpoint_types"`
+	Pricing                *unoPricing `json:"pricing"`
+	IsFree                 *bool       `json:"is_free"`
 }
 
 type unoModelsResponse struct {

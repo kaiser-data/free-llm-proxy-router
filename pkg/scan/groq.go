@@ -44,8 +44,8 @@ type groqModelsResponse struct {
 // audioModelIDs contains model IDs that are audio-only (not chat).
 // These are excluded from the free chat catalog.
 var audioModelIDs = map[string]bool{
-	"whisper-large-v3":       true,
-	"whisper-large-v3-turbo": true,
+	"whisper-large-v3":           true,
+	"whisper-large-v3-turbo":     true,
 	"distil-whisper-large-v3-en": true,
 }
 

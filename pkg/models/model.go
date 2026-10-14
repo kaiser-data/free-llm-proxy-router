@@ -6,21 +6,21 @@ type ModelTier string
 
 const (
 	TierTiny        ModelTier = "tiny"        // <3B effective params
-	TierSmall       ModelTier = "small"        // 3-13B
-	TierBalanced    ModelTier = "balanced"     // 14-79B (or unknown)
-	TierPerformance ModelTier = "performance"  // 80B+
+	TierSmall       ModelTier = "small"       // 3-13B
+	TierBalanced    ModelTier = "balanced"    // 14-79B (or unknown)
+	TierPerformance ModelTier = "performance" // 80B+
 )
 
 // Capability describes an optional model feature.
 type Capability string
 
 const (
-	CapVision      Capability = "vision"
-	CapCode        Capability = "code"
-	CapReasoning   Capability = "reasoning"
-	CapLongContext Capability = "long_context" // >32K token context
-	CapAudio       Capability = "audio"
-	CapJSON        Capability = "json_mode"
+	CapVision       Capability = "vision"
+	CapCode         Capability = "code"
+	CapReasoning    Capability = "reasoning"
+	CapLongContext  Capability = "long_context" // >32K token context
+	CapAudio        Capability = "audio"
+	CapJSON         Capability = "json_mode"
 	CapFunctionCall Capability = "function_calling"
 )
 
@@ -38,7 +38,7 @@ type ParamScale struct {
 // ModelFamily groups models that share the same underlying architecture/weights.
 type ModelFamily struct {
 	ID          string   `yaml:"id"`
-	Names       []string `yaml:"names"`        // substrings that match this family
+	Names       []string `yaml:"names"` // substrings that match this family
 	Description string   `yaml:"description"`
 }
 

@@ -10,15 +10,15 @@ import (
 // providerSpeedScore gives a relative speed score per provider (lower = faster).
 // Cerebras is the fastest (~2600 tok/s), then Groq (~750 tok/s), then others.
 var providerSpeedScore = map[string]float64{
-	"cerebras":   1.0,
-	"groq":       2.0,
-	"gemini":     3.0,
-	"openrouter": 4.0,
-	"mistral":    5.0,
-	"together":   5.0,
-	"deepseek":   6.0,
-	"cohere":     6.0,
-	"nvidia-nim": 5.0,
+	"cerebras":    1.0,
+	"groq":        2.0,
+	"gemini":      3.0,
+	"openrouter":  4.0,
+	"mistral":     5.0,
+	"together":    5.0,
+	"deepseek":    6.0,
+	"cohere":      6.0,
+	"nvidia-nim":  5.0,
 	"huggingface": 8.0,
 }
 

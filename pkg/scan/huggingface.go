@@ -30,11 +30,11 @@ type HuggingFaceScanner struct {
 }
 
 type hfModel struct {
-	ModelID   string   `json:"modelId"`
-	ID        string   `json:"id"` // alias
-	Gated     bool     `json:"gated"`
-	Tags      []string `json:"tags"`
-	PipelineTag string `json:"pipeline_tag"`
+	ModelID     string   `json:"modelId"`
+	ID          string   `json:"id"` // alias
+	Gated       bool     `json:"gated"`
+	Tags        []string `json:"tags"`
+	PipelineTag string   `json:"pipeline_tag"`
 }
 
 const hfHubBase = "https://huggingface.co/api/models"

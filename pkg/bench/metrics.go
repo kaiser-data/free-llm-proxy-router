@@ -5,13 +5,13 @@ import "time"
 
 // BenchMetrics holds timing and quality metrics for a single inference call.
 type BenchMetrics struct {
-	ProviderID   string        `json:"provider_id"`
-	ModelID      string        `json:"model_id"`
-	StrategyName string        `json:"strategy_name"`
-	PromptTokens int           `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
+	ProviderID       string `json:"provider_id"`
+	ModelID          string `json:"model_id"`
+	StrategyName     string `json:"strategy_name"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
 	// ReasoningTokens is the count of reasoning tokens (DeepSeek R1).
-	ReasoningTokens int        `json:"reasoning_tokens,omitempty"`
+	ReasoningTokens int           `json:"reasoning_tokens,omitempty"`
 	TTFT            time.Duration `json:"ttft_ms"` // Time to First Token
 	TotalDuration   time.Duration `json:"total_duration_ms"`
 	Success         bool          `json:"success"`

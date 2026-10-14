@@ -548,5 +548,3 @@ func TestStreamDirectRouteRawModel(t *testing.T) {
 		t.Errorf("body %q missing the [DONE] terminator", resp.Body.String())
 	}
 }
-
-

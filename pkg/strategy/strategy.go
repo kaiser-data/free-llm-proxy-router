@@ -22,10 +22,10 @@ type Request struct {
 
 // RankedEntry pairs a catalog entry with a priority score (lower = higher priority).
 type RankedEntry struct {
-	Entry    catalog.CatalogEntry
-	Score    float64
+	Entry      catalog.CatalogEntry
+	Score      float64
 	ProviderID string
-	ModelID  string
+	ModelID    string
 }
 
 // Strategy is the interface implemented by all 13 strategies.
