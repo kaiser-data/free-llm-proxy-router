@@ -197,16 +197,22 @@ func (fc *FallbackChain) failureDecisionWalk(resp *Response, err error, provider
 	if in.StatusCode != http.StatusBadRequest {
 		return ClassifyFailure(in)
 	}
-	// Tools-unsupported 400 (round 9): a deterministic MODEL defect — the
-	// walk moves on regardless of the unknown-400 policy, and the model is
-	// parked so the next request's ranking skips it (the unknown-400
+	// Tools-unsupported 400 (round 9) and model-unsupported 400 (round 12,
+	// UnoRouter "Model X:free not supported"): deterministic MODEL defects —
+	// the walk moves on regardless of the unknown-400 policy, and the model
+	// is parked so the next request's ranking skips it (the unknown-400
 	// demotion lesson, without the confirm dance).
-	if classifyBadRequestSubtype(in.Body) == bad400Tools {
+	sub := classifyBadRequestSubtype(in.Body)
+	if sub == bad400Tools || sub == bad400ModelUnsupported {
 		if fc.Demotions != nil && fc.demotionTTL() > 0 {
 			fc.Demotions.demote(providerID, modelID, time.Now())
-			log.Printf("fallback: %s/%s demoted for %s (tools-unsupported)", providerID, modelID, fc.demotionTTL())
+			if sub == bad400ModelUnsupported {
+				log.Printf("fallback: %s/%s demoted for %s (model-unsupported)", providerID, modelID, fc.demotionTTL())
+			} else {
+				log.Printf("fallback: %s/%s demoted for %s (tools-unsupported)", providerID, modelID, fc.demotionTTL())
+			}
 		}
-		return ClassifyFailure(in) // bad400Tools → FallbackNext
+		return ClassifyFailure(in) // bad400Tools / bad400ModelUnsupported → FallbackNext
 	}
 	if seenUnknown400 == nil {
 		return ClassifyFailure(in)

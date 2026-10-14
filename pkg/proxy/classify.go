@@ -248,7 +248,7 @@ func classifyBadRequest(in FailureInput) FailureDecision {
 	switch classifyBadRequestSubtype(in.Body) {
 	case bad400ContentPolicy:
 		return FailFast
-	case bad400ContextLength, bad400Tools:
+	case bad400ContextLength, bad400Tools, bad400ModelUnsupported:
 		return FallbackNext
 	default:
 		if in.Policy == policyCrossModelConfirm && in.ConfirmN > 0 && in.SeenDistinct < in.ConfirmN {
@@ -275,6 +275,10 @@ const (
 	bad400ContentPolicy
 	bad400ContextLength
 	bad400Tools
+	// bad400ModelUnsupported (round 12, seen live on UnoRouter): the pool
+	// advertises a model the upstream no longer serves — every request
+	// 400s naming the MODEL itself, not the payload.
+	bad400ModelUnsupported
 )
 
 // classifyBadRequestSubtype is the pure body→subclass split shared by
@@ -289,6 +293,9 @@ func classifyBadRequestSubtype(body []byte) badRequestKind {
 	}
 	if containsAnyMarker(body, toolsUnsupportedMarkers) {
 		return bad400Tools
+	}
+	if containsAnyMarker(body, modelUnsupportedMarkers) || looksModelUnsupported(body) {
+		return bad400ModelUnsupported
 	}
 	return bad400Unknown
 }
@@ -360,6 +367,35 @@ var toolsUnsupportedMarkers = []string{
 	"tool_choice is not supported",
 	"function calling is not supported", "function calling not supported",
 	"function calling is not enabled", // Gemini
+}
+
+// modelUnsupportedMarkers detect "this model ID is not served by the
+// upstream at all" (round 12, seen live on UnoRouter during the 50-request
+// soak) — same reasoning as tools-unsupported: a deterministic MODEL defect
+// another candidate can fix. Matched as lowercase substrings; shapes:
+//
+//	UnoRouter: {"error":{"message":"Model ling-3.0-flash-sante:free not
+//	  supported (request id: …)","type":"invalid_request_error","code":
+//	  "invalid_model"}}
+//	OpenRouter/code style: {"error":{"code":"model_not_found",…}}
+//	Message style: "unknown model: x" / "The model `x` does not exist"
+var modelUnsupportedMarkers = []string{
+	"invalid_model", // UnoRouter: code "invalid_model"
+	"model_not_found",
+	"model not found",
+	"unknown model",
+	"no such model",
+	"not a valid model",
+	"model does not exist", "model doesn't exist",
+}
+
+// looksModelUnsupported is the second UnoRouter shape ("Model X:free not
+// supported") that single-substring markers can't span: the body must name
+// the model AND say "not supported". Only consulted AFTER the modality and
+// tools tables miss, so feature-support 400s keep their own classes.
+func looksModelUnsupported(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "model") && strings.Contains(lower, "not supported")
 }
 
 func containsAnyMarker(body []byte, markers []string) bool {

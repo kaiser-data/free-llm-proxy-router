@@ -142,6 +142,44 @@ func TestFailureDecisionWalkCrossModelConfirm(t *testing.T) {
 	}
 }
 
+// TestWalkModelUnsupported400DemotesAndWalks (round 12, live UnoRouter):
+// a 400 naming the MODEL as unserved is a deterministic model defect —
+// the walk moves on and the model is parked WITHOUT the cross-model
+// confirm dance, so a good payload never surfaces the stale model's 400
+// (the 50-request soak's only failure, request 49).
+func TestWalkModelUnsupported400DemotesAndWalks(t *testing.T) {
+	fc := &FallbackChain{
+		Cfg: &config.Config{Fallback: config.FallbackConfig{
+			Unknown400Policy:          policyCrossModelConfirm,
+			Unknown400ConfirmN:        2,
+			Unknown400DemotionSeconds: 600,
+		}},
+		Demotions: newDemotionRegistry(),
+	}
+	body := `{"error":{"message":"Model ling-3.0-flash-sante:free not supported (request id: 202610141752059615692358268d9d6WUP8wiNz)","type":"invalid_request_error","param":"","code":"invalid_model"}}`
+	resp := &Response{StatusCode: 400, Body: []byte(body)}
+
+	seen := make(map[string]bool)
+	if got := fc.failureDecisionWalk(resp, nil, "unorouter", "ling-3.0-flash-sante:free", seen); got != FallbackNext {
+		t.Fatalf("model-unsupported 400 = %s, want fallback", got)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("confirm set = %v, want untouched (no confirm dance)", seen)
+	}
+	if !fc.Demotions.isDemoted("unorouter", "ling-3.0-flash-sante:free", time.Now(), fc.demotionTTL()) {
+		t.Fatal("model-unsupported must park the model in the demotion registry")
+	}
+
+	// Legacy zero-TTL chain: still walks on (recognized subclass verdict is
+	// policy-independent, like tools-unsupported); no registry entry because
+	// demotion is disabled by the zeroed config.
+	fcNoDemote := &FallbackChain{Cfg: &config.Config{}, Demotions: newDemotionRegistry()}
+	seenNoDemote := make(map[string]bool)
+	if got := fcNoDemote.failureDecisionWalk(resp, nil, "pa", "ma", seenNoDemote); got != FallbackNext || len(seenNoDemote) != 0 {
+		t.Fatalf("legacy model-unsupported = %s len=%d, want fallback and untouched set", got, len(seenNoDemote))
+	}
+}
+
 // orderedStrategy ranks the catalog entries the WALK hands it, in slice
 // order — unlike mockStrategy it must respect the input list so the tests
 // can prove that demotion filtering actually removes entries before

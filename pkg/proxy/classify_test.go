@@ -284,3 +284,34 @@ func TestClassifyUnknown400Policy(t *testing.T) {
 		t.Errorf("context-length under policy = %s, want fallback", got)
 	}
 }
+
+// TestClassifyModelUnsupported400 locks the round-12 subclass: a 400 naming
+// the MODEL itself as unserved (live UnoRouter shape from the 50-request
+// soak) walks on — never the unknown-400 confirm dance, never a
+// payload-defect fail-fast, because the same payload succeeds elsewhere.
+func TestClassifyModelUnsupported400(t *testing.T) {
+	live := []byte(`{"error":{"message":"Model ling-3.0-flash-sante:free not supported (request id: 202610141752059615692358268d9d6WUP8wiNz)","type":"invalid_request_error","param":"","code":"invalid_model"}}`)
+	if got := classifyBadRequestSubtype(live); got != bad400ModelUnsupported {
+		t.Fatalf("live UnoRouter body = %d, want bad400ModelUnsupported", got)
+	}
+	// Zero policy: recognized subclasses keep FallbackNext — the payload
+	// was fine (the same prompt returned 200 from another model in the
+	// same soak).
+	if got := ClassifyFailure(FailureInput{StatusCode: 400, Body: live}); got != FallbackNext {
+		t.Fatalf("live body with zero policy = %s, want fallback", got)
+	}
+	// A payload defect that merely mentions the model stays unknown.
+	payload := []byte(`{"error":{"message":"Invalid 'model': empty string","type":"invalid_request_error"}}`)
+	if got := classifyBadRequestSubtype(payload); got != bad400Unknown {
+		t.Fatalf("payload defect = %d, want bad400Unknown", got)
+	}
+	// Feature-support shapes keep their own classes (checked first).
+	tools := []byte(`{"error":{"message":"Model qwen/qwen3 does not support tools."}}`)
+	if got := classifyBadRequestSubtype(tools); got != bad400Tools {
+		t.Fatalf("tools shape = %d, want bad400Tools", got)
+	}
+	modality := []byte(`{"error":{"message":"image input is not supported by this model"}}`)
+	if got := classifyBadRequestSubtype(modality); got != bad400ContextLength {
+		t.Fatalf("modality shape = %d, want bad400ContextLength", got)
+	}
+}
