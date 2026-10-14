@@ -364,11 +364,44 @@ held before anything reaches the client:
   buffered path. The commit (SSE headers + first bytes + flush) happens
   exactly once per request.
 - **First usable event**: the commit waits for the first event that actually
-  carries a signal — `content`, `tool_calls`, or a `finish_reason`. A
-  role-only or empty-delta opening chunk (several providers send one first)
-  is not treated as "empty/error": the hold simply continues to the next
-  event, bounded by the TTFT timeout, and the buffered role-only events are
-  forwarded in order at the commit. The whole stream is never buffered.
+  carries a usable signal — `content` (non-blank) or valid `tool_calls`. A
+  role-only, empty-delta, whitespace-only-content, or reasoning-only opening
+  chunk (several providers send one first; reasoning models stream
+  `reasoning_content` for a long time) is not treated as "empty/error": the
+  hold simply continues to the next event, and while reasoning flows the
+  TTFT watchdog re-arms (a thinking model is working, not silent — the hard
+  caps still bound the hold). A `finish_reason` that arrives without any
+  content is an ENDING empty stream and fails the attempt (fallback);
+  `finish_reason: content_filter` fail-fasts into the clear 422 envelope.
+  The whole stream is never buffered.
+- **The emptiness invariant** (round 11): a client never receives an empty
+  completion — not a blank body, not empty `choices`, not null/""/whitespace
+  content, not `finish_reason: stop/length` without content, not
+  `usage.completion_tokens: 0` without a usable signal, and not a
+  reasoning-only result (unless `fallback.commit_on_reasoning: true`
+  delivers it verbatim; default false). Every empty form fails the attempt —
+  the attempt is counted, the slot burned (scored `OutcomeWasted`, the
+  heaviest penalty), and the walk delivers the next candidate's REAL answer
+  or the clear 503 envelope.
+- **Loop until deadline** (round 11, task AA) — `fallback.loop_until_deadline`
+  (default false, requires a deadline): the request's total deadline
+  (`fallback.total_deadline_seconds`) becomes the walk's PRIMARY stop.
+  Candidates that failed transiently (empty, timeout, 5xx, 429, transport)
+  re-enter the loop when their per-request park TTL lapses — the park TTL is
+  `fallback.round_cooldown_ms` (default 1000), the same cooldown that
+  separates rounds so the loop never spins. `max_fallback_hops` stays as an
+  anti-corruption ceiling counted across ALL rounds. Fail-fast classes
+  (400 payload defects, content_filter, client gone) never loop. A
+  client disconnect stops the walk immediately. When the pool of free
+  upstreams cannot answer before the deadline the client gets the clear
+  503 + Retry-After envelope — never a fake message.
+- **Last-resort tier** (round 11, default off) —
+  `fallback.last_resort: {provider, model, when}`: once the request's
+  remaining time drops to/below `when` seconds and there is still no answer,
+  the walk tries `provider`/`model` once per round through the SAME
+  emptiness rules. Every engagement logs a WARN line and bumps the
+  `last_resort_uses` counter (visible at `GET /debug/latency`) so the cost
+  is observable. An unset provider skips the tier entirely.
 - **Per-provider/model TTFT overrides**: reasoning models routinely think
   longer than the global hold. `fallback.first_token_timeouts` maps
   `"provider"` or `"provider/model"` keys (upstream model id as routed) to

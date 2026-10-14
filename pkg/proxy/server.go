@@ -1247,6 +1247,9 @@ func (s *Server) handleDebugLatency(w http.ResponseWriter, r *http.Request) {
 			"ttft_slow_threshold_seconds": ttftSlowThresholdFrom(fb).Seconds(),
 			"ttft_breaker_trips":          ttftBreakerTripsFrom(fb),
 			"ttft_breaker_min_samples":    ttftBreakerMinSamplesFrom(fb),
+			// Round 11: how many times the optional last-resort tier of
+			// the deadline loop engaged process-wide — the cost counter.
+			"last_resort_uses": lastResortUseCount(),
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")

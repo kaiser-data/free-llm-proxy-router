@@ -123,6 +123,52 @@ How it works (`pkg/proxy/latency.go`):
   The capability gate still ranks the FULL prompt — only what is sent is
   trimmed.
 
+## The emptiness contract + loop until deadline (round 11)
+
+| Key | YAML position | Default | Read at | Hot reload |
+|---|---|---|---|---|
+| `fallback.commit_on_reasoning` | fallback | false | `inspectCompletion` `pkg/proxy/empty.go`; `streamClientParams.CommitOnReasoning` `pkg/proxy/stream_chain.go` | yes |
+| `fallback.loop_until_deadline` | fallback | false | `loopUntilDeadline` `pkg/proxy/loop.go` (installed in `Execute`/`ExecuteStream`) | yes |
+| `fallback.round_cooldown_ms` | fallback | 1000 | `roundCooldown` `pkg/proxy/loop.go` | yes |
+| `fallback.last_resort.provider` | fallback | "" (off) | `lastResortAttempt` `pkg/proxy/loop.go` | yes |
+| `fallback.last_resort.model` | fallback | "" | `lastResortAttempt` | yes |
+| `fallback.last_resort.when` | fallback | 0 (off) | `lastResortEligible` | yes |
+
+How it works:
+
+- **The emptiness contract** (`pkg/proxy/empty.go`) — the invariant: a
+  client never receives an empty completion. An upstream 200 is EMPTY when
+  the body is blank/unparseable, `choices` is empty, every choice carries
+  no usable signal (null/""/whitespace-only text content AND no valid
+  `tool_calls`), any `finish_reason` arrives without content, or
+  `usage.completion_tokens` is present and 0 while nothing usable exists.
+  A reasoning-only result (`reasoning_content` / `reasoning`) is empty by
+  default — `commit_on_reasoning: true` delivers it verbatim instead.
+  A valid tool_call (non-empty array, first entry with a function name)
+  makes the result usable. An empty result consumes the attempt and the
+  slot, scores `OutcomeWasted` (the heaviest reliability penalty), and the
+  attempt log carries `req=` with the exact `empty` reason and the prompt
+  size (`prompt_bytes=`, `prompt_tokens_est=`).
+- **`finish_reason: content_filter`** — NOT empty: a fail-fast refusal. The
+  walk aborts (no retry, no fallback) and the client gets the synthesized
+  422 OpenAI-style envelope (`code: "content_filter"`) with the
+  router-owned upstream identity headers — never a masked 200.
+- **Loop mode** (`fallback.loop_until_deadline`) — the total deadline is
+  the walk's PRIMARY stop; transiently failed candidates (empty, timeout,
+  5xx, 429, transport) are parked for `round_cooldown_ms` and re-enter the
+  ranking when the TTL lapses (unless EVERY candidate is parked — last
+  chance). The same cooldown separates rounds so the loop never spins.
+  `max_fallback_hops` bounds the WHOLE request across all rounds
+  (`errHopCeiling` ends the loop). Fail-fast classes never loop; a client
+  disconnect stops the walk immediately; without any deadline the flag is
+  ignored (fail-closed). Final result without last_resort: the standing
+  503 + Retry-After exhaustion envelope.
+- **Last-resort tier** — engaged once per round when the remaining budget
+  is at/below `last_resort.when` seconds and there is still no answer; the
+  tier passes the same emptiness rules. Every engagement logs WARN and
+  bumps the process-wide counter exposed at `GET /debug/latency`
+  (`last_resort_uses`).
+
 ## Persistence
 
 | Key | YAML position | Default | Read at | Hot reload |

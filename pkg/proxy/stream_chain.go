@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -55,6 +56,13 @@ type streamClientParams struct {
 	// TTFT-watchdog abort. forced marks a watchdog abort — counted slow
 	// regardless of the configured threshold. Nil disables tracking.
 	OnTTFT func(providerID, modelID string, ttft time.Duration, forced bool)
+	// CommitOnReasoning (round 11, task W): when true, a stream that ends
+	// with ONLY reasoning content (reasoning_content / reasoning — no
+	// content, no tool_calls) is delivered verbatim instead of failing the
+	// attempt (the fallback.commit_on_reasoning knob, default false).
+	// Reasoning is never a commit trigger on its own in either mode — it
+	// only extends the pre-commit hold as a working signal.
+	CommitOnReasoning bool
 }
 
 // sseChunkSize is the pump read buffer.
@@ -174,6 +182,16 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 		if len(bytes.TrimSpace(b)) == 0 {
 			return nil, false, fmt.Errorf("upstream answered 200 with an empty non-SSE body")
 		}
+		// The full emptiness contract (round 11 task W) applies to the
+		// buffered-JSON passthrough too: null/""/whitespace-only content,
+		// empty choices, finish_reason without content, completion_tokens=0
+		// without a usable signal, reasoning-only (unless
+		// fallback.commit_on_reasoning). content_filter is fail-fast.
+		if verdict := inspectCompletion(b, p.CommitOnReasoning); verdict.contentFilter {
+			return contentFilterResponse(cfg, body), false, errContentFilter
+		} else if verdict.empty {
+			return nil, false, fmt.Errorf("upstream answered 200 with an empty non-SSE completion (reason=%s)", verdict.reason)
+		}
 		usedModel := parseUsedModel(b)
 		if usedModel == "" {
 			usedModel = upstreamModel
@@ -202,13 +220,29 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 	ttftTimer = time.AfterFunc(ttft, cancelAttempt) // re-arm for the hold
 	var buf bytes.Buffer
 	chunk := make([]byte, sseChunkSize)
+	reasoningSeen := false
 	for {
 		n, rerr := resp.Body.Read(chunk)
 		if n > 0 {
 			buf.Write(chunk[:n])
-			if verdict, reason := judgeFirstSSE(buf.Bytes()); verdict != sseUndecided {
+			verdict, reason, rseen := judgeFirstSSE(buf.Bytes())
+			reasoningSeen = reasoningSeen || rseen
+			if verdict != sseUndecided {
 				ttftTimer.Stop()
 				if verdict == sseUnusable {
+					if p.CommitOnReasoning && reasoningSeen {
+						// fallback.commit_on_reasoning=true (round 11 task
+						// W): the stream produced reasoning and nothing else
+						// — deliver it verbatim instead of failing the
+						// attempt.
+						return commitHeldStream(ctx, w, p, cfg, buf.Bytes(), upstreamModel, measureTTFT, resp.Body, cancelAttempt), true, nil
+					}
+					if reason == "finish_reason=content_filter" {
+						// The deterministic refusal (task W): fail-fast —
+						// the synthesized 422 envelope is surfaced, never a
+						// masked 200 without content.
+						return contentFilterResponse(cfg, body), false, errContentFilter
+					}
 					return nil, false, fmt.Errorf("upstream %s: first SSE event unusable (%s)", cfg.ID, reason)
 				}
 				// --- COMMIT: exactly once per request. ---
@@ -235,6 +269,15 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 				pumpCommittedStream(ctx, w, resp.Body, p, cancelAttempt)
 				return &Response{StatusCode: http.StatusOK, UsedModel: usedModel}, true, nil
 			}
+			if reasoningSeen {
+				// Reasoning is a WORKING signal (round 11, task W): a
+				// thinking model streams reasoning_content long before the
+				// first content token — that is not silence. Re-arm the
+				// TTFT watchdog so a healthy thinking stream is not cut;
+				// the hard caps (the stream client's own timeout and the
+				// request's total deadline) still bound the hold.
+				ttftTimer.Reset(ttft)
+			}
 		}
 		if rerr != nil {
 			ttftTimer.Stop()
@@ -246,11 +289,53 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 				return nil, false, fmt.Errorf("no first token within %v: %w", ttft, context.DeadlineExceeded)
 			}
 			if rerr == io.EOF {
+				if p.CommitOnReasoning && reasoningSeen {
+					// The stream ended with only reasoning — deliverable
+					// under fallback.commit_on_reasoning (round 11).
+					return commitHeldStream(ctx, w, p, cfg, buf.Bytes(), upstreamModel, measureTTFT, nil, cancelAttempt), true, nil
+				}
 				return nil, false, fmt.Errorf("upstream %s: EOF before a usable first event", cfg.ID)
 			}
 			return nil, false, fmt.Errorf("reading stream hold: %w", rerr)
 		}
 	}
+}
+
+// commitHeldStream commits the held buffer to the client (round 11, task W)
+// — the fallback.commit_on_reasoning delivery paths. Same commit contract
+// as the usable-first-event path: headers once, WriteHeader(200) once, the
+// buffered bytes, then either the pump (rest != nil — the stream is still
+// open, e.g. the finish_reason chunk arrived before [DONE]) or a closing
+// [DONE] sentinel (rest == nil — the upstream already ended).
+func commitHeldStream(ctx context.Context, w http.ResponseWriter, p streamClientParams, cfg config.ProviderConfig, buf []byte, upstreamModel string, measureTTFT func(bool), rest io.Reader, cancelAttempt context.CancelFunc) *Response {
+	usedModel := parseUsedModel(buf)
+	if usedModel == "" {
+		usedModel = upstreamModel
+	}
+	setStreamContractHeaders(w, applyCanonical(p, cfg.ID, usedModel), cfg.ID, upstreamModel)
+	w.Header().Set("Content-Type", "text/event-stream")
+	if p.RequestID != "" {
+		w.Header().Set("X-Request-Id", p.RequestID)
+	}
+	measureTTFT(false) // commit = the client's first token
+	w.WriteHeader(http.StatusOK)
+	if _, werr := w.Write(buf); werr != nil {
+		// The client vanished in the commit window — terminal either way.
+		log.Printf("stream: req=%s client write error at the reasoning commit (no fallback after commit): %v", p.RequestID, werr)
+		return &Response{StatusCode: http.StatusOK, UsedModel: usedModel}
+	}
+	if rest == nil && !bytes.Contains(buf, []byte("[DONE]")) {
+		// The upstream ended before the sentinel — close the SSE stream
+		// cleanly so the client never sees a silently truncated stream.
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}
+	if flusher, ok := flusherOf(w); ok {
+		flusher.Flush()
+	}
+	if rest != nil {
+		pumpCommittedStream(ctx, w, rest, p, cancelAttempt)
+	}
+	return &Response{StatusCode: http.StatusOK, UsedModel: usedModel}
 }
 
 // sseVerdict is the pre-commit judgment of the buffered bytes.
@@ -278,34 +363,44 @@ func (v sseVerdict) String() string {
 // judgeFirstSSE decides whether the buffered bytes contain a usable first
 // event. Events are scanned one complete event ("\n\n") at a time — the hold
 // ends at the first USABLE event and the whole stream is never buffered
-// (task J):
+// (task J; round 11 task W extends the criteria):
 //
 //   - keepalive comments and event-only blocks are skipped;
 //   - an error object or a bare [DONE] first data payload fails the attempt
 //     BEFORE any commit — the ladder then tries the next candidate;
-//   - an OpenAI-style chunk with content / tool calls / finish_reason is
-//     usable — commit;
-//   - a ROLE-ONLY or empty-delta chunk (several providers open the stream
-//     with one) keeps the hold going — it is not "empty/error"; the NEXT
-//     event decides. The TTFT watchdog bounds the wait.
-func judgeFirstSSE(buf []byte) (sseVerdict, string) {
+//   - an OpenAI-style chunk with content / VALID tool calls is usable —
+//     commit (a finish_reason without content is an ENDING empty stream —
+//     it fails; content_filter fails fast);
+//   - a ROLE-ONLY, empty-delta, or REASONING-ONLY chunk (several providers
+//     open the stream with one; reasoning models stream reasoning_content
+//     for a long time) keeps the hold going — it is not "empty/error"; the
+//     NEXT event decides. The TTFT watchdog bounds the wait, re-armed while
+//     reasoning flows (a working signal, not silence).
+//
+// The third return value reports whether any scanned event carried
+// reasoning — the working signal the hold uses to re-arm the watchdog and
+// the commit_on_reasoning delivery uses at stream end.
+func judgeFirstSSE(buf []byte) (sseVerdict, string, bool) {
+	reasoningSeen := false
 	for offset := 0; ; {
 		end := bytes.Index(buf[offset:], []byte("\n\n"))
 		if end < 0 {
-			return sseUndecided, "" // no complete event yet — keep holding
+			return sseUndecided, "", reasoningSeen // no complete event yet — keep holding
 		}
 		end += offset
-		verdict, reason := judgeSSEEvent(string(buf[offset:end]))
+		verdict, reason, sig := judgeSSEEvent(string(buf[offset:end]))
+		reasoningSeen = reasoningSeen || sig.reasoning
 		if verdict != sseUndecided {
-			return verdict, reason
+			return verdict, reason, reasoningSeen
 		}
 		offset = end + 2
 	}
 }
 
 // judgeSSEEvent judges ONE complete SSE event block (without the trailing
-// blank line).
-func judgeSSEEvent(event string) (sseVerdict, string) {
+// blank line); the returned signal aggregates the event's chunk signals.
+func judgeSSEEvent(event string) (sseVerdict, string, chunkSignal) {
+	agg := chunkSignal{}
 	for _, line := range strings.Split(event, "\n") {
 		line = strings.TrimRight(line, "\r")
 		trimmed := strings.TrimSpace(line)
@@ -314,87 +409,125 @@ func judgeSSEEvent(event string) (sseVerdict, string) {
 		}
 		if strings.HasPrefix(trimmed, "event:") {
 			if strings.Contains(strings.ToLower(trimmed), "error") {
-				return sseUnusable, "event: error"
+				return sseUnusable, "event: error", agg
 			}
 			continue
 		}
 		if strings.HasPrefix(trimmed, "data:") {
 			payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 			if payload == "[DONE]" {
-				return sseUnusable, "first event was [DONE] (empty stream)"
+				return sseUnusable, "first event was [DONE] (empty stream)", agg
 			}
-			usable, errorShaped := sseChunkSignal(payload)
-			if errorShaped {
-				return sseUnusable, "first event carried an error object"
+			sig := sseChunkSignal(payload)
+			agg.reasoning = agg.reasoning || sig.reasoning
+			if sig.errShaped {
+				return sseUnusable, "first event carried an error object", agg
 			}
-			if usable {
-				return sseUsable, ""
+			if sig.usable {
+				return sseUsable, "", agg
 			}
-			continue // role-only / empty delta — keep holding for real content
+			if sig.finish != "" {
+				// The stream is ENDING and produced no usable signal (round
+				// 11 task W): finish_reason=stop/length/… with no content
+				// and no valid tool_calls is an empty completion — fail the
+				// attempt so the ladder falls back. content_filter is the
+				// fail-fast refusal.
+				if sig.finish == "content_filter" {
+					return sseUnusable, "finish_reason=content_filter", agg
+				}
+				return sseUnusable, fmt.Sprintf("stream ended with finish_reason=%s and no content", sig.finish), agg
+			}
+			continue // role-only / empty delta / reasoning-only — keep holding
 		}
 	}
 	// A complete event without data lines — keep holding for real content.
-	return sseUndecided, ""
+	return sseUndecided, "", agg
 }
 
-// sseChunkSignal reports what one OpenAI-style chunk data payload carries:
-// usable — a content / tool_calls / finish_reason signal (the "first usable
-// event" criterion, task J); errorShaped — an error object. Unparseable or
-// signal-free payloads (role-only and empty deltas) report false/false so
-// the hold continues and the next event decides.
-func sseChunkSignal(payload string) (usable, errorShaped bool) {
+// chunkSignal aggregates what one OpenAI-style chunk data payload carries
+// (round 11 task W):
+//
+//	usable    — a content / VALID tool_calls signal: the commit trigger
+//	            (an arguments-only tool_calls continuation delta is NOT
+//	            valid — the hold continues for the named call);
+//	errShaped — an error object;
+//	reasoning — reasoning_content / reasoning text: a WORKING signal, never
+//	            a commit trigger on its own;
+//	finish    — a finish_reason value: with no usable signal the stream is
+//	            ending empty (stop/length/…); content_filter fails fast.
+type chunkSignal struct {
+	usable    bool
+	errShaped bool
+	reasoning bool
+	finish    string
+}
+
+// sseChunkSignal reports what one OpenAI-style chunk data payload carries.
+// Unparseable or signal-free payloads (role-only and empty deltas) report
+// the zero signal so the hold continues and the next event decides.
+func sseChunkSignal(payload string) chunkSignal {
 	var chunk struct {
 		Error   json.RawMessage `json:"error"`
 		Choices []struct {
 			Delta struct {
-				Role      string          `json:"role"`
-				Content   json.RawMessage `json:"content"`
-				ToolCalls json.RawMessage `json:"tool_calls"`
+				Role             string          `json:"role"`
+				Content          json.RawMessage `json:"content"`
+				ToolCalls        json.RawMessage `json:"tool_calls"`
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				Reasoning        json.RawMessage `json:"reasoning"`
 			} `json:"delta"`
 			Message struct {
-				Content json.RawMessage `json:"content"`
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				Reasoning        json.RawMessage `json:"reasoning"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 	}
+	sig := chunkSignal{}
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-		return false, false // not chunk JSON — the next event decides
+		return sig // not chunk JSON — the next event decides
 	}
 	if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
-		return false, true
+		sig.errShaped = true
+		return sig
 	}
 	for _, c := range chunk.Choices {
-		if c.FinishReason != "" {
-			return true, false
+		if c.FinishReason != "" && sig.finish == "" {
+			sig.finish = c.FinishReason
 		}
-		if len(c.Delta.ToolCalls) > 0 && string(c.Delta.ToolCalls) != "null" {
-			return true, false
+		if len(c.Delta.ToolCalls) > 0 && string(c.Delta.ToolCalls) != "null" && validToolCalls(c.Delta.ToolCalls) {
+			sig.usable = true
 		}
 		if contentHasText(c.Delta.Content) || contentHasText(c.Message.Content) {
-			return true, false
+			sig.usable = true
+		}
+		if reasoningHasText(c.Delta.ReasoningContent) || reasoningHasText(c.Delta.Reasoning) ||
+			reasoningHasText(c.Message.ReasoningContent) || reasoningHasText(c.Message.Reasoning) {
+			sig.reasoning = true
 		}
 	}
-	return false, false
+	return sig
 }
 
 // contentHasText reports whether a content JSON value carries text: a
-// non-empty string or a non-empty content-parts array (some providers
-// stream content as [{"type":"text","text":"…"}]). Any other non-null JSON
-// counts as content.
+// NON-BLANK string (whitespace-only is empty — round 11 task W) or a
+// non-empty content-parts array (some providers stream content as
+// [{"type":"text","text":"…"}]). Any other non-null JSON counts as content.
 func contentHasText(raw json.RawMessage) bool {
 	if len(raw) == 0 || string(raw) == "null" {
 		return false
 	}
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
-		return s != ""
+		return strings.TrimSpace(s) != ""
 	}
 	var parts []struct {
 		Text string `json:"text"`
 	}
 	if json.Unmarshal(raw, &parts) == nil {
 		for _, p := range parts {
-			if p.Text != "" {
+			if strings.TrimSpace(p.Text) != "" {
 				return true
 			}
 		}
@@ -440,6 +573,13 @@ func applyCanonical(p streamClientParams, providerID, upstreamModel string) stri
 		return p.CanonicalFor(providerID, upstreamModel)
 	}
 	return upstreamModel
+}
+
+// commitOnReasoning reports whether a reasoning-only upstream result may be
+// committed to the client (fallback.commit_on_reasoning, round 11 task W).
+// Default false: reasoning-only counts as empty and the walk falls back.
+func (fc *FallbackChain) commitOnReasoning() bool {
+	return fc.Cfg.Fallback.CommitOnReasoning
 }
 
 // firstTokenTimeout returns the pre-commit hold cap:
@@ -508,6 +648,7 @@ func (fc *FallbackChain) streamAttemptOnce(ctx context.Context, w http.ResponseW
 		IdleTimeout:          fc.streamIdleTimeout(),
 		RequestID:            reqID,
 		OnTTFT:               fc.recordTTFT,
+		CommitOnReasoning:    fc.commitOnReasoning(),
 		CanonicalFor:         fc.canonicalForParams(),
 	}
 	return streamUpstreamHeld(pctx, w, callCfg, body, params)
@@ -617,18 +758,56 @@ func (fc *FallbackChain) ExecuteStream(ctx context.Context, req Request, w http.
 	if cancelTotal != nil {
 		defer cancelTotal()
 	}
+	// Loop mode (round 11, task AA): same contract as Execute — the
+	// deadline is the primary stop, transient failures re-enter, and every
+	// attempt obeys the pre-commit hold so the client never sees an empty
+	// stream.
+	if fc.loopUntilDeadline(ctx) {
+		fc.Loop = newLoopState()
+	}
 	for {
 		resp, committed, err := fc.walk(ctx, req, fc.streamTry(w, req), fc.streamTryOnce(w, req.RequestID))
 		busy, ok := err.(*errAllSlotsBusy)
-		if !ok {
-			return resp, committed, err
+		if ok {
+			// The queue wait is a WAITING phase (task P): arm the SSE
+			// keepalive while the request parks.
+			armKeepalive(w)
+			served, qerr := fc.waitInQueue(ctx, req, busy, false)
+			if served {
+				continue
+			}
+			if fc.Loop == nil {
+				return nil, false, qerr // single walk — the historical behavior
+			}
+			// Loop mode: wait a round (the keepalive holds the client) and
+			// walk again — bounded by the deadline.
+			if ctx.Err() != nil {
+				return nil, false, errRequestBudget(ctx)
+			}
+			if !fc.sleepRound(ctx, req.RequestID) {
+				return nil, false, errRequestBudget(ctx)
+			}
+			continue
 		}
-		// The queue wait is a WAITING phase (task P): arm the SSE
-		// keepalive while the request parks.
-		armKeepalive(w)
-		served, qerr := fc.waitInQueue(ctx, req, busy, false)
-		if !served {
-			return nil, false, qerr
+		if committed || err == nil {
+			return resp, committed, err // answered, or a surfaced fail-fast response
+		}
+		if fc.Loop == nil {
+			return resp, committed, err // single walk — the historical behavior
+		}
+		// --- Loop mode: the deadline is the primary stop (round 11). ---
+		if ctx.Err() != nil {
+			return nil, false, errRequestBudget(ctx)
+		}
+		if errors.Is(err, errHopCeiling) {
+			return nil, false, err
+		}
+		// Last-resort tier streams through the same pre-commit hold.
+		if _, committed, engaged := fc.lastResortAttempt(ctx, req, w, true); engaged && committed {
+			return nil, true, nil
+		}
+		if !fc.sleepRound(ctx, req.RequestID) {
+			return nil, false, errRequestBudget(ctx)
 		}
 	}
 }

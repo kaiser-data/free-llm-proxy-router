@@ -43,8 +43,8 @@ func newTwoProviderChain(firstURL, secondURL string) (*FallbackChain, *ratelimit
 		Fallback: config.FallbackConfig{MaxAttempts: 3},
 	}
 	fc := &FallbackChain{
-		Cfg:                cfg,
-		Strategy:           &multiMockStrategy{entries: []strategy.RankedEntry{
+		Cfg: cfg,
+		Strategy: &multiMockStrategy{entries: []strategy.RankedEntry{
 			{ProviderID: "provider-one", ModelID: "model-a"},
 			{ProviderID: "provider-two", ModelID: "model-b"},
 		}},
@@ -80,7 +80,7 @@ func TestFallbackChainClientErrorAbortsChain(t *testing.T) {
 			defer failSrv.Close()
 			okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				atomic.AddInt32(&secondHits, 1)
-				w.Write([]byte(`{"choices":[]}`))
+				w.Write([]byte(`{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}`))
 			}))
 			defer okSrv.Close()
 
@@ -115,7 +115,7 @@ func TestFallbackChainAuthErrorFallsThrough(t *testing.T) {
 			defer failSrv.Close()
 			okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				atomic.AddInt32(&secondHits, 1)
-				w.Write([]byte(`{"choices":[]}`))
+				w.Write([]byte(`{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}`))
 			}))
 			defer okSrv.Close()
 

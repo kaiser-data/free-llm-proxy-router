@@ -365,11 +365,13 @@ func TestStreamClientDisconnectDuringHoldNoLeak(t *testing.T) {
 	t.Errorf("goroutines did not settle back to %d: now=%d — possible leak", before, runtime.NumGoroutine())
 }
 
-// TestJudgeFirstSSE: the "first usable event" criterion (task J) — a
-// role-only or empty-delta opening chunk keeps the hold (it is not
-// "empty/error"), content/tool_calls/finish_reason commit, an error object
-// or a bare [DONE] fails the attempt, and the decision scans complete
-// events one at a time (never the whole stream).
+// TestJudgeFirstSSE: the "first usable event" criterion (task J, extended
+// round 11 task W) — a role-only, empty-delta, whitespace-only-content, or
+// reasoning-only opening chunk keeps the hold (not "empty/error");
+// content/valid-tool_calls commit; a finish_reason without content is an
+// ENDING empty stream (fails); content_filter fails fast; an error object or
+// a bare [DONE] fails the attempt; the decision scans complete events one at
+// a time (never the whole stream).
 func TestJudgeFirstSSE(t *testing.T) {
 	tests := []struct {
 		name string
@@ -379,28 +381,56 @@ func TestJudgeFirstSSE(t *testing.T) {
 		{"role-only chunk holds", roleOnlyChunk, sseUndecided},
 		{"empty delta holds", "data: {\"choices\":[{\"delta\":{}}]}\n\n", sseUndecided},
 		{"empty-string content holds", "data: {\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n\n", sseUndecided},
+		{"whitespace-only content holds", "data: {\"choices\":[{\"delta\":{\"content\":\"   \"}}]}\n\n", sseUndecided},
+		{"reasoning-only chunk holds", "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking…\"}}]}\n\n", sseUndecided},
+		{"alt reasoning chunk holds", "data: {\"choices\":[{\"delta\":{\"reasoning\":\"thinking…\"}}]}\n\n", sseUndecided},
 		{"incomplete event holds", "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}", sseUndecided},
 		{"not-json data holds", "data: \n\n", sseUndecided},
 		{"error-null holds", "data: {\"error\":null,\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n", sseUndecided},
 		{"keepalive then role-only holds", ": keepalive\n\ndata: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n", sseUndecided},
 		{"content commits", "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", sseUsable},
-		{"tool calls commit", "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"c1\"}]}}]}\n\n", sseUsable},
-		{"finish reason commits", "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n", sseUsable},
+		{"named tool calls commit", "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"c1\",\"function\":{\"name\":\"get_weather\"}}]}}]}\n\n", sseUsable},
+		{"arguments-only tool delta holds", "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"x\\\"\"}}]}}]}\n\n", sseUndecided},
+		{"empty tool_calls array holds", "data: {\"choices\":[{\"delta\":{\"tool_calls\":[]}}]}\n\n", sseUndecided},
+		{"finish reason with no content fails empty", "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n", sseUnusable},
+		{"finish length with no content fails empty", "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n", sseUnusable},
+		{"finish content_filter fails fast", "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\n", sseUnusable},
 		{"content parts array commits", "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}]}\n\n", sseUsable},
 		{"message content commits", "data: {\"choices\":[{\"message\":{\"content\":\"full\"}}]}\n\n", sseUsable},
 		{"role-only then content commits", roleOnlyChunk + "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", sseUsable},
+		{"reasoning then content commits", "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", sseUsable},
 		{"error object fails", "data: {\"error\":{\"message\":\"provider overloaded\"}}\n\n", sseUnusable},
 		{"bare DONE fails", "data: [DONE]\n\n", sseUnusable},
 		{"event error fails", "event: error\ndata: {\"message\":\"x\"}\n\n", sseUnusable},
 		{"role-only then DONE fails", roleOnlyChunk + "data: [DONE]\n\n", sseUnusable},
+		{"reasoning-only then DONE fails", "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"deep thought\"}}]}\n\ndata: [DONE]\n\n", sseUnusable},
+		{"whitespace content then DONE fails", "data: {\"choices\":[{\"delta\":{\"content\":\" \"}}]}\n\ndata: [DONE]\n\n", sseUnusable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			verdict, reason := judgeFirstSSE([]byte(tt.buf))
+			verdict, reason, _ := judgeFirstSSE([]byte(tt.buf))
 			if verdict != tt.want {
 				t.Errorf("judgeFirstSSE(%q) = %s (%q), want %s", tt.buf, verdict, reason, tt.want)
 			}
 		})
+	}
+}
+
+// TestJudgeFirstSSEReasoningSeen: the third return value — the reasoning
+// working signal (round 11 task W) — is true exactly when some scanned event
+// carried reasoning text, even when the verdict came from a later event.
+func TestJudgeFirstSSEReasoningSeen(t *testing.T) {
+	verdict, _, reasoning := judgeFirstSSE([]byte(
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"step 1…\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+	if verdict != sseUnusable || !reasoning {
+		t.Errorf("reasoning-only stream ending in finish_reason: verdict=%s reasoning=%v, want unusable+true", verdict, reasoning)
+	}
+	if _, _, reasoning := judgeFirstSSE([]byte(roleOnlyChunk)); reasoning {
+		t.Errorf("role-only stream must not report the reasoning signal")
+	}
+	if _, _, reasoning := judgeFirstSSE([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")); reasoning {
+		t.Errorf("content stream must not report the reasoning signal")
 	}
 }
 

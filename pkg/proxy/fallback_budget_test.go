@@ -89,7 +89,7 @@ func TestHopCeilingDoesNotBindAtDefaults(t *testing.T) {
 	}))
 	defer failSrv.Close()
 	okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"choices":[]}`))
+		w.Write([]byte(`{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}`))
 	}))
 	defer okSrv.Close()
 

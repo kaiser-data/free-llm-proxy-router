@@ -46,6 +46,11 @@ type StreamProxy struct {
 	// every attempt (round 10): commit points and TTFT-watchdog aborts
 	// (forced=true). Nil disables the latency tracking.
 	OnTTFT func(providerID, modelID string, ttft time.Duration, forced bool)
+	// CommitOnReasoning (round 11, task W): deliver a REASONING-ONLY
+	// stream (no content, no tool_calls) verbatim when true — the
+	// fallback.commit_on_reasoning knob, default false. Reasoning deltas
+	// always extend the pre-commit hold as a working signal.
+	CommitOnReasoning bool
 }
 
 // Forward proxies a streaming chat-completions request to the given
@@ -84,6 +89,7 @@ func (sp *StreamProxy) Forward(ctx context.Context, w http.ResponseWriter, cfg c
 		IdleTimeout:          sp.IdleTimeout,
 		RequestID:            sp.RequestID,
 		OnTTFT:               sp.OnTTFT,
+		CommitOnReasoning:    sp.CommitOnReasoning,
 		// Direct/alias contract: X-Used-Model is the caller-computed
 		// canonical identity (empty on the direct route — buffered-path
 		// parity), not a canonicalization of the chunk's model field.
@@ -145,6 +151,7 @@ func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, prov
 		IdleTimeout:          s.streamIdleTimeout(),
 		RequestID:            requestID,
 		OnTTFT:               s.recordTTFT,
+		CommitOnReasoning:    s.cfg.Load().Fallback.CommitOnReasoning,
 	}
 	err := sp.Forward(r.Context(), w, *provCfg, body, canonicalModel)
 	if err == nil {

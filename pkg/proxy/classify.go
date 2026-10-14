@@ -153,6 +153,13 @@ func ClassifyFailure(in FailureInput) FailureDecision {
 		if errors.Is(in.Err, context.Canceled) {
 			return FailFast // client is gone — nothing left to answer
 		}
+		if errors.Is(in.Err, errContentFilter) {
+			// finish_reason=content_filter (round 11 task W): a
+			// deterministic refusal — no upstream can answer this payload,
+			// so no retry and no fallback. The synthesized 422 envelope
+			// (contentFilterResponse) is surfaced as-is.
+			return FailFast
+		}
 		if isTimeoutErr(in.Err) {
 			if in.TimeoutsDone == 0 && in.RetryOn5xx && in.RetriesDone < in.MaxRetries {
 				return RetrySame

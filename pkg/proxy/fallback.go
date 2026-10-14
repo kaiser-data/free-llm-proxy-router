@@ -76,6 +76,13 @@ type FallbackChain struct {
 	// walk ranks only entries passing it (NG8 exclusion, context fit,
 	// tools/vision). Nil keeps the old full-catalog ranking.
 	Gate *capabilityDemand
+
+	// Loop, when non-nil, is the loop-until-deadline state (round 11, task
+	// AA): the per-request park TTLs of transiently failed candidates and
+	// the hop counter shared across rounds. Execute/ExecuteStream install
+	// it when fallback.loop_until_deadline is on (and a deadline exists);
+	// nil keeps the single-walk behavior.
+	Loop *loopState
 }
 
 // Request is the parsed incoming chat-completions request.
@@ -130,19 +137,65 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	if cancelTotal != nil {
 		defer cancelTotal()
 	}
+	// Loop mode (round 11, task AA): install the per-request loop state —
+	// the deadline becomes the walk's primary stop and transiently failed
+	// candidates re-enter the ranking after their park TTL. The invariant
+	// holds unchanged: only a REAL answer or a clear error leaves this loop.
+	if fc.loopUntilDeadline(ctx) {
+		fc.Loop = newLoopState()
+	}
 	for {
 		resp, committed, err := fc.executeOnce(ctx, req)
 		busy, ok := err.(*errAllSlotsBusy)
-		if !ok {
-			if committed {
-				// Unreachable for the buffered walk; kept for the shared signature.
-				return nil, nil
+		if ok {
+			served, qerr := fc.waitInQueue(ctx, req, busy, false)
+			if served {
+				continue
 			}
-			return resp, err
+			if fc.Loop == nil {
+				return nil, qerr // single walk — the historical behavior
+			}
+			// Loop mode: a slotless walk is quota pressure, not a defect —
+			// wait a round (bounded by the deadline) and walk again.
+			if ctx.Err() != nil {
+				return nil, errRequestBudget(ctx)
+			}
+			if !fc.sleepRound(ctx, req.RequestID) {
+				return nil, errRequestBudget(ctx)
+			}
+			continue
 		}
-		served, qerr := fc.waitInQueue(ctx, req, busy, false)
-		if !served {
-			return nil, qerr
+		if committed {
+			// Unreachable for the buffered walk; kept for the shared signature.
+			return nil, nil
+		}
+		if err == nil {
+			return resp, nil // success or a surfaced fail-fast response
+		}
+		if fc.Loop == nil {
+			return resp, err // single walk — the historical behavior
+		}
+		// --- Loop mode: the deadline is the primary stop (round 11). ---
+		if ctx.Err() != nil {
+			// Deadline fired or the client disconnected mid-loop: the clear
+			// budget error (the caller answers 503 + envelope).
+			return nil, errRequestBudget(ctx)
+		}
+		if errors.Is(err, errHopCeiling) {
+			// The anti-corruption ceiling is absolute — looping past it
+			// would only re-reach it.
+			return nil, err
+		}
+		// Last-resort tier (round 11): when configured and the remaining
+		// budget is at/below `when`, try the tier once per round — the same
+		// emptiness rules; a failed engagement never delivers anything.
+		if lrResp, _, engaged := fc.lastResortAttempt(ctx, req, nil, false); engaged && lrResp != nil {
+			return lrResp, nil
+		}
+		// Small cooldown between rounds (also the park TTL): wait for the
+		// transiently failed candidates to recover — never spin.
+		if !fc.sleepRound(ctx, req.RequestID) {
+			return nil, errRequestBudget(ctx)
 		}
 	}
 }
@@ -257,9 +310,17 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 	// in 45s loses the first hop to every faster sibling without any
 	// config change, while still serving as a last resort.
 	ranked = fc.deprioritizeSlowRanked(ranked)
+	// Loop-parked candidates (round 11, task AA): candidates that failed
+	// transiently in an earlier round of this request sit out the ranking
+	// until their park TTL lapses — unless EVERY candidate is parked (last
+	// chance, never starve).
+	ranked = fc.filterLoopParked(ranked)
 	maxAttempts := fc.maxAttemptsBudget()
 	maxHops := fc.maxFallbackHops()
-	hops := 0
+	// Loop mode: the hop counter is seeded from the loop state so
+	// max_fallback_hops bounds the WHOLE request across all rounds; the
+	// single-walk mode starts at 0 as always.
+	hops := fc.Loop.hops()
 	// slotSkips collects the candidates that were skipped for lack of an
 	// RPM slot and entered counts the upstream calls actually entered —
 	// when the walk ends with entered==0 and skips>0 it failed for QUOTA,
@@ -286,7 +347,12 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 	if or := fc.findProvider("openrouter"); or != nil {
 		openRouterModels := fc.collectProviderModels("openrouter", ranked)
 		if len(openRouterModels) > 0 {
-			hops++ // the models[] request is one candidate/hop
+			// The models[] request is one candidate/hop. The ceiling check
+			// is new but equivalent for the single walk (hops==0 here and
+			// maxHops >= 8); in loop mode the seeded counter obeys it too.
+			if !fc.hopOK(&hops, maxHops) {
+				return nil, false, fmt.Errorf("fallback hop ceiling %d reached — aborting walk (%w)", maxHops, errHopCeiling)
+			}
 			body := BuildOpenRouterRequest(req.Raw, openRouterModels)
 			if req.Stream {
 				body["stream"] = true // streaming walk keeps SSE end-to-end (NG3)
@@ -407,10 +473,12 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 		// answers with the exhaustion response immediately; no further
 		// candidates and no ultimate-fallback step. This bounds the walk
 		// even when max_attempts / retries_per_candidate are cranked up.
-		if hops >= maxHops {
-			return nil, false, fmt.Errorf("fallback hop ceiling %d reached — aborting walk", maxHops)
+		// Loop mode (round 11): the counter spans ALL rounds and
+		// errHopCeiling ends the loop — the ceiling is the anti-corruption
+		// bound, never retried past.
+		if !fc.hopOK(&hops, maxHops) {
+			return nil, false, fmt.Errorf("fallback hop ceiling %d reached — aborting walk (%w)", maxHops, errHopCeiling)
 		}
-		hops++
 
 		body := fc.buildBody(r.ProviderID, req.Raw, r.ModelID)
 		if req.Stream {
@@ -521,6 +589,14 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 				// keeps the provider-level skip.
 				failedProviders[r.ProviderID] = true // don't try other models from this provider
 			}
+			// Loop mode (round 11, task AA): a transiently failed candidate
+			// (empty completion, timeout, 5xx, 429, transport) is parked for
+			// the round cooldown — it re-enters the NEXT rounds' ranking when
+			// the TTL lapses, never cut off for the whole request. Fail-fast
+			// classes ended the walk above and never park.
+			if fc.Loop != nil && transientFailure(resp, err) {
+				fc.Loop.park(demotionKey(r.ProviderID, r.ModelID), time.Now().Add(fc.roundCooldown()))
+			}
 			continue
 		}
 
@@ -544,10 +620,10 @@ func (fc *FallbackChain) walk(ctx context.Context, req Request, try, tryOnce can
 	// upstream call: it consumes the attempt budget like every other path
 	// (task G) and only runs while the budget lasts.
 	if or := fc.findProvider("openrouter"); or != nil && attempt < maxAttempts {
-		if hops >= maxHops {
-			return nil, false, fmt.Errorf("fallback hop ceiling %d reached — aborting walk", maxHops)
+		// Loop mode (round 11): the seeded counter obeys the ceiling.
+		if !fc.hopOK(&hops, maxHops) {
+			return nil, false, fmt.Errorf("fallback hop ceiling %d reached — aborting walk (%w)", maxHops, errHopCeiling)
 		}
-		hops++
 		log.Printf("fallback: trying openrouter/free ultimate fallback")
 		body := OpenRouterFreeRouterRequest(req.Raw)
 		if req.Stream {
@@ -701,17 +777,39 @@ func failureCause(resp *Response, err error) string {
 const slowSuccessThreshold = 15 * time.Second
 
 // errEmptyCompletion is the buffered empty-200: the upstream answered 200
-// with no usable body — the attempt failed and the scored outcome is
-// OutcomeWasted (task M).
-var errEmptyCompletion = errors.New("upstream answered 200 with an empty body")
+// with no usable completion (round 11 task W — the full emptiness contract
+// lives in empty.go). The attempt failed and the scored outcome is
+// OutcomeWasted (task M) — the worst slot burn.
+var errEmptyCompletion = errors.New("upstream answered 200 with an empty completion")
+
+// contentFilterResponse builds the surfaced response for a
+// finish_reason=content_filter refusal (round 11 task W): a 422 with an
+// OpenAI-style error envelope — the upstream said 200 but the prompt was
+// rejected, and surfacing that 200 verbatim would hand the client a
+// content-less completion. The router-owned upstream headers keep the real
+// identity.
+func contentFilterResponse(cfg config.ProviderConfig, body map[string]any) *Response {
+	hdr := http.Header{}
+	hdr.Set("X-Free-Router-Upstream-Provider", cfg.ID)
+	if m, ok := body["model"].(string); ok && m != "" {
+		hdr.Set("X-Free-Router-Upstream-Model", m)
+	}
+	env := `{"error":{"message":"upstream refused the prompt with finish_reason=content_filter","type":"content_filter_error","code":"content_filter"}}`
+	return &Response{StatusCode: http.StatusUnprocessableEntity, Header: hdr, Body: []byte(env)}
+}
 
 // failureOutcome classifies a failed attempt for the reliability EMA
 // (task M): timeouts and empty-200s waste the slot hardest (no answer, no
 // usable signal); 429/5xx and transport failures burn it with an
 // actionable cause. Both outrank only... nothing — they ARE the penalties;
-// the ordering lives in reliability.Outcome.
+// the ordering lives in reliability.Outcome. The empty-200 (round 11 task
+// W: any form of the emptiness contract) is recognized through the
+// errEmptyCompletion sentinel — the heaviest penalty, whatever the shape.
 func failureOutcome(resp *Response, err error) reliability.Outcome {
 	if err != nil {
+		if errors.Is(err, errEmptyCompletion) {
+			return reliability.OutcomeWasted
+		}
 		if isTimeoutErr(err) {
 			return reliability.OutcomeWasted
 		}
@@ -896,13 +994,33 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
-	// Empty-200 guard (task M): an upstream that answers 200 with nothing
-	// usable has burned the attempt — surface it as a failed attempt so
-	// the ladder retries/falls back and the client never receives an empty
-	// "completion" (every request must get a REAL answer). The scored
-	// outcome is OutcomeWasted — the worst slot burn.
-	if resp.StatusCode == http.StatusOK && len(bytes.TrimSpace(respBody)) == 0 {
-		return nil, errEmptyCompletion
+	// Empty-200 guard (tasks M + W, round 11): an upstream that answers 200
+	// with nothing usable has burned the attempt — surface it as a failed
+	// attempt so the ladder retries/falls back and the client never
+	// receives an empty "completion" (every request must get a REAL
+	// answer). The scored outcome is OutcomeWasted — the worst slot burn.
+	// The emptiness contract (empty.go) covers the whole family: blank or
+	// unparseable bodies, empty choices, null/""/whitespace-only content,
+	// finish_reason=stop/length with no content, usage.completion_tokens=0
+	// without a usable signal, and reasoning-only results (unless
+	// fallback.commit_on_reasoning delivers them). The reason and the
+	// prompt size ride the error — the attempt log carries req= with the
+	// exact "empty" cause. A finish_reason=content_filter refusal is NOT
+	// empty: it is fail-fast, surfaced as a clear error (never a masked
+	// 200).
+	if resp.StatusCode == http.StatusOK {
+		verdict := inspectCompletion(respBody, fc.commitOnReasoning())
+		if verdict.contentFilter {
+			return contentFilterResponse(cfg, body), errContentFilter
+		}
+		if verdict.empty {
+			promptBytes := 0
+			if data, merr := json.Marshal(body); merr == nil {
+				promptBytes = len(data)
+			}
+			msgs, _ := body["messages"].([]any)
+			return nil, fmt.Errorf("%w (reason=%s prompt_bytes=%d prompt_tokens_est=%d)", errEmptyCompletion, verdict.reason, promptBytes, estimateTokensAny(msgs))
+		}
 	}
 
 	// Extract the actual model used (OpenRouter fills this in). The value

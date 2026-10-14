@@ -52,7 +52,7 @@ func authPairUpstreams(t *testing.T, status int, badHits, goodHits *int32) (badU
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"choices":[],"model":"model-x"}`)
+		fmt.Fprint(w, `{"id":"ok","object":"chat.completion","model":"model-x","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}`)
 	}))
 	t.Cleanup(goodSrv.Close)
 	return badSrv.URL, goodSrv.URL

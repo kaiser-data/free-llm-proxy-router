@@ -161,6 +161,37 @@ fallback:
     enabled: true
     prompt_token_ceiling: 8000
     keep_recent_turns: 6
+  # --- The emptiness contract + loop until deadline (round 11) ---
+  # Invariant: a client never receives an empty completion. Every empty
+  # upstream result (blank/unparseable body, empty choices, null/""/
+  # whitespace-only content, finish_reason=stop/length without content,
+  # usage.completion_tokens=0 without a usable signal, reasoning-only)
+  # fails the attempt — counted, slot-burned (the heaviest penalty), and
+  # the walk delivers the next candidate's REAL answer or the clear 503.
+  # finish_reason=content_filter fail-fasts into a 422 envelope.
+  # Reasoning deltas never commit an attempt by themselves; they only
+  # keep the pre-commit hold alive (the TTFT watchdog re-arms while a
+  # thinking model streams reasoning_content). Set commit_on_reasoning to
+  # deliver a reasoning-only result verbatim instead of falling back.
+  commit_on_reasoning: false
+  # Loop mode: the total deadline becomes the walk's PRIMARY stop —
+  # candidates that failed transiently (empty, timeout, 5xx, 429,
+  # transport) re-enter the loop after their park TTL instead of being cut
+  # off for the request. round_cooldown_ms is both the pause between loop
+  # rounds and the park TTL (0 restores 1000 — the loop can never spin).
+  # max_fallback_hops stays the anti-corruption ceiling across ALL rounds.
+  # Requires a deadline (total_deadline_seconds); fail-closed without one.
+  loop_until_deadline: false
+  round_cooldown_ms: 1000
+  # Optional last-resort tier (default off): when the remaining time drops
+  # to/below `when` seconds and there is still no answer, the walk tries
+  # provider/model once per round through the SAME emptiness rules. Every
+  # engagement logs a WARN and bumps last_resort_uses (GET /debug/latency).
+  # An unset provider skips the tier.
+  # last_resort:
+  #   provider: ""
+  #   model: ""
+  #   when: 5
   # Streaming: max silent gap between chunks on a started stream. Exceeding
   # it ends the stream with an OpenAI-style SSE error event + [DONE].
   stream_idle_timeout_seconds: 30

@@ -356,6 +356,60 @@ type FallbackConfig struct {
 	// StreamKeepaliveIntervalSeconds is the spacing between ": keepalive\n\n"
 	// comments once the keepalive has started. Default 15.
 	StreamKeepaliveIntervalSeconds int `mapstructure:"stream_keepalive_interval_seconds"`
+
+	// LoopUntilDeadline turns on the loop-until-deadline walk (round 11,
+	// task AA): the request's total deadline (fallback.total_deadline_seconds)
+	// becomes the PRIMARY stop of the walk — candidates that failed
+	// transiently (empty completion, timeout, 5xx, 429, transport) re-enter
+	// the loop when their per-request park TTL lapses instead of being cut
+	// off for the rest of the request. max_fallback_hops stays as an
+	// anti-corruption ceiling (counted across ALL rounds) and a small
+	// cooldown (round_cooldown_ms) separates rounds so the loop never spins.
+	// Requires a deadline: with total_deadline_seconds=0 (disabled) the flag
+	// is ignored and the single-walk behavior applies (fail-closed — an
+	// undying loop would burn quota forever). Invariant kept: the client
+	// never receives an empty completion — only a REAL answer or the clear
+	// 503 exhaustion error.
+	LoopUntilDeadline bool `mapstructure:"loop_until_deadline"`
+
+	// RoundCooldownMs is the pause between loop rounds (round 11): the
+	// small cooldown that runs when a full walk round failed transiently
+	// so the loop waits for upstreams to recover instead of spinning. It
+	// is also the per-request park TTL of a transiently failed candidate —
+	// the candidate re-enters the ranking when it lapses. 0/negative
+	// restores the default 1000 ms.
+	RoundCooldownMs int `mapstructure:"round_cooldown_ms"`
+
+	// CommitOnReasoning decides whether a REASONING-ONLY upstream result
+	// (reasoning_content / reasoning present, no content, no tool_calls)
+	// may be committed to the client (round 11, task W). Default false: a
+	// reasoning-only result is NOT a usable event — it counts as empty and
+	// the walk falls back; reasoning deltas still signal "still working" so
+	// the TTFT/idle watchdogs do not cut a thinking model. true delivers
+	// the reasoning-only result verbatim instead of failing the attempt.
+	CommitOnReasoning bool `mapstructure:"commit_on_reasoning"`
+
+	// LastResort, when configured, is the final tier of the loop (round
+	// 11): once the request's remaining time drops to/below when seconds
+	// and there is still no answer, the walk tries provider/model exactly
+	// once per round — through the SAME emptiness rules (an empty result
+	// fails and the loop continues). Every engagement logs a WARN line and
+	// bumps the last_resort_uses counter (visible at GET /debug/latency) so
+	// the cost is observable. An unset provider skips the tier entirely.
+	LastResort LastResortConfig `mapstructure:"last_resort"`
+}
+
+// LastResortConfig is the optional last-resort tier of the
+// loop-until-deadline walk (round 11). See FallbackConfig.LastResort.
+type LastResortConfig struct {
+	// Provider is the provider ID of the last-resort upstream. Empty
+	// disables the tier (the default).
+	Provider string `mapstructure:"provider"`
+	// Model is the upstream model ID to call on the last-resort provider.
+	Model string `mapstructure:"model"`
+	// WhenSeconds engages the tier when remaining_seconds <= this value.
+	// 0/negative disables the tier.
+	WhenSeconds int `mapstructure:"when"`
 }
 
 // LookupFirstTokenTimeout resolves the per-provider/model override for the
@@ -534,6 +588,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.ttft_slow_threshold_seconds", 10)
 	v.SetDefault("fallback.ttft_breaker_trips", 3)
 	v.SetDefault("fallback.ttft_breaker_min_samples", 3)
+	v.SetDefault("fallback.loop_until_deadline", false)
+	v.SetDefault("fallback.round_cooldown_ms", 1000)
+	v.SetDefault("fallback.commit_on_reasoning", false)
+	v.SetDefault("fallback.last_resort.provider", "")
+	v.SetDefault("fallback.last_resort.model", "")
+	v.SetDefault("fallback.last_resort.when", 0)
 	v.SetDefault("fallback.context_truncation.enabled", true)
 	v.SetDefault("fallback.context_truncation.prompt_token_ceiling", 8000)
 	v.SetDefault("fallback.context_truncation.keep_recent_turns", 6)
