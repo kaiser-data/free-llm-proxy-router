@@ -369,3 +369,41 @@ func TestWalkUpstreamBadInput400DemotesAndWalks(t *testing.T) {
 		t.Fatalf("legacy upstream-bad-input = %s len=%d, want fallback and untouched set", got, len(seenNoDemote))
 	}
 }
+
+// TestWalkGemmaInvalidArg400DemotesAndWalks (round 14, live gemma adapter):
+// unorouter/gemma-4-31b-it:free answered the same "kiwi-auto" traffic 200 at
+// 19:17/19:18/19:21 and 400'd "Request contains an invalid argument" at
+// 19:31 — upstream adapter flakiness, not a client defect. The recognized-
+// subclass verdict walks on and parks the model; the confirm set stays
+// untouched.
+func TestWalkGemmaInvalidArg400DemotesAndWalks(t *testing.T) {
+	fc := &FallbackChain{
+		Cfg: &config.Config{Fallback: config.FallbackConfig{
+			Unknown400Policy:          policyCrossModelConfirm,
+			Unknown400ConfirmN:        2,
+			Unknown400DemotionSeconds: 600,
+		}},
+		Demotions: newDemotionRegistry(),
+	}
+	body := `{"error":{"code":400,"message":"Request contains an invalid argument. (request id: 202610141931116721004928268d9d6nEfaGUos)","status":"INVALID_ARGUMENT"}}`
+	resp := &Response{StatusCode: 400, Body: []byte(body)}
+
+	seen := make(map[string]bool)
+	if got := fc.failureDecisionWalk(resp, nil, "unorouter", "gemma-4-31b-it:free", seen); got != FallbackNext {
+		t.Fatalf("gemma invalid-arg 400 = %s, want fallback", got)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("confirm set = %v, want untouched (recognized subclass)", seen)
+	}
+	if !fc.Demotions.isDemoted("unorouter", "gemma-4-31b-it:free", time.Now(), fc.demotionTTL()) {
+		t.Fatal("gemma invalid-arg must park the model in the demotion registry")
+	}
+
+	// Policy-independent walk-on like every recognized subclass: a legacy
+	// zero-policy chain still walks (never fail-fasts) on this body.
+	fcLegacy := &FallbackChain{Cfg: &config.Config{}, Demotions: newDemotionRegistry()}
+	seenLegacy := make(map[string]bool)
+	if got := fcLegacy.failureDecisionWalk(resp, nil, "pa", "ma", seenLegacy); got != FallbackNext || len(seenLegacy) != 0 {
+		t.Fatalf("legacy gemma invalid-arg = %s len=%d, want fallback and untouched set", got, len(seenLegacy))
+	}
+}

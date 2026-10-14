@@ -622,7 +622,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 				// semantics as the alias route. canonicalModel is empty here —
 				// the direct route reports no X-Used-Model on success, matching
 				// its buffered behavior.
-				if !s.streamOneCandidate(w, r, provCfg, body, "", req.Model, "direct route", req.RequestID) {
+				if !s.streamOneCandidate(w, r, provCfg, body, "", req.Model, "direct route", req.RequestID, chain, directSeen400) {
 					continue
 				}
 				return
@@ -787,7 +787,7 @@ func (s *Server) serveAliasModel(w http.ResponseWriter, r *http.Request, cfg *co
 				// upstream SSE through incrementally. streamOneCandidate only
 				// walks to the next candidate while nothing has been written
 				// downstream; once the stream starts the attempt is terminal.
-				if !s.streamOneCandidate(w, r, provCfg, body, req.Model, req.Model, "alias route", req.RequestID) {
+				if !s.streamOneCandidate(w, r, provCfg, body, req.Model, req.Model, "alias route", req.RequestID, chain, aliasSeen400) {
 					continue
 				}
 				return true

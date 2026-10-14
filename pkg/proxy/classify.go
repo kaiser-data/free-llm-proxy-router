@@ -143,7 +143,7 @@ func noteAuthFailure(setter cooldownSetter, providerID, modelID string, status i
 //	413                                                        → FailFast
 //	400 content-policy refusal                                 → FailFast
 //	400 context-length / unsupported-modality                  → FallbackNext
-//	400 upstream-adapter bad-input (kiwi, round 13)            → FallbackNext
+//	400 upstream-adapter bad-input (kiwi+gemma, r13/14)        → FallbackNext
 //	  when detectable from the body, FailFast otherwise
 //	400 anything else (genuine payload defect)                 → FailFast
 //	5xx incl. 502/503/504/529                                  → RetrySame
@@ -230,9 +230,9 @@ func ClassifyFailure(in FailureInput) FailureDecision {
 //	content-policy refusal          → FailFast (no provider may serve it)
 //	context-length overflow         → FallbackNext (a bigger window can)
 //	unsupported image/audio/video   → FallbackNext (a multimodal model can)
-//	upstream adapter bad-input      → FallbackNext (round 13: the kiwi
-//	  (AiError: Bad input +           adapter's template rejects the
-//	  required properties)            transformed payload — model defect)
+//	upstream adapter bad-input      → FallbackNext (rounds 13+14: the
+//	  (any marker-pair               upstream adapters' templates reject
+//	  match)                          the transformed payload — model defect)
 //	anything else — a genuine       → FailFast by default (no candidate can
 //	  payload defect (malformed       fix the payload; an unknown 400
 //	  fields, bad types, unknown      never becomes a silent fallback) —
@@ -283,9 +283,10 @@ const (
 	// advertises a model the upstream no longer serves — every request
 	// 400s naming the MODEL itself, not the payload.
 	bad400ModelUnsupported
-	// bad400UpstreamBadInput (round 13, seen live on the kiwi adapter):
-	// the upstream's own request adapter rejects the TRANSFORMED payload
-	// ("required properties at '/' are 'text'") — an OpenAI-valid payload
+	// bad400UpstreamBadInput (rounds 13+14, seen live on the kiwi and
+	// gemma adapters): the upstream's own request adapter rejects the
+	// TRANSFORMED payload ("required properties at '/' are 'text'",
+	// "Request contains an invalid argument") — an OpenAI-valid payload
 	// dies on this model's template alone, so it is a deterministic model
 	// defect: walk + park, like model-unsupported.
 	bad400UpstreamBadInput
@@ -411,37 +412,43 @@ func looksModelUnsupported(body []byte) bool {
 	return strings.Contains(lower, "model") && strings.Contains(lower, "not supported")
 }
 
-// upstreamBadInputMarkers detect the kiwi/UnoRouter adapter's own
-// payload-validation failure (round 13, seen live from
-// unorouter/aura-1:free during the round-13 smoke):
+// upstreamBadInputMarkerPairs detect the upstream adapters' own
+// payload-validation failures. Each upstream model adapter carries its own
+// error template, so the signature is a SET of (phrase, family-suffix)
+// pairs; EVERY marker within a pair is required (conjunction) on purpose:
 //
-//	{"error":{"message":"AiError: Bad input: Error: required properties at
-//	  '/' are 'text' (uuid) (request id: …)","type":"bad_response"}}
+//	pair 1 (round 13, unorouter/aura-1:free, kiwi adapter):
+//	  {"error":{"message":"AiError: Bad input: Error: required properties at
+//	    '/' are 'text' (uuid) (request id: …)","type":"bad_response"}}
+//	  The adapter rebuilds the OpenAI payload into its own template and the
+//	  template demands a root "text" property.
 //
-// The upstream rebuilds the OpenAI payload into its own template and the
-// template demands a root "text" property — an OpenAI-valid payload can
-// never satisfy it, so the defect is the MODEL's, not the client's. BOTH
-// markers are required (conjunction) on purpose: "required properties"
-// alone also appears in genuine client-payload validation errors that no
-// candidate can fix, and "AiError: Bad input" alone covers adapter errors
-// that may be the client's fault. The pair is the adapter-template
-// signature.
-var upstreamBadInputMarkers = []string{
-	"aierror: bad input",
-	"required properties",
+//	pair 2 (round 14, unorouter/gemma-4-31b-it:free, gemma adapter):
+//	  {"error":{"message":"Request contains an invalid argument. (request
+//	    id: …)"}} — the Gemini-style adapter rejection. Live evidence: the
+//	  same model served identical "kiwi-auto" traffic at 19:17/19:18/19:21
+//	  and 400'd at 19:31 — upstream flakiness, not a client defect.
+//
+// "required properties" alone also appears in genuine client-payload
+// validation errors that no candidate can fix, and "request id:" alone is
+// just the adapter family's error suffix — only the conjunctions are the
+// adapter-template signatures.
+var upstreamBadInputMarkerPairs = [][2]string{
+	{"aierror: bad input", "required properties"},
+	{"contains an invalid argument", "request id:"},
 }
 
-// looksUpstreamBadInput reports the kiwi adapter-template 400: EVERY
-// marker must appear — the conjunction is the narrow signature (see the
-// table comment).
+// looksUpstreamBadInput reports an adapter-template 400: ANY pair matches
+// (and every marker within the pair must appear — the conjunction is the
+// narrow signature, see the table comment).
 func looksUpstreamBadInput(body []byte) bool {
 	lower := strings.ToLower(string(body))
-	for _, m := range upstreamBadInputMarkers {
-		if !strings.Contains(lower, m) {
-			return false
+	for _, pair := range upstreamBadInputMarkerPairs {
+		if strings.Contains(lower, pair[0]) && strings.Contains(lower, pair[1]) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func containsAnyMarker(body []byte, markers []string) bool {

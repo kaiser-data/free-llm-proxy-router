@@ -142,7 +142,13 @@ func setStreamContractHeaders(w http.ResponseWriter, canonicalModel, providerID 
 // Once the upstream answers 200 and the pump starts, Forward returns nil on
 // every mid-stream failure, so no candidate is ever started after the stream
 // began.
-func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, provCfg *config.ProviderConfig, body map[string]any, canonicalModel, clientModel, route, requestID string) bool {
+//
+// Failure routing (round 14): the walk decision comes from the SAME
+// failureDecisionWalk the buffered routes use — chain carries the live
+// config (unknown-400 policy) and the shared demotion registry; seenUnknown400
+// is the per-request cross-model confirm state (the walk demotes recognized
+// model-defect 400s and first-sight unknown 400s into it itself).
+func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, provCfg *config.ProviderConfig, body map[string]any, canonicalModel, clientModel, route, requestID string, chain *FallbackChain, seenUnknown400 map[string]bool) bool {
 	modelID, _ := body["model"].(string)
 	sp := &StreamProxy{
 		HTTPClient:           s.streamHTTPClient(),
@@ -165,32 +171,18 @@ func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, prov
 		if modelID != "" {
 			resp.Header.Set("X-Free-Router-Upstream-Model", modelID)
 		}
-		// Round 13: a 400 that confidently names a MODEL defect (tools /
-		// model-unsupported / upstream adapter bad-input) parks the model
-		// for future requests — the same lesson failureDecisionWalk applies
-		// on the ranked walk. The walk itself already continues (the
-		// classifier returns FallbackNext for these subclasses); only the
-		// cross-request demotion needs wiring here, because the stream path
-		// bypasses the policy-aware walk (finalFailureDecision carries no
-		// unknown-400 policy fields — bad400Unknown still fail-fasts, by
-		// design).
-		if use.StatusCode == http.StatusBadRequest {
-			var ttl time.Duration
-			if cfg := s.cfg.Load(); cfg != nil {
-				ttl = time.Duration(cfg.Fallback.Unknown400DemotionSeconds) * time.Second
-			}
-			if s.demotions != nil && ttl > 0 {
-				switch classifyBadRequestSubtype(use.Body) {
-				case bad400Tools, bad400ModelUnsupported, bad400UpstreamBadInput:
-					s.demotions.demote(provCfg.ID, modelID, time.Now())
-					log.Printf("%s: req=%s %s/%s demoted for %s (stream 400) — model defect parked", route, requestID, provCfg.ID, modelID, ttl)
-				}
-			}
-		}
-		// The same ClassifyFailure verdict every route applies (task H):
-		// fail-fast defects surface verbatim; 401/403 cool the provider
-		// down and the walk continues; other retryable classes walk on.
-		if finalFailureDecision(resp, nil) == FailFast {
+		// Round 14: full policy parity with the buffered walks. Round 13
+		// parked only the recognized model-defect subclasses here; an
+		// unrecognized 400 still surfaced without any walk (the p0 audit:
+		// "unknown 400 บน stream = FailFast เสมอ") — gemma-4-31b's
+		// "Request contains an invalid argument" adapter flake (live
+		// 2026-10-14 19:31) was the second stream-path victim. The walk
+		// decision is now failureDecisionWalk itself — the SAME function
+		// the ranked/direct/alias buffered walks run: recognized model
+		// defects demote + walk, unknown 400s walk under the cross-model
+		// confirm policy until N distinct models confirm the payload is
+		// broken.
+		if chain.failureDecisionWalk(resp, nil, provCfg.ID, modelID, seenUnknown400) == FailFast {
 			log.Printf("%s: req=%s %s/%s fail-fast status %d (stream) — surfacing to client, no further candidates", route, requestID, provCfg.ID, modelID, use.StatusCode)
 			s.writeUpstreamError(w, clientModel, resp)
 			return true

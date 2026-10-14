@@ -349,4 +349,26 @@ func TestClassifyUpstreamBadInput400(t *testing.T) {
 	if got := classifyBadRequestSubtype(policy); got != bad400ContentPolicy {
 		t.Fatalf("content-policy conj = %d, want bad400ContentPolicy", got)
 	}
+	// Round 14: the gemma adapter's Gemini-style rejection (live body from
+	// unorouter/gemma-4-31b-it:free 2026-10-14 19:31 — the same model
+	// served identical "kiwi-auto" traffic at 19:17/19:18/19:21).
+	gemma := []byte(`{"error":{"code":400,"message":"Request contains an invalid argument. (request id: 202610141931116721004928268d9d6nEfaGUos)","status":"INVALID_ARGUMENT"}}`)
+	if got := classifyBadRequestSubtype(gemma); got != bad400UpstreamBadInput {
+		t.Fatalf("live gemma adapter body = %d, want bad400UpstreamBadInput", got)
+	}
+	if got := ClassifyFailure(FailureInput{StatusCode: 400, Body: gemma}); got != FallbackNext {
+		t.Fatalf("gemma body with zero policy = %s, want fallback", got)
+	}
+	// Narrowness: the gemma phrase WITHOUT the adapter-family suffix stays
+	// unknown — a generic "invalid argument" must not walk.
+	gemmaNoSuffix := []byte(`{"error":{"message":"Request contains an invalid argument."}}`)
+	if got := classifyBadRequestSubtype(gemmaNoSuffix); got != bad400Unknown {
+		t.Fatalf("gemma phrase without request id = %d, want bad400Unknown", got)
+	}
+	// Narrowness: the "request id:" suffix alone (no adapter phrase) stays
+	// unknown.
+	onlySuffix := []byte(`{"error":{"message":"(request id: 202610141931116721004928268d9d6nEfaGUos)"}}`)
+	if got := classifyBadRequestSubtype(onlySuffix); got != bad400Unknown {
+		t.Fatalf("request-id-only = %d, want bad400Unknown", got)
+	}
 }

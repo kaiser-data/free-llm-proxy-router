@@ -199,8 +199,9 @@ func (fc *FallbackChain) failureDecisionWalk(resp *Response, err error, provider
 	}
 	// Tools-unsupported 400 (round 9), model-unsupported 400 (round 12,
 	// UnoRouter "Model X:free not supported"), and upstream-adapter
-	// bad-input 400 (round 13, kiwi "required properties at '/' are
-	// 'text'"): deterministic MODEL defects — the walk moves on regardless
+	// bad-input 400 (round 13 kiwi "required properties at '/' are
+	// 'text'", round 14 gemma "Request contains an invalid argument"):
+	// deterministic MODEL defects — the walk moves on regardless
 	// of the unknown-400 policy, and the model is parked so the next
 	// request's ranking skips it (the unknown-400 demotion lesson, without
 	// the confirm dance).

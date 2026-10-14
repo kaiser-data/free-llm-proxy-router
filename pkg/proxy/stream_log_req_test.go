@@ -72,6 +72,68 @@ func TestStreamPathLogsCarryRequestID(t *testing.T) {
 	}
 }
 
+// TestStreamPathUnrecognized400WalksToNextCandidate (round 14): the stream
+// path now runs the SAME failureDecisionWalk the buffered routes run — an
+// adapter-template 400 (live: gemma-4-31b "Request contains an invalid
+// argument", 2026-10-14 19:31) parks the model on first sight and the walk
+// continues, so the client is served by the next candidate instead of
+// receiving the upstream 400 (the exact shape that surfaced during the
+// round-14 live incident on the alias route).
+func TestStreamPathUnrecognized400WalksToNextCandidate(t *testing.T) {
+	gemmaBody := `{"error":{"code":400,"message":"Request contains an invalid argument. (request id: 202610141931116721004928268d9d6nEfaGUos)","status":"INVALID_ARGUMENT"}}`
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(gemmaBody))
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: {\"id\":\"1\",\"model\":\"model-a\",\"choices\":[{\"delta\":{\"content\":\"hi from model-b\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer good.Close()
+
+	cfg := &config.Config{}
+	cfg.Proxy.Strategy = "adaptive"
+	cfg.Fallback.Unknown400Policy = policyCrossModelConfirm
+	cfg.Fallback.Unknown400ConfirmN = 2
+	cfg.Fallback.Unknown400DemotionSeconds = 600
+	cfg.Providers = []config.ProviderConfig{
+		{ID: "pa", BaseURL: bad.URL, Enabled: true},
+		{ID: "pb", BaseURL: good.URL, Enabled: true},
+	}
+	// The direct route walks across PROVIDERS offering the SAME model
+	// (matchEntry matches the requested model only) — model-a from pa
+	// 400s, model-a from pb must serve.
+	cat := &catalog.Catalog{Entries: []catalog.CatalogEntry{
+		{ProviderID: "pa", ModelID: "model-a", IsFree: true},
+		{ProviderID: "pb", ModelID: "model-a", IsFree: true},
+	}}
+	s := NewServer(cfg, cat, strategy.NewRegistry(nil, nil, "", "", 0, 0),
+		ratelimit.NewGlobalTracker(), nil, reliability.New())
+
+	buf := captureStdLog(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"model-a","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	req.Header.Set("X-Request-Id", "req-walk400-1")
+	rec := httptest.NewRecorder()
+	s.handleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("client status = %d, want 200 from model-b (walked past model-a)\nbody: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "from model-b") {
+		t.Fatalf("client body missing the served SSE stream:\n%s", rec.Body.String())
+	}
+	if !s.demotions.isDemoted("pa", "model-a", time.Now(), 600*time.Second) {
+		t.Fatal("model-a must be parked after the stream-path 400")
+	}
+	if logs := buf.String(); !strings.Contains(logs, "status 400 (stream) — trying next candidate") {
+		t.Fatalf("stream walk log missing the next-candidate line:\n%s", logs)
+	}
+}
+
 // TestPumpCommittedStreamLogsCarryRequestID: the post-commit pump's
 // interruption log carries req=<id> — the one place a committed stream
 // still logs (follow-up 1b).
