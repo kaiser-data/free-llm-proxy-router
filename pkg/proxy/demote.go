@@ -197,22 +197,20 @@ func (fc *FallbackChain) failureDecisionWalk(resp *Response, err error, provider
 	if in.StatusCode != http.StatusBadRequest {
 		return ClassifyFailure(in)
 	}
-	// Tools-unsupported 400 (round 9) and model-unsupported 400 (round 12,
-	// UnoRouter "Model X:free not supported"): deterministic MODEL defects —
-	// the walk moves on regardless of the unknown-400 policy, and the model
-	// is parked so the next request's ranking skips it (the unknown-400
-	// demotion lesson, without the confirm dance).
+	// Tools-unsupported 400 (round 9), model-unsupported 400 (round 12,
+	// UnoRouter "Model X:free not supported"), and upstream-adapter
+	// bad-input 400 (round 13, kiwi "required properties at '/' are
+	// 'text'"): deterministic MODEL defects — the walk moves on regardless
+	// of the unknown-400 policy, and the model is parked so the next
+	// request's ranking skips it (the unknown-400 demotion lesson, without
+	// the confirm dance).
 	sub := classifyBadRequestSubtype(in.Body)
-	if sub == bad400Tools || sub == bad400ModelUnsupported {
+	if sub == bad400Tools || sub == bad400ModelUnsupported || sub == bad400UpstreamBadInput {
 		if fc.Demotions != nil && fc.demotionTTL() > 0 {
 			fc.Demotions.demote(providerID, modelID, time.Now())
-			if sub == bad400ModelUnsupported {
-				log.Printf("fallback: %s/%s demoted for %s (model-unsupported)", providerID, modelID, fc.demotionTTL())
-			} else {
-				log.Printf("fallback: %s/%s demoted for %s (tools-unsupported)", providerID, modelID, fc.demotionTTL())
-			}
+			log.Printf("fallback: %s/%s demoted for %s (%s)", providerID, modelID, fc.demotionTTL(), demoteCauseLabel(sub))
 		}
-		return ClassifyFailure(in) // bad400Tools / bad400ModelUnsupported → FallbackNext
+		return ClassifyFailure(in) // recognized model defect → FallbackNext
 	}
 	if seenUnknown400 == nil {
 		return ClassifyFailure(in)
@@ -239,4 +237,19 @@ func (fc *FallbackChain) failureDecisionWalk(resp *Response, err error, provider
 		log.Printf("fallback: %s/%s unknown-400 (cross-model confirm %d/%d) — walking to another model", providerID, modelID, in.SeenDistinct, in.ConfirmN)
 	}
 	return d
+}
+
+// demoteCauseLabel names the 400 subclass in demotion log lines — the ops
+// view of "why did this model drop out of the ranking".
+func demoteCauseLabel(sub badRequestKind) string {
+	switch sub {
+	case bad400Tools:
+		return "tools-unsupported"
+	case bad400ModelUnsupported:
+		return "model-unsupported"
+	case bad400UpstreamBadInput:
+		return "upstream-bad-input"
+	default:
+		return "bad400"
+	}
 }

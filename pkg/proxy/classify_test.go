@@ -315,3 +315,38 @@ func TestClassifyModelUnsupported400(t *testing.T) {
 		t.Fatalf("modality shape = %d, want bad400ContextLength", got)
 	}
 }
+
+// TestClassifyUpstreamBadInput400 locks the round-13 subclass: the kiwi
+// adapter's own template rejecting the TRANSFORMED payload (live body from
+// unorouter/aura-1:free during the round-13 smoke — an OpenAI-valid
+// streaming payload that answered 200 from other models in the same run)
+// walks on; genuinely-broken payload shapes stay unknown / fail-fast.
+func TestClassifyUpstreamBadInput400(t *testing.T) {
+	live := []byte(`{"error":{"message":"AiError: Bad input: Error: required properties at '/' are 'text' (246e70da-76ec-4b29-ac25-40d60403840c) (request id: 202610141904063091884728268d9d62Vv4fvLZ)","type":"bad_response"}}`)
+	if got := classifyBadRequestSubtype(live); got != bad400UpstreamBadInput {
+		t.Fatalf("live kiwi adapter body = %d, want bad400UpstreamBadInput", got)
+	}
+	// Zero policy: recognized subclasses keep FallbackNext — the payload
+	// was fine (the same prompt answered 200 from another model seconds
+	// earlier in the same smoke).
+	if got := ClassifyFailure(FailureInput{StatusCode: 400, Body: live}); got != FallbackNext {
+		t.Fatalf("live body with zero policy = %s, want fallback", got)
+	}
+	// Narrowness: "required properties" WITHOUT the adapter signature stays
+	// unknown — genuine client-payload validation must not walk.
+	onlyRequired := []byte(`{"error":{"message":"required properties are missing: messages"}}`)
+	if got := classifyBadRequestSubtype(onlyRequired); got != bad400Unknown {
+		t.Fatalf("required-properties-only = %d, want bad400Unknown", got)
+	}
+	// Narrowness: "AiError: Bad input" without the template signature stays
+	// unknown.
+	onlyAiError := []byte(`{"error":{"message":"AiError: Bad input: unknown field 'temperature_q'"}}`)
+	if got := classifyBadRequestSubtype(onlyAiError); got != bad400Unknown {
+		t.Fatalf("aierror-only = %d, want bad400Unknown", got)
+	}
+	// Content-policy keeps FailFast (checked before the new subclass).
+	policy := []byte(`{"error":{"message":"AiError: Bad input: required properties at '/' are 'text'","type":"content_filter"}}`)
+	if got := classifyBadRequestSubtype(policy); got != bad400ContentPolicy {
+		t.Fatalf("content-policy conj = %d, want bad400ContentPolicy", got)
+	}
+}

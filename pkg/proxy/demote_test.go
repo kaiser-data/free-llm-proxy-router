@@ -330,3 +330,42 @@ func TestFilterDemotedEntriesLastChance(t *testing.T) {
 		t.Fatalf("disabled demotion filter = %d entries, want %d", len(out), len(entries))
 	}
 }
+
+// TestWalkUpstreamBadInput400DemotesAndWalks (round 13, live kiwi adapter):
+// a 400 from the adapter's own payload template ("required properties at
+// '/' are 'text'") is a deterministic model defect — the walk moves on and
+// the model parks WITHOUT the cross-model confirm dance, so a good
+// OpenAI-valid payload (which answered 200 from other models seconds
+// earlier in the same smoke) never surfaces the broken adapter's 400.
+func TestWalkUpstreamBadInput400DemotesAndWalks(t *testing.T) {
+	fc := &FallbackChain{
+		Cfg: &config.Config{Fallback: config.FallbackConfig{
+			Unknown400Policy:          policyCrossModelConfirm,
+			Unknown400ConfirmN:        2,
+			Unknown400DemotionSeconds: 600,
+		}},
+		Demotions: newDemotionRegistry(),
+	}
+	body := `{"error":{"message":"AiError: Bad input: Error: required properties at '/' are 'text' (246e70da-76ec-4b29-ac25-40d60403840c) (request id: 202610141904063091884728268d9d62Vv4fvLZ)","type":"bad_response"}}`
+	resp := &Response{StatusCode: 400, Body: []byte(body)}
+
+	seen := make(map[string]bool)
+	if got := fc.failureDecisionWalk(resp, nil, "unorouter", "aura-1:free", seen); got != FallbackNext {
+		t.Fatalf("upstream-bad-input 400 = %s, want fallback", got)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("confirm set = %v, want untouched (no confirm dance)", seen)
+	}
+	if !fc.Demotions.isDemoted("unorouter", "aura-1:free", time.Now(), fc.demotionTTL()) {
+		t.Fatal("upstream-bad-input must park the model in the demotion registry")
+	}
+
+	// Legacy zero-TTL chain: still walks on (recognized subclass verdict is
+	// policy-independent, like tools-unsupported); no registry entry because
+	// demotion is disabled by the zeroed config.
+	fcNoDemote := &FallbackChain{Cfg: &config.Config{}, Demotions: newDemotionRegistry()}
+	seenNoDemote := make(map[string]bool)
+	if got := fcNoDemote.failureDecisionWalk(resp, nil, "pa", "ma", seenNoDemote); got != FallbackNext || len(seenNoDemote) != 0 {
+		t.Fatalf("legacy upstream-bad-input = %s len=%d, want fallback and untouched set", got, len(seenNoDemote))
+	}
+}
