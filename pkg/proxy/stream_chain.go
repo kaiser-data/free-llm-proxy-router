@@ -266,7 +266,7 @@ func streamUpstreamHeld(ctx context.Context, w http.ResponseWriter, cfg config.P
 				if flusher, ok := flusherOf(w); ok {
 					flusher.Flush()
 				}
-				pumpCommittedStream(ctx, w, resp.Body, p, cancelAttempt)
+				pumpCommittedStream(ctx, w, resp.Body, p, cancelAttempt, bytes.Contains(buf.Bytes(), []byte("[DONE]")))
 				return &Response{StatusCode: http.StatusOK, UsedModel: usedModel}, true, nil
 			}
 			if reasoningSeen {
@@ -333,7 +333,7 @@ func commitHeldStream(ctx context.Context, w http.ResponseWriter, p streamClient
 		flusher.Flush()
 	}
 	if rest != nil {
-		pumpCommittedStream(ctx, w, rest, p, cancelAttempt)
+		pumpCommittedStream(ctx, w, rest, p, cancelAttempt, bytes.Contains(buf, []byte("[DONE]")))
 	}
 	return &Response{StatusCode: http.StatusOK, UsedModel: usedModel}
 }
@@ -845,7 +845,14 @@ func (fc *FallbackChain) streamTryOnce(w http.ResponseWriter, reqID string) cand
 // the stream ends with an OpenAI-style SSE error event + data: [DONE] and
 // never retries or continues from another provider. A clean EOF after
 // data: [DONE] ends the stream normally.
-func pumpCommittedStream(ctx context.Context, w http.ResponseWriter, body io.Reader, p streamClientParams, cancelAttempt context.CancelFunc) {
+//
+// sawDone must be seeded by the caller from the bytes already committed
+// (round 15): when a fast upstream delivers the whole stream — including
+// data: [DONE] — inside the commit buffer, the pump's first read of the
+// exhausted body hits EOF with nothing left. Without the seed that EOF
+// looked like an interruption and produced a spurious error event plus a
+// second [DONE] after the real one.
+func pumpCommittedStream(ctx context.Context, w http.ResponseWriter, body io.Reader, p streamClientParams, cancelAttempt context.CancelFunc, sawDone bool) {
 	idle := p.IdleTimeout
 	if idle <= 0 {
 		idle = 30 * time.Second
@@ -855,7 +862,6 @@ func pumpCommittedStream(ctx context.Context, w http.ResponseWriter, body io.Rea
 
 	flusher, canFlush := flusherOf(w)
 	buf := make([]byte, sseChunkSize)
-	sawDone := false
 	// carry holds the tail of the previous chunk so a [DONE] split across
 	// two reads is still recognized.
 	var carry []byte

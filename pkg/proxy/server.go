@@ -395,11 +395,23 @@ func (s *Server) Start(ctx context.Context) error {
 	// request's initial ceiling (proxy.max_request_seconds) and refreshes
 	// it (proxy.write_idle_timeout_seconds) after every successful write —
 	// see writedeadline.go.
+	// Round 15: ReadTimeout raised 30s→120s — a 90k-token request body
+	// (~360KB) trickling through a slow WireGuard link must not trip the
+	// read deadline; that kill is invisible server-side (no handler log)
+	// and the client just sees a bare connection reset.
+	//
+	// Round 15: IdleTimeout raised 60s→900s — panel clients pool keep-alive
+	// connections across the tunnel. When this server closed an idle conn
+	// at 60s and the panel later wrote into it, the kernel answered RST and
+	// the panel surfaced "read: connection reset by peer" (scanner_error)
+	// with no router-side log at all — the request never reached the
+	// handler. 15 min keeps pooled conns alive far longer than any realistic
+	// reuse gap while still reaping truly dead connections.
 	s.httpServer = &http.Server{
 		Addr:        fmt.Sprintf(":%d", cfg.Proxy.Port),
 		Handler:     handler,
-		ReadTimeout: 30 * time.Second,
-		IdleTimeout: 60 * time.Second,
+		ReadTimeout: 120 * time.Second,
+		IdleTimeout: 900 * time.Second,
 	}
 
 	log.Printf("free-llm-proxy listening on :%d (strategy: %s)", cfg.Proxy.Port, cfg.Proxy.Strategy)

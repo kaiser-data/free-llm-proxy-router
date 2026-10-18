@@ -143,11 +143,40 @@ func TestPumpCommittedStreamLogsCarryRequestID(t *testing.T) {
 	p := streamClientParams{RequestID: "req-pump-1", IdleTimeout: time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pumpCommittedStream(ctx, w, errReader{}, p, cancel)
+	pumpCommittedStream(ctx, w, errReader{}, p, cancel, false)
 
 	logs := buf.String()
 	if !strings.Contains(logs, "stream: req=req-pump-1 upstream interrupted after commit") {
 		t.Fatalf("pump log missing req=id, captured:\n%s", logs)
+	}
+}
+
+// eofReader simulates an upstream body that is already exhausted — the
+// fast-upstream case where the whole stream landed in the commit buffer
+// before the pump was invoked (round 15 regression companion).
+type eofReader struct{}
+
+func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+// Round 15 regression: when the ENTIRE stream — content, finish_reason and
+// data: [DONE] — already landed in the committed buffer, the pump's first
+// read of the exhausted upstream hits EOF with sawDone seeded from the
+// buffer. The pump must then end silently: no spurious
+// "upstream interrupted" error event and no second [DONE] after the real
+// one.
+func TestPumpSeesSentinelSeededFromCommittedBuffer(t *testing.T) {
+	buf := captureStdLog(t)
+	w := httptest.NewRecorder()
+	p := streamClientParams{RequestID: "req-pump-2", IdleTimeout: time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pumpCommittedStream(ctx, w, eofReader{}, p, cancel, true)
+
+	if logs := buf.String(); strings.Contains(logs, "upstream interrupted after commit") {
+		t.Fatalf("spurious interruption log with seeded sawDone:\n%s", logs)
+	}
+	if body := w.Body.String(); strings.Contains(body, "[DONE]") {
+		t.Fatalf("second [DONE] written after the buffered one:\n%s", body)
 	}
 }
 
