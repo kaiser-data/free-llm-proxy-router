@@ -1,12 +1,39 @@
 # free-llm-proxy-router
 
-An OpenAI-compatible local proxy that routes LLM requests across free-tier providers — Groq, Gemini, OpenRouter, GitHub Models, Cerebras, Mistral, HuggingFace and more — with automatic fallback, rate-limit recovery, and 13 routing strategies.
+[![CI](https://github.com/kaiser-data/free-llm-proxy-router/actions/workflows/ci.yml/badge.svg)](https://github.com/kaiser-data/free-llm-proxy-router/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/go-1.23+-00ADD8?logo=go)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](#license)
+
+**One small Go binary that turns every free LLM tier you have into a single OpenAI endpoint that doesn't run dry.**
+
+Point any OpenAI-compatible tool at `localhost:8080`. When Groq hits its rate limit, the request moves to Gemini, then Cerebras, then OpenRouter's free pool, and your script never sees a 429. No Node, no database, no dashboard, no credit card.
+
+```bash
+export OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_API_KEY=unused
+aider --model openai/coding          # or Continue, Cline, OpenCode, Open WebUI, LangChain…
+```
+
+## Why this instead of a big gateway?
+
+Full AI gateways such as [OmniRoute](https://github.com/diegosouzapw/OmniRoute) and LiteLLM are great if you want hundreds of providers, paid-key budgets and a web dashboard. This project is deliberately the opposite:
+
+| | free-llm-proxy-router | Full AI gateways |
+|---|---|---|
+| Install | one static binary, roughly 10 MB | Node/Python runtime, Docker, often a DB |
+| Scope | **free tiers only**: official, recharging, no card | paid + free + subscription logins |
+| Terms of service | official API keys only, no OAuth or session reuse | some route through consumer subscriptions |
+| Code you have to trust | ~7k lines of Go, readable in an afternoon | very large codebases |
+| Free-model catalog | auto-discovered from provider APIs, [shared as JSON](configs/catalog.json) | curated lists |
+| Runs on | laptop, Raspberry Pi, NAS, $4 VPS, CI runner | servers |
+
+Pick this when you want free inference for scripts, agents, homelabs or CI without operating a platform.
 
 ## What it does
 
 - **Single endpoint** at `localhost:8080` — drop-in replacement for the OpenAI API
 - **Auto-routes** to the best available free model using a configurable strategy
 - **Falls back** automatically when a provider is rate-limited or unavailable
+- **Streams** to clients that send `stream: true`. Providers are called buffered so fallback still works, and the final answer is sent back as standard SSE chunks
 - **Discovers** free models by scanning provider APIs (no hardcoded lists)
 - **Tracks** per-provider reliability and rate limits across requests
 

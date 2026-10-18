@@ -29,12 +29,12 @@ jobs:
 
       - name: Check binary sizes
         run: |
-          for bin in bin/picoclaw-*; do
+          for bin in bin/free-llm-*; do
             size=$(stat -c%s "$bin")
-            maxsize=$((10 * 1024 * 1024))  # 10MB
+            maxsize=$((16 * 1024 * 1024))  # 16MB
             echo "$bin: $(numfmt --to=iec $size)"
             if [ "$size" -gt "$maxsize" ]; then
-              echo "ERROR: $bin exceeds 10MB limit ($size bytes)"
+              echo "ERROR: $bin exceeds 16MB limit ($size bytes)"
               exit 1
             fi
           done

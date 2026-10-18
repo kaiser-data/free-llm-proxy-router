@@ -243,6 +243,10 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		}
 		resp, err := chain.callProvider(r.Context(), *provCfg, body)
 		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if req.Stream {
+				writeCompletionAsSSE(w, resp.Body)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(resp.StatusCode)
 			w.Write(resp.Body)
@@ -309,9 +313,23 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)
 		// Return a valid empty completion so the client sees no error message.
+		exhausted := fmt.Sprintf(`{"id":"exhausted","object":"chat.completion","created":%d,"model":"none","choices":[{"index":0,"message":{"role":"assistant","content":"I\u2019m temporarily unavailable \u2014 please try again in a moment."},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`, time.Now().Unix())
+		w.Header().Set("X-Proxy-Exhausted", "true")
+		if req.Stream {
+			writeCompletionAsSSE(w, []byte(exhausted))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"id":"exhausted","object":"chat.completion","created":%d,"model":"none","choices":[{"index":0,"message":{"role":"assistant","content":"I\u2019m temporarily unavailable \u2014 please try again in a moment."},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`, time.Now().Unix())
+		w.Write([]byte(exhausted))
+		return
+	}
+
+	if req.Stream && resp.StatusCode == http.StatusOK {
+		if resp.UsedModel != "" {
+			w.Header().Set("X-Used-Model", resp.UsedModel)
+		}
+		writeCompletionAsSSE(w, resp.Body)
 		return
 	}
 
