@@ -1,0 +1,72 @@
+name: Refresh free models
+
+# Weekly scan of every provider's model API. Updates configs/catalog.json and
+# FREE_MODELS.md. Providers without a repository secret keep their previous
+# entries (--keep-unscanned), so a partial set of keys never wipes the list.
+#
+# Secrets (Settings → Secrets and variables → Actions), all optional:
+#   OPENROUTER_API_KEY GROQ_API_KEY GEMINI_API_KEY MISTRAL_API_KEY
+#   CEREBRAS_API_KEY NVIDIA_API_KEY COHERE_API_KEY HF_API_KEY
+# GitHub Models uses the workflow's own GITHUB_TOKEN (models: read).
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  models: read
+
+concurrency:
+  group: refresh-catalog
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Build scanner
+        run: go build -o bin/free-llm-scan ./cmd/scan
+
+      - name: Scan providers
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          HF_API_KEY: ${{ secrets.HF_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./bin/free-llm-scan -c configs/config.example.yaml --catalog configs/catalog.json \
+            update --keep-unscanned
+
+      - name: Render FREE_MODELS.md
+        run: ./bin/free-llm-scan -c configs/config.example.yaml --catalog configs/catalog.json export-md -o FREE_MODELS.md
+
+      - name: Commit if the model list changed
+        run: |
+          # Timestamps change on every scan; only commit when models changed.
+          changes=$(git diff -U0 -- configs/catalog.json FREE_MODELS.md \
+            | grep -E '^[+-][^+-]' | grep -vE '_at"|^[+-]\*\*[0-9]+ free models' || true)
+          if [ -z "$changes" ]; then
+            echo "No model changes."
+            exit 0
+          fi
+          count=$(grep -o '^\*\*[0-9]* free models' FREE_MODELS.md | grep -o '[0-9]*')
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add configs/catalog.json FREE_MODELS.md
+          git commit -m "chore: weekly free-model refresh (${count} models)"
+          git push

@@ -34,7 +34,7 @@ Pick this when you want free inference for scripts, agents, homelabs or CI witho
 - **Auto-routes** to the best available free model using a configurable strategy
 - **Falls back** automatically when a provider is rate-limited or unavailable
 - **Streams** to clients that send `stream: true`. Providers are called buffered so fallback still works, and the final answer is sent back as standard SSE chunks
-- **Discovers** free models by scanning provider APIs (no hardcoded lists)
+- **Discovers** free models by scanning provider APIs (no hardcoded lists). Browse the current list in [FREE_MODELS.md](FREE_MODELS.md), refreshed weekly
 - **Tracks** per-provider reliability and rate limits across requests
 
 ## Binaries

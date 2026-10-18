@@ -16,7 +16,22 @@ import (
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/scan"
 )
 
-var cfgFile string
+var (
+	cfgFile     string
+	catalogPath string
+)
+
+// loadConfig loads the config and applies the --catalog override.
+func loadConfig() (*config.Config, error) {
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	if catalogPath != "" {
+		cfg.Catalog.Path = catalogPath
+	}
+	return cfg, nil
+}
 
 func main() {
 	root := &cobra.Command{
@@ -24,11 +39,13 @@ func main() {
 		Short: "Discover and manage free LLM model catalog",
 	}
 	root.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file path")
+	root.PersistentFlags().StringVar(&catalogPath, "catalog", "", "catalog.json path (overrides catalog.path in config)")
 
 	root.AddCommand(
 		updateCmd(),
 		probeCmd(),
 		refreshLLMCmd(),
+		exportMDCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -39,13 +56,14 @@ func main() {
 
 // updateCmd scans all enabled providers and writes catalog.json.
 func updateCmd() *cobra.Command {
-	return &cobra.Command{
+	var keepUnscanned bool
+	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Scan all enabled providers and update catalog.json",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(cfgFile)
+			cfg, err := loadConfig()
 			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
+				return err
 			}
 
 			// Load existing catalog to preserve blocklist across scans.
@@ -66,6 +84,12 @@ func updateCmd() *cobra.Command {
 			}
 			cat.FilterBlocklisted()
 
+			if keepUnscanned {
+				if kept := cat.KeepUnscanned(existing); len(kept) > 0 {
+					log.Printf("scan: no results from %v — kept their previous entries", kept)
+				}
+			}
+
 			// Correlate cross-provider families
 			correlated := scan.Correlate(cat.Entries)
 			log.Printf("scan: found %d model families across %d entries", len(correlated), len(cat.Entries))
@@ -81,6 +105,9 @@ func updateCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&keepUnscanned, "keep-unscanned", false,
+		"keep previous entries for providers that returned nothing (missing key, outage)")
+	return cmd
 }
 
 // probeCmd probes models that need reverification.
@@ -89,9 +116,9 @@ func probeCmd() *cobra.Command {
 		Use:   "probe",
 		Short: "Probe models flagged as needing reverification",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(cfgFile)
+			cfg, err := loadConfig()
 			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
+				return err
 			}
 			cat, err := catalog.Load(cfg.Catalog.Path)
 			if err != nil {
@@ -153,9 +180,9 @@ func refreshLLMCmd() *cobra.Command {
 		Use:   "refresh-llm",
 		Short: "Use LLM to check for free tier changes and update catalog diff",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(cfgFile)
+			cfg, err := loadConfig()
 			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
+				return err
 			}
 			cat, err := catalog.Load(cfg.Catalog.Path)
 			if err != nil {
@@ -193,4 +220,35 @@ func refreshLLMCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// exportMDCmd renders the catalog as a Markdown page of free models.
+func exportMDCmd() *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   "export-md",
+		Short: "Render the catalog as a Markdown list of free models",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			cat, err := catalog.Load(cfg.Catalog.Path)
+			if err != nil {
+				return fmt.Errorf("loading catalog: %w", err)
+			}
+			w := os.Stdout
+			if out != "" {
+				f, err := os.Create(out)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				w = f
+			}
+			return cat.WriteMarkdown(w)
+		},
+	}
+	cmd.Flags().StringVarP(&out, "output", "o", "", "write to file instead of stdout")
+	return cmd
 }
