@@ -164,7 +164,7 @@ func refreshLLMCmd() *cobra.Command {
 
 			promptFile := cfg.Refresh.PromptFile
 			if promptFile == "" {
-				promptFile = "configs/refresh-prompt.txt"
+				promptFile = config.FindDataFile("refresh-prompt.txt", cfgFile)
 			}
 
 			refresher := &scan.LLMRefresher{

@@ -75,10 +75,10 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 
 	// Load capability/family YAML data if present
-	if err := models.LoadFamilies("configs/families.yaml"); err != nil {
+	if err := models.LoadFamilies(config.FindDataFile("families.yaml", cfgFile)); err != nil {
 		log.Printf("families.yaml not found or invalid: %v (family detection disabled)", err)
 	}
-	if err := models.LoadCapabilities("configs/capabilities.yaml"); err != nil {
+	if err := models.LoadCapabilities(config.FindDataFile("capabilities.yaml", cfgFile)); err != nil {
 		log.Printf("capabilities.yaml not found or invalid: %v (capability detection disabled)", err)
 	}
 
