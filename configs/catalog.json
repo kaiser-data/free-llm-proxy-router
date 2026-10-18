@@ -1,258 +1,177 @@
 {
   "version": 1,
-  "updated_at": "2026-03-05T06:17:50.379043403+01:00",
+  "updated_at": "2026-10-18T23:09:27.517040587Z",
   "entries": [
+    {
+      "provider_id": "openrouter",
+      "model_id": "xingchen-agi/xing4.0-29b-a4b:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 262144,
+      "discovered_at": "2026-10-18T23:09:27.606738042Z",
+      "last_verified_at": "2026-10-18T23:09:27.606738122Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "nvidia/nemotron-3.5-super-vl:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 1000000,
+      "discovered_at": "2026-10-18T23:09:27.606738543Z",
+      "last_verified_at": "2026-10-18T23:09:27.606738603Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "dots-studio/dots-3-note-preview:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 512000,
+      "discovered_at": "2026-10-18T23:09:27.606739695Z",
+      "last_verified_at": "2026-10-18T23:09:27.606739745Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "liquid/lfm-2.5-2.6b:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 65536,
+      "discovered_at": "2026-10-18T23:09:27.606740146Z",
+      "last_verified_at": "2026-10-18T23:09:27.606740206Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "nvidia/nemotron-3.5-lightning:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 1000000,
+      "discovered_at": "2026-10-18T23:09:27.606740306Z",
+      "last_verified_at": "2026-10-18T23:09:27.606740356Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "thinkingmachines/inkling-small:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 1048576,
+      "discovered_at": "2026-10-18T23:09:27.606741007Z",
+      "last_verified_at": "2026-10-18T23:09:27.606741067Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "poolside/laguna-s-2.1:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 262144,
+      "discovered_at": "2026-10-18T23:09:27.606741188Z",
+      "last_verified_at": "2026-10-18T23:09:27.606741238Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "thinkingmachines/inkling:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 1048576,
+      "discovered_at": "2026-10-18T23:09:27.606741388Z",
+      "last_verified_at": "2026-10-18T23:09:27.606741438Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "poolside/laguna-xs-2.1:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 262144,
+      "discovered_at": "2026-10-18T23:09:27.606741659Z",
+      "last_verified_at": "2026-10-18T23:09:27.606741708Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "cohere/north-mini-code:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 256000,
+      "discovered_at": "2026-10-18T23:09:27.606742119Z",
+      "last_verified_at": "2026-10-18T23:09:27.606742169Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "nvidia/nemotron-3.5-content-safety:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 128000,
+      "discovered_at": "2026-10-18T23:09:27.6067423Z",
+      "last_verified_at": "2026-10-18T23:09:27.60674235Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 1000000,
+      "discovered_at": "2026-10-18T23:09:27.60674244Z",
+      "last_verified_at": "2026-10-18T23:09:27.6067425Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 256000,
+      "discovered_at": "2026-10-18T23:09:27.606742681Z",
+      "last_verified_at": "2026-10-18T23:09:27.606742741Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "google/gemma-4-26b-a4b-it:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 262144,
+      "discovered_at": "2026-10-18T23:09:27.606742971Z",
+      "last_verified_at": "2026-10-18T23:09:27.606743021Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "google/gemma-4-31b-it:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 262144,
+      "discovered_at": "2026-10-18T23:09:27.606743101Z",
+      "last_verified_at": "2026-10-18T23:09:27.606743161Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "google/lyria-3-pro-preview",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 1048576,
+      "discovered_at": "2026-10-18T23:09:27.606743262Z",
+      "last_verified_at": "2026-10-18T23:09:27.606743322Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "google/lyria-3-clip-preview",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 1048576,
+      "discovered_at": "2026-10-18T23:09:27.606743402Z",
+      "last_verified_at": "2026-10-18T23:09:27.606743452Z"
+    },
+    {
+      "provider_id": "openrouter",
+      "model_id": "nvidia/nemotron-3-super-120b-a12b:free",
+      "is_free": true,
+      "tier_type": "free",
+      "context_window": 262144,
+      "discovered_at": "2026-10-18T23:09:27.606743592Z",
+      "last_verified_at": "2026-10-18T23:09:27.606743652Z"
+    },
     {
       "provider_id": "openrouter",
       "model_id": "openrouter/free",
       "is_free": true,
       "tier_type": "free",
       "context_window": 200000,
-      "discovered_at": "2026-03-05T06:17:50.640917967+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640918145+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "stepfun/step-3.5-flash:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 256000,
-      "discovered_at": "2026-03-05T06:17:50.640920879+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640920962+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "arcee-ai/trinity-large-preview:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131000,
-      "discovered_at": "2026-03-05T06:17:50.640922681+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640922763+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "liquid/lfm-2.5-1.2b-thinking:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 32768,
-      "discovered_at": "2026-03-05T06:17:50.64092404+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640924121+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "liquid/lfm-2.5-1.2b-instruct:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 32768,
-      "discovered_at": "2026-03-05T06:17:50.640924331+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640924412+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "nvidia/nemotron-3-nano-30b-a3b:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 256000,
-      "discovered_at": "2026-03-05T06:17:50.640926156+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640926215+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "arcee-ai/trinity-mini:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.640926894+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640926955+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "nvidia/nemotron-nano-12b-v2-vl:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 128000,
-      "discovered_at": "2026-03-05T06:17:50.64092758+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640927638+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "qwen/qwen3-vl-30b-a3b-thinking",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.640927926+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640927985+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "qwen/qwen3-vl-235b-a22b-thinking",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.640938237+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640938301+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "qwen/qwen3-next-80b-a3b-instruct:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 262144,
-      "discovered_at": "2026-03-05T06:17:50.640938791+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640938853+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "nvidia/nemotron-nano-9b-v2:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 128000,
-      "discovered_at": "2026-03-05T06:17:50.640939017+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640939076+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "openai/gpt-oss-120b:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.640939647+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640939707+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "openai/gpt-oss-20b:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.640940028+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640940089+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "z-ai/glm-4.5-air:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.640940571+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640940743+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "qwen/qwen3-235b-a22b-thinking-2507",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.640940923+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.64094102+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "qwen/qwen3-coder:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 262000,
-      "discovered_at": "2026-03-05T06:17:50.640941158+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640941233+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 32768,
-      "discovered_at": "2026-03-05T06:17:50.640941569+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.64094164+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "google/gemma-3n-e2b-it:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 8192,
-      "discovered_at": "2026-03-05T06:17:50.640947766+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640947847+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "google/gemma-3n-e4b-it:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 8192,
-      "discovered_at": "2026-03-05T06:17:50.640948417+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640948498+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "qwen/qwen3-4b:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 40960,
-      "discovered_at": "2026-03-05T06:17:50.640948747+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640948826+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "mistralai/mistral-small-3.1-24b-instruct:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 128000,
-      "discovered_at": "2026-03-05T06:17:50.640949514+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640949594+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "google/gemma-3-4b-it:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 32768,
-      "discovered_at": "2026-03-05T06:17:50.640949812+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640949905+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "google/gemma-3-12b-it:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 32768,
-      "discovered_at": "2026-03-05T06:17:50.640950119+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640950303+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "google/gemma-3-27b-it:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.640950912+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640950985+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "meta-llama/llama-3.3-70b-instruct:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 128000,
-      "discovered_at": "2026-03-05T06:17:50.640951822+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640951883+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "meta-llama/llama-3.2-3b-instruct:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.640952403+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640952463+01:00"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "nousresearch/hermes-3-llama-3.1-405b:free",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.640952799+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.640952861+01:00"
+      "discovered_at": "2026-10-18T23:09:27.606744213Z",
+      "last_verified_at": "2026-10-18T23:09:27.606744264Z"
     },
     {
       "provider_id": "groq",
@@ -3433,14 +3352,6 @@
       "metadata": {
         "pipeline_tag": "text-generation"
       }
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "openrouter/stepfun/step-3.5-flash:free",
-      "is_free": false,
-      "tier_type": "credit",
-      "discovered_at": "0001-01-01T00:00:00Z",
-      "last_verified_at": "0001-01-01T00:00:00Z"
     },
     {
       "provider_id": "nvidia-nim",
