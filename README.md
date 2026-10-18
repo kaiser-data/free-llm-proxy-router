@@ -47,7 +47,19 @@ Pick this when you want free inference for scripts, agents, homelabs or CI witho
 
 ## Quick start
 
-### 1. Build
+### 1. Install
+
+**Prebuilt binary** (Linux, macOS, Windows; amd64 and arm64): grab an archive from [Releases](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest).
+
+```bash
+# Example: macOS on Apple Silicon
+VERSION=0.1.0
+curl -LO https://github.com/kaiser-data/free-llm-proxy-router/releases/download/v$VERSION/free-llm-proxy-router_${VERSION}_darwin_arm64.tar.gz
+tar xzf free-llm-proxy-router_${VERSION}_darwin_arm64.tar.gz
+./free-llm-proxy --help
+```
+
+**From source:**
 
 ```bash
 git clone https://github.com/kaiser-data/free-llm-proxy-router
