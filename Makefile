@@ -53,7 +53,7 @@ tidy: ## Tidy go.mod and go.sum
 	$(GOCMD) mod tidy
 
 size: build ## Show binary sizes
-	@ls -lh $(BINDIR)/picoclaw-*
+	@ls -lh $(BINDIR)/free-llm-*
 
 help: ## Display this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
