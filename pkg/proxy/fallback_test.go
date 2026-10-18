@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -109,5 +110,89 @@ func TestFallbackChain_404MarksNeedsReverification(t *testing.T) {
 	entry := cat.Find("testprovider", "test-model")
 	if entry == nil || !entry.NeedsReverification {
 		t.Error("expected test-model to be flagged NeedsReverification after 404")
+	}
+}
+
+func TestCallProvider_NilResolverKeepsRawModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		if m, _ := reqBody["model"].(string); m != "qwen3" {
+			t.Errorf("upstream received model %q, want %q (request body must not be rewritten)", m, "qwen3")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"chatcmpl-1","model":"qwen3-32b","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	// No resolver configured: canonical aliasing is off, so UsedModel must
+	// keep the raw upstream name even though a canonical name was requested.
+	fc, _, _ := newTestChain(srv.URL, "testprovider", "qwen3-32b")
+	if fc.Resolver != nil {
+		t.Fatal("expected nil resolver on a fresh test chain")
+	}
+	body := map[string]any{
+		"model":    "qwen3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}
+
+	resp, err := fc.callProvider(context.Background(), fc.Cfg.Providers[0], body)
+	if err != nil {
+		t.Fatalf("callProvider: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if resp.UsedModel != "qwen3-32b" {
+		t.Errorf("UsedModel = %q, want raw upstream %q (nil resolver must not rewrite)", resp.UsedModel, "qwen3-32b")
+	}
+	if got := resp.Header.Get("X-Free-Router-Upstream-Provider"); got != "testprovider" {
+		t.Errorf("X-Free-Router-Upstream-Provider = %q, want %q", got, "testprovider")
+	}
+	if got := resp.Header.Get("X-Free-Router-Upstream-Model"); got != "qwen3" {
+		t.Errorf("X-Free-Router-Upstream-Model = %q, want %q", got, "qwen3")
+	}
+}
+
+func TestCallProvider_CanonicalAliasRoundTrip(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"chatcmpl-2","model":"qwen3-32b","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	// Enable canonical aliasing and build the resolver through the same
+	// production path used by the server (buildAliasResolver).
+	fc, _, cat := newTestChain(srv.URL, "testprovider", "qwen3-32b")
+	fc.Cfg.Models = config.ModelsConfig{
+		Aliases:          map[string][]string{"qwen3": {"qwen3-32b"}},
+		Canonicalization: config.CanonicalizationConfig{Enabled: true},
+	}
+	fc.Resolver = buildAliasResolver(fc.Cfg, cat)
+	if fc.Resolver == nil {
+		t.Fatal("expected non-nil resolver when canonicalization is enabled")
+	}
+	body := map[string]any{
+		"model":    "qwen3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}
+
+	resp, err := fc.callProvider(context.Background(), fc.Cfg.Providers[0], body)
+	if err != nil {
+		t.Fatalf("callProvider: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	// Upstream served the raw ID ("qwen3-32b" echoed in the response body);
+	// the alias layer must rewrite UsedModel back to the canonical name.
+	if resp.UsedModel != "qwen3" {
+		t.Errorf("UsedModel = %q, want canonical %q", resp.UsedModel, "qwen3")
+	}
+	if got := resp.Header.Get("X-Free-Router-Upstream-Provider"); got != "testprovider" {
+		t.Errorf("X-Free-Router-Upstream-Provider = %q, want %q", got, "testprovider")
+	}
+	if got := resp.Header.Get("X-Free-Router-Upstream-Model"); got != "qwen3" {
+		t.Errorf("X-Free-Router-Upstream-Model = %q, want %q", got, "qwen3")
 	}
 }

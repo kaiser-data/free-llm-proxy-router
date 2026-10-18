@@ -146,16 +146,16 @@ func (t *GeminiTracker) getOrCreate(m map[string]*Window, key string, size time.
 func defaultGeminiLimits() map[string]GeminiModelLimits {
 	return map[string]GeminiModelLimits{
 		// Gemini 2.0 Flash — fast, capable, moderate free limits
-		"gemini-2.0-flash":          {RPM: 10, TPM: 250_000, RPD: 20},
-		"gemini-2.0-flash-001":      {RPM: 10, TPM: 250_000, RPD: 20},
+		"gemini-2.0-flash":     {RPM: 10, TPM: 250_000, RPD: 20},
+		"gemini-2.0-flash-001": {RPM: 10, TPM: 250_000, RPD: 20},
 		// Gemini 2.0 Flash Lite — highest RPD, preferred for volume
 		"gemini-2.0-flash-lite":     {RPM: 15, TPM: 1_000_000, RPD: 1000},
 		"gemini-2.0-flash-lite-001": {RPM: 15, TPM: 1_000_000, RPD: 1000},
 		// Gemini 1.5 Flash — generous TPM
-		"gemini-1.5-flash":          {RPM: 15, TPM: 1_000_000, RPD: 1500},
-		"gemini-1.5-flash-8b":       {RPM: 15, TPM: 1_000_000, RPD: 1500},
+		"gemini-1.5-flash":    {RPM: 15, TPM: 1_000_000, RPD: 1500},
+		"gemini-1.5-flash-8b": {RPM: 15, TPM: 1_000_000, RPD: 1500},
 		// Gemini 2.5 Pro — low limits, high capability
-		"gemini-2.5-pro-preview":    {RPM: 5, TPM: 250_000, RPD: 25},
-		"gemini-1.5-pro":            {RPM: 2, TPM: 32_000, RPD: 50},
+		"gemini-2.5-pro-preview": {RPM: 5, TPM: 250_000, RPD: 25},
+		"gemini-1.5-pro":         {RPM: 2, TPM: 32_000, RPD: 50},
 	}
 }

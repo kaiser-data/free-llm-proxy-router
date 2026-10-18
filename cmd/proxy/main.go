@@ -23,8 +23,8 @@ import (
 )
 
 var (
-	cfgFile  string
-	port     int
+	cfgFile   string
+	port      int
 	stratName string
 )
 
@@ -124,9 +124,24 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	// Create server
 	srv := proxy.NewServer(cfg, cat, stratReg, rateLimiter, geminiTracker, reliabilityTracker)
 
+	// Restore RPM slot state (task T-7): active per-model reservations and
+	// 429-driven blocks survive a graceful restart, so the proxy never
+	// re-hits a quota it just exhausted. Missing file = fresh start.
+	slotsPath := "~/.free-llm-proxy-router/slots.json"
+	if err := srv.SlotLimiter().LoadState(slotsPath); err != nil {
+		log.Printf("loading slots state (starting fresh): %v", err)
+	}
+
 	// Handle graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Periodic slots save (T-7 hardening): a hard crash (SIGKILL/OOM/power
+	// loss) loses at most proxy.slot_persist_interval_seconds of quota
+	// protection; the SIGTERM path below stays the final, complete write.
+	// Boot-time interval — a config hot reload does not re-arm the ticker.
+	srv.SlotLimiter().StartPeriodicSave(ctx, slotsPath,
+		time.Duration(cfg.Proxy.SlotPersistIntervalSeconds)*time.Second)
 
 	// Watch catalog file for hot-reload (triggered by git-sync pull or manual update).
 	stopCatalogWatch, err := catalog.Watch(cfg.Catalog.Path, func(newCat *catalog.Catalog) {
@@ -168,11 +183,23 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		defer stopWatch()
 	}
 
+	// Live :free-model discovery (task Q): GET /v1/models at boot and every
+	// models.model_refresh_minutes for providers that opted in
+	// (providers[].discovery.refresh). A failed refresh keeps the existing
+	// list — groups are never cleared by a refresh error.
+	proxy.NewModelRefresher(srv).Start(ctx)
+	warnQueueTimeoutConfig(cfg)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		log.Printf("proxy: shutting down...")
+		// Save RPM slot state on shutdown (task T-7): the next boot must
+		// not re-hit a model whose quota this run just exhausted.
+		if err := srv.SlotLimiter().SaveState(slotsPath); err != nil {
+			log.Printf("saving slots state: %v", err)
+		}
 		// Save reliability stats on shutdown
 		if err := reliability.Save(reliabilityTracker, relPath); err != nil {
 			log.Printf("saving reliability: %v", err)
@@ -181,4 +208,38 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}()
 
 	return srv.Start(ctx)
+}
+
+// warnQueueTimeoutConfig checks the slot-queue knobs against the NEW
+// per-request deadline mechanism (task S): the write deadline starts at
+// proxy.max_request_seconds and refreshes on every successful write, so the
+// one missetup left is an explicit max_request_seconds BELOW the queue
+// floor (queue_wait + attempt ceiling) — queued waits would be cut by the
+// ceiling instead of ending in the clean 503/SSE error. The retired
+// proxy.write_timeout_seconds is reported as a no-op when set.
+func warnQueueTimeoutConfig(cfg *config.Config) {
+	if cfg.Fallback.QueueWaitSeconds <= 0 {
+		return
+	}
+	attempt := cfg.Fallback.ProviderTimeoutSeconds
+	if attempt <= 0 {
+		attempt = 120
+	}
+	floor := cfg.Fallback.QueueWaitSeconds + attempt
+	effective := cfg.Fallback.TotalDeadlineSeconds
+	if effective > 0 && effective < floor {
+		effective = floor
+		log.Printf("WARN slot queue: total_deadline_seconds raised to %d (queue_wait %d + attempt ceiling %d)", effective, cfg.Fallback.QueueWaitSeconds, attempt)
+	}
+	if cfg.Proxy.MaxRequestSeconds > 0 {
+		if floor > cfg.Proxy.MaxRequestSeconds {
+			log.Printf("WARN slot queue: proxy.max_request_seconds %d is BELOW the slot-queue floor %d (queue_wait %d + attempt ceiling %d) — queued requests get cut at the ceiling; raise max_request_seconds", cfg.Proxy.MaxRequestSeconds, floor, cfg.Fallback.QueueWaitSeconds, attempt)
+		}
+	} else {
+		auto := proxy.EffectiveMaxRequestSeconds(cfg)
+		log.Printf("slot queue: proxy.max_request_seconds unset — automatic write ceiling %ds (queue_wait + attempt + stream + write idle)", int(auto.Seconds()))
+	}
+	if cfg.Proxy.WriteTimeoutSeconds > 0 {
+		log.Printf("proxy.write_timeout_seconds is retired (no-op since task S) — the server-level WriteTimeout is disabled; use proxy.write_idle_timeout_seconds and proxy.max_request_seconds")
+	}
 }

@@ -3,8 +3,8 @@ package strategy
 import (
 	"fmt"
 
-	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/reliability"
 )
 
 // Registry maps strategy names to Strategy instances.

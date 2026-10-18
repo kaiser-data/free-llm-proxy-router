@@ -60,6 +60,17 @@ func (d *Dispatcher) ScanAll(ctx context.Context, providers []config.ProviderCon
 	return cat, nil
 }
 
+// ScanProvider runs ONE provider's scanner and returns its free entries.
+// The proxy's live :free-model refresh (task Q) refreshes per provider so
+// a single failed provider keeps its existing list instead of losing it.
+func (d *Dispatcher) ScanProvider(ctx context.Context, cfg config.ProviderConfig) ([]catalog.CatalogEntry, error) {
+	scanner := d.scannerFor(cfg.ID)
+	if scanner == nil {
+		return nil, fmt.Errorf("no scanner registered for provider %q", cfg.ID)
+	}
+	return scanner.ScanFreeModels(ctx, cfg)
+}
+
 // scannerFor returns the ProviderScanner for the given provider ID.
 func (d *Dispatcher) scannerFor(providerID string) ProviderScanner {
 	switch providerID {
@@ -73,6 +84,8 @@ func (d *Dispatcher) scannerFor(providerID string) ProviderScanner {
 		return &HuggingFaceScanner{Client: d.client}
 	case "github-models":
 		return &GitHubScanner{Client: d.client}
+	case "unorouter":
+		return &UnorouterScanner{Client: d.client}
 	default:
 		return &GenericScanner{Client: d.client}
 	}

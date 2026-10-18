@@ -4,11 +4,11 @@ import "time"
 
 // ModelInstance represents one provider's offering of a model.
 type ModelInstance struct {
-	ProviderID    string  `json:"provider_id"`
-	ModelID       string  `json:"model_id"`
-	ContextWindow int     `json:"context_window,omitempty"`
-	IsFree        bool    `json:"is_free"`
-	TierType      string  `json:"tier_type,omitempty"` // "free" | "credit"
+	ProviderID    string `json:"provider_id"`
+	ModelID       string `json:"model_id"`
+	ContextWindow int    `json:"context_window,omitempty"`
+	IsFree        bool   `json:"is_free"`
+	TierType      string `json:"tier_type,omitempty"` // "free" | "credit"
 }
 
 // EnrichedModel is a model with tier, parameter count, capabilities,

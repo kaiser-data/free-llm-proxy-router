@@ -1,0 +1,544 @@
+package proxy
+
+import (
+	"context"
+	"errors"
+	"log"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// FailureDecision is the three-way verdict for a failed upstream attempt —
+// the state machine the retry ladder follows:
+//
+//	RetrySame    retry the SAME provider/model (bounded by
+//	             fallback.retries_per_candidate and the max_attempts budget)
+//	FallbackNext this candidate is done — move to the next one
+//	FailFast     surface the failure and stop the walk; no retry and no
+//	             fallback can fix it
+type FailureDecision int
+
+const (
+	RetrySame FailureDecision = iota
+	FallbackNext
+	FailFast
+)
+
+func (d FailureDecision) String() string {
+	switch d {
+	case RetrySame:
+		return "retry_same"
+	case FallbackNext:
+		return "fallback"
+	case FailFast:
+		return "fail_fast"
+	default:
+		return "unknown"
+	}
+}
+
+// FailureInput carries everything the pure classifier needs to decide. It is
+// deliberately free of proxy state so tests can drive every row of the
+// decision table directly.
+type FailureInput struct {
+	// StatusCode is the upstream HTTP status; 0 when the attempt failed on
+	// the transport (no response at all).
+	StatusCode int
+	// Err is the transport error, if any.
+	Err error
+	// Body is the upstream error body (used for 400-subtype detection).
+	Body []byte
+	// RetriesDone counts same-candidate retries already spent on this
+	// candidate.
+	RetriesDone int
+	// MaxRetries is the clamped fallback.retries_per_candidate.
+	MaxRetries int
+	// RetryOn429 / RetryOn5xx mirror fallback.retry_on_429 / retry_on_5xx.
+	// RetryOn429 is RETIRED (no-op): a 429 never retries the same candidate
+	// — per-model quotas make that a pure sleep against a burned slot. The
+	// field stays so existing constructors keep compiling; it is ignored.
+	RetryOn429 bool
+	RetryOn5xx bool
+	// RetryAfter is the parsed Retry-After value of the failure response
+	// (429/503); 0 when absent.
+	RetryAfter time.Duration
+	// RemainingBudget is the time left before the request's total deadline
+	// fires; 0 means "no deadline / unknown" and never blocks a retry.
+	RemainingBudget time.Duration
+	// TimeoutsDone counts timeout failures already seen on this candidate —
+	// only the FIRST timeout earns a same-candidate retry; a second
+	// consecutive timeout says the provider is too slow for this request.
+	TimeoutsDone int
+	// Unknown-400 policy (round 8 step 2) — only the bad400Unknown branch
+	// of classifyBadRequest consults these; every other row of the
+	// decision table ignores them, and the zero value keeps the
+	// historical FailFast, so existing constructors and tests are
+	// unaffected.
+	// Policy is fallback.unknown_400_policy; any value other than
+	// "cross_model_confirm" means fail_fast (documented fail-closed —
+	// pkg/config has no normalize/validate pass, so typos can never
+	// silently loosen the walk).
+	Policy string
+	// ConfirmN is fallback.unknown_400_confirm_n: how many DISTINCT
+	// upstream models must answer the same unrecognized 400 before the
+	// payload is declared broken. ConfirmN <= 0 disables the policy.
+	ConfirmN int
+	// SeenDistinct counts the distinct upstream models (the current one
+	// included) that already unknown-400-ed this request's payload.
+	SeenDistinct int
+}
+
+// cooldownSetter is the minimal cooldown surface the auth-failure handler
+// needs; *ratelimit.GlobalTracker satisfies it.
+type cooldownSetter interface {
+	SetCooldown(providerID string, until time.Time)
+}
+
+// authCooldownDuration is how long a provider stays on cooldown after a
+// 401/403: the credential was rejected, so retrying sooner is pointless.
+const authCooldownDuration = 10 * time.Minute
+
+// noteAuthFailure applies the 401/403 contract shared by every route
+// (task H): the provider goes on cooldown and a warn-level log names the
+// candidate and the cause — making a dead or rotated key obvious in ops
+// output without grepping for status codes. The log line never contains the
+// API key or the upstream body: 401/403 bodies can echo credentials, so only
+// the status is reported.
+func noteAuthFailure(setter cooldownSetter, providerID, modelID string, status int) {
+	if setter != nil {
+		setter.SetCooldown(providerID, time.Now().Add(authCooldownDuration))
+	}
+	candidate := providerID
+	if modelID != "" {
+		candidate += "/" + modelID
+	}
+	log.Printf("WARN auth failure: candidate=%s status=%d cause=credential rejected by provider (check the API key) — provider on cooldown %v, falling back to next candidate", candidate, status, authCooldownDuration)
+}
+
+// ClassifyFailure decides what the retry ladder does with one failed
+// upstream attempt.
+//
+//	transport ECONNRESET/EOF/refused before any response byte → RetrySame
+//	  while retries remain, then FallbackNext
+//	timeout (per-attempt or client cap)                        → RetrySame on
+//	  the FIRST timeout (gated by retry_on_5xx), FallbackNext after
+//	context.Canceled (client gone)                             → FailFast
+//	408                                                        → RetrySame
+//	  while retries remain, then FallbackNext
+//	429                                                        → FallbackNext
+//	  immediately — the free quota is PER MODEL (e.g. UnoRouter:
+//	  1 request/minute/model), so the same-model retry would only sleep
+//	  against a burned quota. The model parks on its per-model cooldown +
+//	  slot next_available; other models of the provider stay walkable.
+//	  fallback.retry_on_429 is retired (no-op — see the 429 case).
+//	404                                                        → FallbackNext
+//	  (model gone for this provider — per-model availability, not a request
+//	  defect; the walk marks the entry for reverification)
+//	401/403                                                    → FallbackNext
+//	  (the provider is cooled down for 10 minutes; other candidates may
+//	  still serve the request)
+//	413                                                        → FailFast
+//	400 content-policy refusal                                 → FailFast
+//	400 context-length / unsupported-modality                  → FallbackNext
+//	400 upstream-adapter bad-input (kiwi+gemma, r13/14)        → FallbackNext
+//	  when detectable from the body, FailFast otherwise
+//	400 anything else (genuine payload defect)                 → FailFast
+//	5xx incl. 502/503/504/529                                  → RetrySame
+//	  (gated by retry_on_5xx) while retries remain, then FallbackNext
+//	other 4xx                                                  → FailFast
+func ClassifyFailure(in FailureInput) FailureDecision {
+	if in.Err != nil {
+		if errors.Is(in.Err, context.Canceled) {
+			return FailFast // client is gone — nothing left to answer
+		}
+		if errors.Is(in.Err, errContentFilter) {
+			// finish_reason=content_filter (round 11 task W): a
+			// deterministic refusal — no upstream can answer this payload,
+			// so no retry and no fallback. The synthesized 422 envelope
+			// (contentFilterResponse) is surfaced as-is.
+			return FailFast
+		}
+		if isTimeoutErr(in.Err) {
+			if in.TimeoutsDone == 0 && in.RetryOn5xx && in.RetriesDone < in.MaxRetries {
+				return RetrySame
+			}
+			return FallbackNext
+		}
+		// Connection reset / unexpected EOF / refused / TLS failure before
+		// any response byte: transient upstream-side failure.
+		if in.RetriesDone < in.MaxRetries {
+			return RetrySame
+		}
+		return FallbackNext
+	}
+	if in.StatusCode == 0 {
+		return FallbackNext // defensive: no status and no error — try onward
+	}
+	switch sc := in.StatusCode; {
+	case sc >= 200 && sc < 300:
+		// Not a failure; callers handle success before classifying.
+		return RetrySame
+	case sc == http.StatusTooManyRequests:
+		// 429 is a PER-MODEL quota signal (confirmed: the UnoRouter free
+		// quota is 1 request/minute PER MODEL, not per provider). The quota
+		// for this model is already burned for this window — a same-model
+		// retry can only sleep against it, and sleeping is forbidden: the
+		// walk must move to the NEXT candidate immediately. The model waits
+		// out its quota via the per-model cooldown + the slot limiter's
+		// next_available (fallback.go's 429 branch); the provider's other
+		// models stay walkable (separate slots).
+		//
+		// fallback.retry_on_429 is retired: the flag no longer changes this
+		// verdict (kept in config parsing for compatibility, documented as
+		// a no-op).
+		return FallbackNext
+	case sc == http.StatusRequestTimeout: // 408 — upstream request timeout
+		if in.RetriesDone < in.MaxRetries {
+			return RetrySame
+		}
+		return FallbackNext
+	case sc == http.StatusNotFound:
+		return FallbackNext // model gone for this provider — try the next one
+	case sc == http.StatusUnauthorized, sc == http.StatusForbidden:
+		return FallbackNext // auth failure — cooldown applies; others may serve
+	case sc == http.StatusRequestEntityTooLarge:
+		return FailFast // 413 — shrinking the payload is the client's job
+	case sc == http.StatusBadRequest:
+		return classifyBadRequest(in)
+	case sc >= http.StatusInternalServerError:
+		// 500, 502, 503, 504, 529 (Cloudflare overloaded), …
+		if in.RetryOn5xx && in.RetriesDone < in.MaxRetries {
+			if in.RetryAfter > 0 && in.RemainingBudget > 0 && in.RetryAfter >= in.RemainingBudget {
+				return FallbackNext
+			}
+			return RetrySame
+		}
+		return FallbackNext
+	default:
+		// 402, 405, 409, 422, … — the request itself was rejected.
+		return FailFast
+	}
+}
+
+// classifyBadRequest splits the 400 class by what the upstream said
+// (task I). The split lives ONLY here — every route shares it through
+// ClassifyFailure:
+//
+//	content-policy refusal          → FailFast (no provider may serve it)
+//	context-length overflow         → FallbackNext (a bigger window can)
+//	unsupported image/audio/video   → FallbackNext (a multimodal model can)
+//	upstream adapter bad-input      → FallbackNext (rounds 13+14: the
+//	  (any marker-pair               upstream adapters' templates reject
+//	  match)                          the transformed payload — model defect)
+//	anything else — a genuine       → FailFast by default (no candidate can
+//	  payload defect (malformed       fix the payload; an unknown 400
+//	  fields, bad types, unknown      never becomes a silent fallback) —
+//	  params)                         UNLESS the cross-model confirm
+//	                                  policy is active: then the first
+//	                                  (ConfirmN−1) distinct-model unknown
+//	                                  400s walk on so another model can
+//	                                  prove the payload works (round 8
+//	                                  step 2); the ConfirmN-th distinct
+//	                                  failure fail-fasts as before.
+//
+// Detection is a best-effort lowercase substring match of the upstream error
+// body against the marker tables below — the single source of truth, with
+// the per-provider message shapes documented on each table. Anything not
+// confidently recognized is bad400Unknown.
+func classifyBadRequest(in FailureInput) FailureDecision {
+	switch classifyBadRequestSubtype(in.Body) {
+	case bad400ContentPolicy:
+		return FailFast
+	case bad400ContextLength, bad400Tools, bad400ModelUnsupported, bad400UpstreamBadInput:
+		return FallbackNext
+	default:
+		if in.Policy == policyCrossModelConfirm && in.ConfirmN > 0 && in.SeenDistinct < in.ConfirmN {
+			return FallbackNext
+		}
+		return FailFast
+	}
+}
+
+// policyCrossModelConfirm is the only recognized unknown-400 policy
+// (fallback.unknown_400_policy, round 8 step 2). Any other value — empty,
+// "fail_fast", a typo — fails closed: the first unrecognized 400 surfaces
+// exactly as before.
+const policyCrossModelConfirm = "cross_model_confirm"
+
+// badRequestKind names the 400 subclass detected from the body (task I +
+// round 8 step 2).
+type badRequestKind int
+
+const (
+	// bad400Unknown: no marker matched — either the payload is broken
+	// (fail fast) or the upstream model is (cross-model confirm policy).
+	bad400Unknown badRequestKind = iota
+	bad400ContentPolicy
+	bad400ContextLength
+	bad400Tools
+	// bad400ModelUnsupported (round 12, seen live on UnoRouter): the pool
+	// advertises a model the upstream no longer serves — every request
+	// 400s naming the MODEL itself, not the payload.
+	bad400ModelUnsupported
+	// bad400UpstreamBadInput (rounds 13+14, seen live on the kiwi and
+	// gemma adapters): the upstream's own request adapter rejects the
+	// TRANSFORMED payload ("required properties at '/' are 'text'",
+	// "Request contains an invalid argument") — an OpenAI-valid payload
+	// dies on this model's template alone, so it is a deterministic model
+	// defect: walk + park, like model-unsupported.
+	bad400UpstreamBadInput
+)
+
+// classifyBadRequestSubtype is the pure body→subclass split shared by
+// classifyBadRequest and the walk-level unknown-400 bookkeeping
+// (failureDecisionWalk).
+func classifyBadRequestSubtype(body []byte) badRequestKind {
+	if containsAnyMarker(body, contentPolicyMarkers) {
+		return bad400ContentPolicy
+	}
+	if containsAnyMarker(body, contextLengthMarkers) || containsAnyMarker(body, modalityMarkers) {
+		return bad400ContextLength
+	}
+	if containsAnyMarker(body, toolsUnsupportedMarkers) {
+		return bad400Tools
+	}
+	if containsAnyMarker(body, modelUnsupportedMarkers) || looksModelUnsupported(body) {
+		return bad400ModelUnsupported
+	}
+	if looksUpstreamBadInput(body) {
+		return bad400UpstreamBadInput
+	}
+	return bad400Unknown
+}
+
+// contentPolicyMarkers detect upstream refusals driven by usage policy.
+var contentPolicyMarkers = []string{
+	"content_policy", "content policy",
+	"content_filter", "content filter", "content filtering",
+}
+
+// contextLengthMarkers detect "prompt too long for this model" errors — the
+// one 400 subclass another candidate can genuinely fix (a model with a
+// bigger context window). Matched as lowercase substrings of the error
+// body; shapes per provider family:
+//
+//	OpenAI-style text (OpenRouter passthrough, Groq, Cerebras, NVIDIA NIM,
+//	  vLLM): "This model's maximum context length is 8192 tokens. However,
+//	  you requested … Please reduce the length of the messages or
+//	  completion."
+//	OpenRouter code style: {"error":{"code":"context_length_exceeded",…}}
+//	Anthropic (raw metadata surfaced via OpenRouter): "prompt is too long:
+//	  5000 tokens > 4096 maximum"
+//	Gemini: "The input token count (50000) exceeds the maximum number of
+//	  tokens allowed (32768)."
+//	HuggingFace TGI: "Input validation error: `inputs` must have less than
+//	  4096 tokens. Given: 5000"
+var contextLengthMarkers = []string{
+	"context length", "context_length", "context window",
+	"maximum context", "max context",
+	"exceeds the maximum", // Gemini: …exceeds the maximum number of tokens allowed
+	"too many tokens", "too many input tokens", "tokens exceeded", "token limit",
+	"prompt is too long", "prompt too long", // Anthropic
+	"reduce the length", // OpenAI-style closing sentence
+	"input is too long", "input too long",
+	"must have less than", // HuggingFace TGI: `inputs` must have less than N tokens
+}
+
+// modalityMarkers detect "this model does not accept image/audio/video
+// input" — same reasoning as context length: another candidate may accept
+// the modality. Deliberately PHRASE-level: bare substrings like "images",
+// "vision", "modality", or "image_url" also appear inside model IDs
+// ("…-vision-instruct") and in malformed-field validation errors that no
+// candidate can fix, which would misroute genuine payload defects into the
+// fallback path (task I).
+var modalityMarkers = []string{
+	"image input", "audio input", "video input",
+	"does not support image", "does not support audio", "does not support video",
+	"multimodal", "unsupported modality",
+}
+
+// toolsUnsupportedMarkers detect "this model cannot answer with tools /
+// function calling" (round 9) — same reasoning as modality: another
+// candidate may support them, so the walk moves on. PHRASE-level on
+// purpose: bare "tools", "function", or "tool_choice" also appear inside
+// payload-defect validation errors ("tools must be an array", "invalid
+// type for tool_choice") that no candidate can fix, which would misroute
+// genuine payload defects into the fallback path. Shapes per provider
+// family:
+//
+//	OpenRouter: "Model qwen/qwen3 does not support tools."
+//	Groq: "The model `llama-3.1-8b-instant` does not support function calling."
+//	Gemini: "Function calling is not enabled for this model."
+//	vLLM/others: "tool use is not supported by this model"
+var toolsUnsupportedMarkers = []string{
+	"does not support tool",     // covers "…tools" / "tool use" / "tool calls"
+	"does not support function", // Groq: "…does not support function calling"
+	"not support tools",         // "do not support tools", "models not support tools"
+	"tools not supported", "tool use not supported", "tool use is not supported",
+	"tool_choice is not supported",
+	"function calling is not supported", "function calling not supported",
+	"function calling is not enabled", // Gemini
+}
+
+// modelUnsupportedMarkers detect "this model ID is not served by the
+// upstream at all" (round 12, seen live on UnoRouter during the 50-request
+// soak) — same reasoning as tools-unsupported: a deterministic MODEL defect
+// another candidate can fix. Matched as lowercase substrings; shapes:
+//
+//	UnoRouter: {"error":{"message":"Model ling-3.0-flash-sante:free not
+//	  supported (request id: …)","type":"invalid_request_error","code":
+//	  "invalid_model"}}
+//	OpenRouter/code style: {"error":{"code":"model_not_found",…}}
+//	Message style: "unknown model: x" / "The model `x` does not exist"
+var modelUnsupportedMarkers = []string{
+	"invalid_model", // UnoRouter: code "invalid_model"
+	"model_not_found",
+	"model not found",
+	"unknown model",
+	"no such model",
+	"not a valid model",
+	"model does not exist", "model doesn't exist",
+}
+
+// looksModelUnsupported is the second UnoRouter shape ("Model X:free not
+// supported") that single-substring markers can't span: the body must name
+// the model AND say "not supported". Only consulted AFTER the modality and
+// tools tables miss, so feature-support 400s keep their own classes.
+func looksModelUnsupported(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "model") && strings.Contains(lower, "not supported")
+}
+
+// upstreamBadInputMarkerPairs detect the upstream adapters' own
+// payload-validation failures. Each upstream model adapter carries its own
+// error template, so the signature is a SET of (phrase, family-suffix)
+// pairs; EVERY marker within a pair is required (conjunction) on purpose:
+//
+//	pair 1 (round 13, unorouter/aura-1:free, kiwi adapter):
+//	  {"error":{"message":"AiError: Bad input: Error: required properties at
+//	    '/' are 'text' (uuid) (request id: …)","type":"bad_response"}}
+//	  The adapter rebuilds the OpenAI payload into its own template and the
+//	  template demands a root "text" property.
+//
+//	pair 2 (round 14, unorouter/gemma-4-31b-it:free, gemma adapter):
+//	  {"error":{"message":"Request contains an invalid argument. (request
+//	    id: …)"}} — the Gemini-style adapter rejection. Live evidence: the
+//	  same model served identical "kiwi-auto" traffic at 19:17/19:18/19:21
+//	  and 400'd at 19:31 — upstream flakiness, not a client defect.
+//
+// "required properties" alone also appears in genuine client-payload
+// validation errors that no candidate can fix, and "request id:" alone is
+// just the adapter family's error suffix — only the conjunctions are the
+// adapter-template signatures.
+var upstreamBadInputMarkerPairs = [][2]string{
+	{"aierror: bad input", "required properties"},
+	{"contains an invalid argument", "request id:"},
+}
+
+// looksUpstreamBadInput reports an adapter-template 400: ANY pair matches
+// (and every marker within the pair must appear — the conjunction is the
+// narrow signature, see the table comment).
+func looksUpstreamBadInput(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	for _, pair := range upstreamBadInputMarkerPairs {
+		if strings.Contains(lower, pair[0]) && strings.Contains(lower, pair[1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyMarker(body []byte, markers []string) bool {
+	if len(body) == 0 {
+		return false
+	}
+	lower := strings.ToLower(string(body))
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTimeoutErr reports whether err is a timeout: either a net.Error with
+// Timeout()=true (the http.Client cap) or a context deadline (the
+// per-provider WithTimeout in callProvider). context.Canceled is NOT a
+// timeout and must be checked first by the caller.
+func isTimeoutErr(err error) bool {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// parseRetryAfter parses a Retry-After header value — delta-seconds or an
+// HTTP-date. Missing, invalid, or already elapsed values return 0.
+func parseRetryAfter(v string, now time.Time) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := t.Sub(now); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// remainingBudget reports the time left before ctx's deadline fires.
+// 0 means "no deadline / unknown" — never used to block a retry.
+func remainingBudget(ctx context.Context) time.Duration {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	if d := time.Until(dl); d > 0 {
+		return d
+	}
+	return 0
+}
+
+// finalFailureDecision classifies a candidate's LAST failed attempt at walk
+// level: same-candidate retries are already spent, so the verdict collapses
+// to "surface and stop" (FailFast) or "next candidate" (FallbackNext). The
+// retry flags stay false on purpose — they gate only the same-candidate
+// retry, never the walk.
+func finalFailureDecision(resp *Response, err error) FailureDecision {
+	return ClassifyFailure(finalFailureInput(resp, err))
+}
+
+// finalFailureInput builds the walk-level FailureInput for a candidate's
+// LAST failed attempt — shared by finalFailureDecision (legacy walk steps)
+// and the policy-aware failureDecisionWalk. RetriesDone=1 is ≥
+// MaxRetries(0): no RetrySame is possible.
+func finalFailureInput(resp *Response, err error) FailureInput {
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	return FailureInput{
+		StatusCode:  status,
+		Err:         err,
+		Body:        respBodyOf(resp),
+		RetriesDone: 1, // ≥ MaxRetries(0): no RetrySame possible
+	}
+}
+
+func respBodyOf(resp *Response) []byte {
+	if resp == nil {
+		return nil
+	}
+	return resp.Body
+}

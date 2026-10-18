@@ -10,7 +10,7 @@ import (
 
 // ReliabilityFile is the on-disk format for reliability.json.
 type ReliabilityFile struct {
-	SavedAt time.Time      `json:"saved_at"`
+	SavedAt time.Time       `json:"saved_at"`
 	Stats   []ProviderStats `json:"stats"`
 }
 

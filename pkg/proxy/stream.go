@@ -1,91 +1,206 @@
 package proxy
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
 )
 
-// StreamProxy transparently forwards a streaming (SSE) response from a provider
-// back to the client. It does not buffer the full response.
-type StreamProxy struct {
-	HTTPClient *http.Client
+// UpstreamStreamError is returned by StreamProxy.Forward when the upstream
+// answered a streaming request with a non-200 status. Nothing has been
+// written to the client at that point, so the caller can classify the
+// failure (see ClassifyFailure) and either walk to the next candidate or
+// surface the upstream response verbatim.
+type UpstreamStreamError struct {
+	ProviderID string
+	StatusCode int
+	Body       []byte
 }
 
-// Forward proxies a streaming chat-completions request to the given provider.
-// It streams SSE chunks from the provider directly to w.
-func (sp *StreamProxy) Forward(ctx context.Context, w http.ResponseWriter, cfg config.ProviderConfig, body map[string]any) error {
-	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
+func (e *UpstreamStreamError) Error() string {
+	return fmt.Sprintf("stream: provider %s status %d: %s", e.ProviderID, e.StatusCode, e.Body)
+}
 
+// StreamProxy transparently forwards a streaming (SSE) chat-completions
+// response from a provider back to the client with the pre-commit hold
+// (stream_chain.go): nothing reaches the client until a usable first event
+// arrives, so every pre-commit failure — transport error, non-200 status,
+// TTFT timeout, empty/error first event — is silent and the caller may
+// retry or fall back.
+type StreamProxy struct {
+	HTTPClient        *http.Client
+	FirstTokenTimeout time.Duration // 0 → 30s default
+	// FirstTokenTimeoutFor resolves the per-provider/model override of
+	// FirstTokenTimeout (fallback.first_token_timeouts, task J); nil keeps
+	// the global value everywhere.
+	FirstTokenTimeoutFor func(providerID, modelID string) time.Duration
+	IdleTimeout          time.Duration // 0 → 30s default
+	RequestID            string        // X-Request-Id on commit (may be empty)
+	// OnTTFT, when non-nil, receives the measured time-to-first-token of
+	// every attempt (round 10): commit points and TTFT-watchdog aborts
+	// (forced=true). Nil disables the latency tracking.
+	OnTTFT func(providerID, modelID string, ttft time.Duration, forced bool)
+	// CommitOnReasoning (round 11, task W): deliver a REASONING-ONLY
+	// stream (no content, no tool_calls) verbatim when true — the
+	// fallback.commit_on_reasoning knob, default false. Reasoning deltas
+	// always extend the pre-commit hold as a working signal.
+	CommitOnReasoning bool
+}
+
+// Forward proxies a streaming chat-completions request to the given
+// provider, delegating the hold/commit/pump machinery to streamUpstreamHeld
+// (stream_chain.go).
+//
+// Failure semantics for the caller (streamOneCandidate):
+//
+//   - returned error before any client byte → classify and retry/fall back:
+//     *UpstreamStreamError (non-200 status) or a transport error (connect
+//     failure, TTFT timeout, empty/error first event, EOF before the first
+//     token). A canceled context (client gone) also comes back as an error
+//     and terminates the walk.
+//   - nil → the stream was committed and finished; a mid-stream failure has
+//     already ended in the OpenAI-style SSE error event + data: [DONE] —
+//     terminal either way, the caller never starts another candidate after
+//     the commit.
+//
+// canonicalModel, when non-empty, is reported to the client in X-Used-Model
+// (the canonical alias name); the raw upstream identity always goes into
+// X-Free-Router-Upstream-Provider / X-Free-Router-Upstream-Model — the same
+// router-owned header contract the buffered routes apply.
+//
+// Cancellation: ctx is the downstream request context. When the client
+// disconnects the server cancels the context, the upstream request is
+// aborted and the pump stops — no inference keeps running for a gone client.
+func (sp *StreamProxy) Forward(ctx context.Context, w http.ResponseWriter, cfg config.ProviderConfig, body map[string]any, canonicalModel string) error {
 	// Ensure stream is set
 	body = copyMap(body)
 	body["stream"] = true
 
-	data, err := json.Marshal(body)
+	p := streamClientParams{
+		Client:               sp.HTTPClient,
+		FirstTokenTimeout:    sp.FirstTokenTimeout,
+		FirstTokenTimeoutFor: sp.FirstTokenTimeoutFor,
+		IdleTimeout:          sp.IdleTimeout,
+		RequestID:            sp.RequestID,
+		OnTTFT:               sp.OnTTFT,
+		CommitOnReasoning:    sp.CommitOnReasoning,
+		// Direct/alias contract: X-Used-Model is the caller-computed
+		// canonical identity (empty on the direct route — buffered-path
+		// parity), not a canonicalization of the chunk's model field.
+		CanonicalFor: func(_, _ string) string { return canonicalModel },
+	}
+	resp, committed, err := streamUpstreamHeld(ctx, w, cfg, body, p)
 	if err != nil {
-		return fmt.Errorf("encoding stream request: %w", err)
+		return err
 	}
+	if committed {
+		return nil
+	}
+	return &UpstreamStreamError{ProviderID: cfg.ID, StatusCode: resp.StatusCode, Body: resp.Body}
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("building stream request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
+// isSSEContentType reports whether a Content-Type header value marks an
+// event stream.
+func isSSEContentType(ct string) bool {
+	return strings.Contains(strings.ToLower(ct), "text/event-stream")
+}
 
-	h, v := cfg.ResolvedAuth()
-	if v != "" && v != "Bearer " {
-		req.Header.Set(h, v)
-	}
-	for k, val := range cfg.ExtraHeaders {
-		req.Header.Set(k, val)
-	}
-
-	resp, err := sp.HTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("stream request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("stream: provider %s status %d: %s", cfg.ID, resp.StatusCode, body)
-	}
-
-	// Set SSE headers on the client response
-	w.Header().Set("Content-Type", "text/event-stream")
+// setStreamContractHeaders applies the router-owned response headers shared
+// by the streaming routes: the documented upstream-identity contract plus
+// SSE transport headers. Upstream transport headers (Content-Length,
+// Content-Encoding, Transfer-Encoding) are deliberately not copied — the
+// proxy re-chunks the body to the client.
+func setStreamContractHeaders(w http.ResponseWriter, canonicalModel, providerID string, upstreamModel any) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-
-	flusher, canFlush := w.(http.Flusher)
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 64*1024)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
-			log.Printf("stream: client write error: %v", err)
-			return nil
-		}
-		// Flush after blank lines (SSE event boundaries) and data lines
-		if canFlush && (line == "" || strings.HasPrefix(line, "data:")) {
-			flusher.Flush()
-		}
+	if canonicalModel != "" {
+		w.Header().Set("X-Used-Model", canonicalModel)
 	}
-
-	if err := scanner.Err(); err != nil && err != io.EOF {
-		log.Printf("stream: scanner error: %v", err)
+	w.Header().Set("X-Free-Router-Upstream-Provider", providerID)
+	if m, ok := upstreamModel.(string); ok && m != "" {
+		w.Header().Set("X-Free-Router-Upstream-Model", m)
 	}
-	return nil
+}
+
+// streamOneCandidate runs one streaming attempt against provCfg and returns
+// whether the attempt is terminal:
+//
+//	true  — the client response was written (SSE pass-through, non-SSE JSON
+//	        passthrough, or a surfaced non-retryable upstream error), or the
+//	        client canceled and no response is possible.
+//	false — nothing was written downstream and the failure is retryable; the
+//	        caller may try the next candidate.
+//
+// Fallback rule: fallback is only possible BEFORE the first downstream byte.
+// Once the upstream answers 200 and the pump starts, Forward returns nil on
+// every mid-stream failure, so no candidate is ever started after the stream
+// began.
+//
+// Failure routing (round 14): the walk decision comes from the SAME
+// failureDecisionWalk the buffered routes use — chain carries the live
+// config (unknown-400 policy) and the shared demotion registry; seenUnknown400
+// is the per-request cross-model confirm state (the walk demotes recognized
+// model-defect 400s and first-sight unknown 400s into it itself).
+func (s *Server) streamOneCandidate(w http.ResponseWriter, r *http.Request, provCfg *config.ProviderConfig, body map[string]any, canonicalModel, clientModel, route, requestID string, chain *FallbackChain, seenUnknown400 map[string]bool) bool {
+	modelID, _ := body["model"].(string)
+	sp := &StreamProxy{
+		HTTPClient:           s.streamHTTPClient(),
+		FirstTokenTimeout:    s.firstTokenTimeout(),
+		FirstTokenTimeoutFor: s.firstTokenTimeoutFor,
+		IdleTimeout:          s.streamIdleTimeout(),
+		RequestID:            requestID,
+		OnTTFT:               s.recordTTFT,
+		CommitOnReasoning:    s.cfg.Load().Fallback.CommitOnReasoning,
+	}
+	err := sp.Forward(r.Context(), w, *provCfg, body, canonicalModel)
+	if err == nil {
+		log.Printf("%s: req=%s %s/%s streamed for %q", route, requestID, provCfg.ID, modelID, clientModel)
+		return true
+	}
+	var use *UpstreamStreamError
+	if errors.As(err, &use) {
+		resp := &Response{StatusCode: use.StatusCode, Header: http.Header{}, Body: use.Body}
+		resp.Header.Set("X-Free-Router-Upstream-Provider", provCfg.ID)
+		if modelID != "" {
+			resp.Header.Set("X-Free-Router-Upstream-Model", modelID)
+		}
+		// Round 14: full policy parity with the buffered walks. Round 13
+		// parked only the recognized model-defect subclasses here; an
+		// unrecognized 400 still surfaced without any walk (the p0 audit:
+		// "unknown 400 บน stream = FailFast เสมอ") — gemma-4-31b's
+		// "Request contains an invalid argument" adapter flake (live
+		// 2026-10-14 19:31) was the second stream-path victim. The walk
+		// decision is now failureDecisionWalk itself — the SAME function
+		// the ranked/direct/alias buffered walks run: recognized model
+		// defects demote + walk, unknown 400s walk under the cross-model
+		// confirm policy until N distinct models confirm the payload is
+		// broken.
+		if chain.failureDecisionWalk(resp, nil, provCfg.ID, modelID, seenUnknown400) == FailFast {
+			log.Printf("%s: req=%s %s/%s fail-fast status %d (stream) — surfacing to client, no further candidates", route, requestID, provCfg.ID, modelID, use.StatusCode)
+			s.writeUpstreamError(w, clientModel, resp)
+			return true
+		}
+		if use.StatusCode == http.StatusUnauthorized || use.StatusCode == http.StatusForbidden {
+			noteAuthFailure(s.rateLimiter, provCfg.ID, modelID, use.StatusCode)
+		}
+		log.Printf("%s: req=%s %s/%s status %d (stream) — trying next candidate", route, requestID, provCfg.ID, modelID, use.StatusCode)
+		return false
+	}
+	// Transport-level failure: timeout, connection failure, or a canceled
+	// context (client disconnect). Only the canceled case aborts the walk —
+	// the client is gone and no further attempt is meaningful (the same
+	// ClassifyFailure verdict every route applies, task H).
+	if finalFailureDecision(nil, err) == FailFast {
+		log.Printf("%s: req=%s %s/%s stream request canceled — aborting candidate walk", route, requestID, provCfg.ID, modelID)
+		return true
+	}
+	log.Printf("%s: req=%s %s/%s stream error: %v — trying next candidate", route, requestID, provCfg.ID, modelID, err)
+	return false
 }

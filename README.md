@@ -1,6 +1,6 @@
 # free-llm-proxy-router
 
-An OpenAI-compatible local proxy that routes LLM requests across free-tier providers — Groq, Gemini, OpenRouter, GitHub Models, Cerebras, Mistral, HuggingFace and more — with automatic fallback, rate-limit recovery, and 13 routing strategies.
+An OpenAI-compatible local proxy that routes LLM requests across free-tier providers — Groq, Gemini, OpenRouter, UnoRouter, GitHub Models, Cerebras, Mistral, HuggingFace and more — with automatic fallback, rate-limit recovery, and 13 routing strategies.
 
 ## What it does
 
@@ -120,7 +120,63 @@ All providers have recharging free limits — no one-time trial credits, no cred
 | **Mistral AI** | 2 RPM | per minute |
 | **Cohere** | 1000 req/month | monthly |
 | **NVIDIA NIM** | Free credits, 40 RPM, 200+ models | monthly |
+| **UnoRouter** | Free models only (IDs with `:free` suffix, e.g. `qwen/qwen3-235b-a22b:free`) | always free |
 | **Ollama** | Unlimited | local, no key |
+
+### UnoRouter (generic OpenAI-compatible upstream)
+
+UnoRouter is an independent OpenAI-compatible aggregator — **not** OpenRouter.
+It is supported as its own upstream provider through the standard
+OpenAI-compatible wire format:
+
+- **Base URL** — `https://api.unorouter.com/v1` (config key `unorouter`)
+- **Auth** — `Authorization: Bearer $UNOROUTER_API_KEY`; the key comes from
+  the environment (`api_key_env: UNOROUTER_API_KEY`), never hardcoded. The
+  literal form `api_key: "${UNOROUTER_API_KEY}"` also works — `${VAR}`
+  references in `api_key` are expanded from the environment at load time.
+- **Discovery** — `GET /v1/models` (OpenAI-compatible listing; availability
+  depends on the API key). Results are plain catalog entries, so they flow
+  through the same canonicalization, routing, health, and fallback machinery
+  as every other provider — no separate model registry.
+- **Free detection** — pricing metadata is preferred when the API exposes it
+  (zero prompt+completion / input+output prices, or an explicit free flag);
+  otherwise the documented `:free` ID suffix decides (`discovery.free_markers`,
+  default `[":free"]`). Models with neither signal are treated as paid and
+  excluded — not every UnoRouter model is free.
+- **Canonical aliases** — UnoRouter free IDs canonicalize like any other
+  provider (`qwen/qwen3-235b-a22b:free` and `qwen/qwen3-30b-a3b:free` join
+  the `qwen3` group), so clients request `qwen3` while the upstream receives
+  the exact raw `:free` ID. Multiple free candidates for one canonical name
+  walk the existing retryable-failure fallback chain.
+- **Slot limiter** — UnoRouter's free tier allows **1 request per minute per
+  model**. Set `rpm_limit: 1` on the provider (task L0): the proxy reserves
+  an atomic per-model slot before every upstream attempt — a reserved slot
+  is never released, so a failed attempt consumes the real quota exactly
+  once — and an upstream 429 adjusts the slot's next-available time. When
+  every eligible candidate lacks a free slot, the request waits FIFO in its
+  model group's queue instead of getting an instant 503 (see
+  `fallback.queue_wait_seconds` under Error classification). The per-model
+  slot state (window reservations + 429 blocks) persists to
+  `~/.free-llm-proxy-router/slots.json` on graceful shutdown and reloads on
+  boot, so a restart never re-hits a quota the previous run just exhausted.
+- **Live :free refresh** — with `discovery.refresh: true` the proxy calls
+  `GET /v1/models` for UnoRouter at boot and every
+  `models.model_refresh_minutes` (default 20): new `:free` ids join their
+  canonical groups automatically, ids that disappeared leave the groups for
+  new requests (in-flight requests finish), and a failed refresh keeps the
+  existing list — groups are never cleared by a refresh error.
+- **Standalone** — UnoRouter works as the only enabled upstream when just
+  `UNOROUTER_API_KEY` is configured.
+
+The provider list may also be spelled `upstreams:` in the config file
+(`providers:` wins when both keys are present):
+
+```yaml
+upstreams:
+  - id: unorouter
+    base_url: https://api.unorouter.com/v1
+    api_key: ${UNOROUTER_API_KEY}
+```
 
 ## Configuration
 
@@ -141,6 +197,257 @@ proxy:
 catalog:
   max_age_hours: 24      # Re-scan after this many hours
 ```
+
+### Canonical model aliases
+
+A canonical name (e.g. `qwen3`) can map to one or more raw upstream model IDs.
+A request for the canonical name tries the mapped upstreams in order and uses
+the first free success; the response body is returned verbatim and the
+`X-Used-Model` header reports the canonical name. Raw model IDs keep working
+unchanged. Canonical names are also advertised in `GET /v1/models` so clients
+can discover them like any other model.
+
+```yaml
+models:
+  aliases:
+    # OpenRouter's free Qwen3 235B first, Groq's qwen3-32b as backup.
+    qwen3:
+      - "qwen/qwen3-235b-a22b:free"
+      - "qwen3-32b"
+  canonicalization:
+    enabled: true    # Auto-derive groups from the catalog by model family
+    free_only: true  # Only map free upstream models
+  # What GET /v1/models advertises to clients:
+  #   expose_raw       — raw upstream IDs ("Qwen/Qwen3-32B", …)
+  #   expose_canonical — canonical alias names ("qwen3", …)
+  # Defaults: both true (backward compatible). Set expose_raw: false to
+  # advertise canonical names only. Raw IDs stay requestable and keep
+  # driving routing/debugging internally either way — these flags only
+  # filter the /v1/models listing. Disabling both is treated as a
+  # misconfiguration and both are listed.
+  expose_raw: true
+  expose_canonical: true
+```
+
+### Single-model public mode (`kiwi-auto`)
+
+For production deployments where clients should never care which free model
+serves them, `models.public_alias` turns ONE model name into the entire pool
+of discovered free chat-capable models:
+
+```yaml
+models:
+  public_alias: "kiwi-auto"   # one name for the whole free pool
+  expose_raw: false
+  expose_canonical: false
+```
+
+With this configuration `GET /v1/models` advertises exactly one entry —
+`kiwi-auto` — and every chat request naming `kiwi-auto` is routed to the best
+candidate among **all** currently discovered free chat-capable models
+(`qwen3:free`, `deepseek-v3:free`, `gemma3:free`, …). Semantics:
+
+- **Dynamic** — the pool is rebuilt from the live catalog on every catalog
+  refresh; models appearing or disappearing never require a client change.
+  The client always sends `model: "kiwi-auto"`.
+- **Free-only and chat-capable** — paid models never enter the pool, and
+  non-chat models (embedding/image/speech, by endpoint metadata or name
+  pattern) are excluded. Eligibility stays with the existing discovery
+  layer (`:free` markers / pricing metadata / endpoint types).
+- **Existing routing machinery** — pool candidates are ranked by the
+  configured strategy (`proxy.strategy`, default `adaptive`), and candidates
+  whose recorded context window cannot hold the request are demoted behind
+  fitting ones. Health, cooldown, 429 handling, retryable-5xx fallback, and
+  timeouts behave exactly as on the canonical-alias route.
+- **Streaming** — `model: "kiwi-auto", stream: true` uses the real SSE
+  pass-through: one upstream candidate is selected, its event stream is
+  pumped byte-for-byte, and fallback between candidates happens only before
+  the first downstream byte.
+- **Debug headers** — `X-Used-Model: kiwi-auto` while
+  `X-Free-Router-Upstream-Provider` / `X-Free-Router-Upstream-Model` reveal
+  the actual upstream that served the request.
+- **Raw compatibility** — raw IDs (`unorouter/qwen3:free`) and canonical
+  family names (`qwen3`) remain requestable for advanced/raw use but are not
+  advertised in `/v1/models` in this mode.
+- **Operator visibility** — `GET /debug/pool` reports the live candidate set
+  behind the alias (provider, model, context window) without exposing
+  credentials.
+
+### Error classification
+
+Failures during candidate routing run through one pure classifier
+(`pkg/proxy/classify.go`, `ClassifyFailure`) whose verdict is one of
+`retry_same`, `fallback`, or `fail_fast`:
+
+- **retry_same** — transient failures on the candidate that just failed:
+  connection reset / EOF before any response byte, `408`, first timeout, and
+  `5xx` (incl. `502`/`503`/`504`/`529`) while retries remain. The same
+  candidate is retried up to `fallback.retries_per_candidate` times
+  (default 1) with exponential backoff — a 5xx retry gated by
+  `fallback.retry_on_5xx`. Retries consume the `max_attempts` budget and
+  never sleep past the request's remaining total deadline. A `429` is NEVER
+  retried on the same candidate: it is a per-model quota signal (the free
+  quota is 1 request/minute per model) — the walk falls back to the next
+  model immediately with no sleep, the hit model parks on its per-model
+  cooldown + slot next_available, and `fallback.retry_on_429` is retired
+  (a no-op kept for config compatibility).
+- **fallback** — this candidate is done, try the next one: retries spent,
+  `429` whose `Retry-After` exceeds the request's remaining budget (never
+  sleep-wait), `404` (model gone for this provider — the entry is flagged
+  for reverification), and `401`/`403` (the provider's credentials are its
+  own problem; it goes on a 10-minute cooldown while other candidates may
+  still serve the request).
+- **fail_fast** — retrying or falling back cannot fix it: genuine `400`
+  payload defects, `413`, content-policy refusals, and a canceled client
+  context. The upstream response is returned to the client verbatim and no
+  further candidates are walked — a client error is never masked behind a
+  fake successful response. A `400` that clearly complains about context
+  length or unsupported modalities is classified `fallback` instead —
+  another candidate may support the request shape.
+
+Only when every candidate fails with a retryable/fallback-class failure does
+the request get a `503 Service Unavailable` with a `Retry-After` hint
+(seconds, `fallback.retry_after_seconds`, default 5) and an OpenAI-style
+JSON error body (`type: "server_error"`,
+`code: "all_candidates_exhausted"`) — never a masked 200 completion.
+
+Two walk-level budgets guard against runaway requests:
+
+- `fallback.max_fallback_hops` (default 8) — a hard ceiling on how many
+  distinct candidates one request may enter (each ranked entry plus the
+  OpenRouter steps count as one hop). Reaching it aborts the walk
+  immediately and the request gets the 503 exhaustion response. The default
+  sits above `max_attempts` (5), so it never binds unless configured
+  aggressively.
+- `fallback.total_deadline_seconds` (default 90, `0` disables) — the whole
+  request's wall-clock budget covering every attempt and every backoff
+  sleep: an attempt that outlives the budget is aborted mid-flight and the
+  request ends in the 503 exhaustion response instead of a write timeout
+  killing the connection. Keep it below `proxy.max_request_seconds` (the
+  per-request write ceiling, see task S) when serving long generations.
+- `fallback.queue_wait_seconds` (default 90, `0` disables queueing) and
+  `fallback.queue_max_waiters` (default 64) — the RPM slot queue (task L0).
+  When a provider opts into `rpm_limit` and every eligible candidate lacks a
+  free slot, the request waits FIFO in its model group's queue — woken by a
+  single timer at the earliest next-available time (no polling) — instead of
+  getting the exhaustion 503 instantly. Waiting ends in the exhaustion 503 +
+  Retry-After when the budget expires or the queue is full; a streaming
+  request whose header already went out (keepalive, task P) ends in the
+  structured SSE error event + `data: [DONE]` instead. While queueing is on,
+  `total_deadline_seconds` is raised automatically to at least
+  `queue_wait_seconds` + one attempt — the automatic
+  `proxy.max_request_seconds` ceiling already covers that. A client that
+  disconnects while waiting leaves the queue immediately, holding no slot
+  and no goroutine.
+- `proxy.write_idle_timeout_seconds` (default 30) and
+  `proxy.max_request_seconds` (default 0 = automatic queue_wait + attempt +
+  stream + idle computation) — the idle-based write deadlines (task S). The
+  http.Server-level WriteTimeout is DISABLED: every successful write or
+  flush moves the connection's write deadline to now + write-idle, capped by
+  the request's max-request ceiling. A stream that keeps flowing is never
+  cut by a fixed total timeout; a client that stops reading is cut after the
+  idle window. `proxy.write_timeout_seconds` is retired and ignored (the
+  boot logs a notice when it is set).
+
+### Streaming with the pre-commit hold
+
+`stream: true` requests are served as real SSE end-to-end on every route —
+including the strategy chain (which previously silently answered a buffered
+JSON completion to an SSE-expecting client). Every streaming attempt is
+held before anything reaches the client:
+
+- **Pre-commit** (no headers, no bytes written): transport errors, non-200
+  statuses, a silent upstream past `fallback.first_token_timeout_seconds`
+  (default 30), and first events that are empty keepalives, error objects,
+  or a bare `data: [DONE]` all fail the attempt silently — the retry ladder
+  (same-candidate retry, then the next candidate) runs exactly as on the
+  buffered path. The commit (SSE headers + first bytes + flush) happens
+  exactly once per request.
+- **First usable event**: the commit waits for the first event that actually
+  carries a usable signal — `content` (non-blank) or valid `tool_calls`. A
+  role-only, empty-delta, whitespace-only-content, or reasoning-only opening
+  chunk (several providers send one first; reasoning models stream
+  `reasoning_content` for a long time) is not treated as "empty/error": the
+  hold simply continues to the next event, and while reasoning flows the
+  TTFT watchdog re-arms (a thinking model is working, not silent — the hard
+  caps still bound the hold). A `finish_reason` that arrives without any
+  content is an ENDING empty stream and fails the attempt (fallback);
+  `finish_reason: content_filter` fail-fasts into the clear 422 envelope.
+  The whole stream is never buffered.
+- **The emptiness invariant** (round 11): a client never receives an empty
+  completion — not a blank body, not empty `choices`, not null/""/whitespace
+  content, not `finish_reason: stop/length` without content, not
+  `usage.completion_tokens: 0` without a usable signal, and not a
+  reasoning-only result (unless `fallback.commit_on_reasoning: true`
+  delivers it verbatim; default false). Every empty form fails the attempt —
+  the attempt is counted, the slot burned (scored `OutcomeWasted`, the
+  heaviest penalty), and the walk delivers the next candidate's REAL answer
+  or the clear 503 envelope.
+- **Loop until deadline** (round 11, task AA) — `fallback.loop_until_deadline`
+  (default false, requires a deadline): the request's total deadline
+  (`fallback.total_deadline_seconds`) becomes the walk's PRIMARY stop.
+  Candidates that failed transiently (empty, timeout, 5xx, 429, transport)
+  re-enter the loop when their per-request park TTL lapses — the park TTL is
+  `fallback.round_cooldown_ms` (default 1000), the same cooldown that
+  separates rounds so the loop never spins. `max_fallback_hops` stays as an
+  anti-corruption ceiling counted across ALL rounds. Fail-fast classes
+  (400 payload defects, content_filter, client gone) never loop. A
+  client disconnect stops the walk immediately. When the pool of free
+  upstreams cannot answer before the deadline the client gets the clear
+  503 + Retry-After envelope — never a fake message.
+- **Last-resort tier** (round 11, default off) —
+  `fallback.last_resort: {provider, model, when}`: once the request's
+  remaining time drops to/below `when` seconds and there is still no answer,
+  the walk tries `provider`/`model` once per round through the SAME
+  emptiness rules. Every engagement logs a WARN line and bumps the
+  `last_resort_uses` counter (visible at `GET /debug/latency`) so the cost
+  is observable. An unset provider skips the tier entirely.
+- **Per-provider/model TTFT overrides**: reasoning models routinely think
+  longer than the global hold. `fallback.first_token_timeouts` maps
+  `"provider"` or `"provider/model"` keys (upstream model id as routed) to
+  seconds — lookup falls back provider/model → provider → the global
+  `first_token_timeout_seconds`, e.g.
+  `first_token_timeouts: {"openrouter/deepseek/deepseek-r1:free": 120}`.
+- **Post-commit** the attempt is terminal: an upstream that dies
+  mid-stream, stalls past `fallback.stream_idle_timeout_seconds`
+  (default 30), or closes without `data: [DONE]` ends the stream with an
+  OpenAI-style SSE error event (`type: "server_error"`,
+  `code: "upstream_stream_interrupted"`) followed by `data: [DONE]` — never
+  a silently truncated completion and never text stitched together from
+  another provider.
+- **SSE keepalive while WAITING** (task P): a streaming request that ends
+  up waiting — in the slot queue (task L0) or in the pre-commit hold — gets
+  the 200 SSE header plus `": keepalive"` comment events once the wait
+  passes `fallback.stream_keepalive_after_seconds` (default 5, `0`
+  disables), repeated every `fallback.stream_keepalive_interval_seconds`
+  (default 15) and flushed each time. Comments are not data: silent
+  fallback across candidates still works after they start, and no
+  completion byte is committed until the first usable event. Two states
+  are tracked separately — "header sent" (the 200 went out; errors must
+  become SSE events from here on) and "data committed" (the first
+  completion byte; the walk is terminal). A failure after the header ends
+  in the structured OpenAI-style SSE error event + `data: [DONE]`.
+  Non-streaming requests never get the keepalive: they wait silently
+  within the deadline and answer with their real status code.
+- The whole streaming attempt stays capped by
+  `fallback.stream_timeout_seconds` (0 inherits
+  `provider_timeout_seconds`) — independent of
+  `proxy.write_timeout_seconds`.
+
+### Observability
+
+Every response carries `X-Request-Id` — the client's `X-Request-Id` header
+when usable (printable ASCII, ≤64 chars) or a freshly minted 16-hex id.
+Every upstream attempt is logged as one line:
+`attempt: req=<request id> candidate=<provider>/<model> n=<attempt no.> duration=<elapsed> cause="<status | transport error>" decision=<ok|retry_same|fallback|fail_fast>`
+— enough to reconstruct the whole ladder of a request from its logs. Causes
+carry failure summaries only, never API keys or prompt content.
+
+`404` during a candidate walk means "this provider does not serve this
+model" (catalog staleness), so other candidates are tried and the entry is
+flagged for reverification. A `404` caused by request semantics — a model
+that is neither in the catalog nor a canonical alias — is answered
+immediately by the proxy itself, before any upstream call.
 
 ## Catalog management
 
@@ -168,6 +475,25 @@ Keys are loaded from (first match wins):
 3. `~/.free-llm-proxy-router/.secrets`
 
 The `.env` file is gitignored. See `.env.example` for all supported keys.
+
+## Known limitations
+
+- **Streaming (`stream: true`) is proxied as real SSE on the raw-model and
+  canonical-alias routes.** When the upstream answers `text/event-stream`,
+  the proxy pumps the bytes through incrementally (per-read flush) — clients
+  see `data: {...}` chunks and `data: [DONE]` as the upstream produces them.
+  Fallback between candidates happens only before the first downstream byte;
+  once a stream has started, a mid-stream failure truncates the stream rather
+  than splicing in another candidate's generation. If the client disconnects,
+  the upstream request context is canceled so no inference keeps running.
+  Upstreams that answer `stream: true` with a plain JSON body (ignoring the
+  flag) are forwarded as `application/json` — JSON is never disguised as an
+  event stream. Remaining scope: requests that reach the strategy chain
+  (`model: "auto"` / strategy names, or an alias/raw route whose candidates
+  all failed) still return buffered JSON. Streaming attempts are bounded by
+  `fallback.stream_timeout_seconds` (default: inherit
+  `fallback.provider_timeout_seconds`, itself 120s) — configurable, since a
+  fixed 120s cap silently truncated long streams mid-generation.
 
 ## Development
 

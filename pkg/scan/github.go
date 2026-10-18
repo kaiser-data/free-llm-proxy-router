@@ -42,7 +42,7 @@ import (
 // githubModelSkip lists catalog IDs that are not available on the inference endpoint.
 // These are blocklisted at scan time so they never enter the catalog.
 var githubModelSkip = map[string]bool{
-	"ai21-labs/ai21-jamba-1.5-large":   true, // not found on inference endpoint
+	"ai21-labs/ai21-jamba-1.5-large":    true, // not found on inference endpoint
 	"meta/meta-llama-3.1-405b-instruct": true, // not found on inference endpoint
 }
 
@@ -67,8 +67,9 @@ type githubCatalogModel struct {
 
 // apiModelID derives the model name to pass in API calls from the catalog entry.
 // Rule: strip "publisher/" prefix from catalog id.
-//   "openai/gpt-4.1" → "gpt-4.1"
-//   "meta/llama-3.3-70b-instruct" → "llama-3.3-70b-instruct"
+//
+//	"openai/gpt-4.1" → "gpt-4.1"
+//	"meta/llama-3.3-70b-instruct" → "llama-3.3-70b-instruct"
 func apiModelID(catalogID string) string {
 	if idx := strings.IndexByte(catalogID, '/'); idx >= 0 {
 		return catalogID[idx+1:]

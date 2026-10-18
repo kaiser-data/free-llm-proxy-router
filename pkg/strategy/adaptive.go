@@ -16,7 +16,7 @@ import (
 // and includes them in a models[] array, letting OpenRouter handle intra-provider
 // fallback automatically.
 type StrategyAdaptive struct {
-	Tracker   *reliability.Tracker
+	Tracker *reliability.Tracker
 	// OpenRouterNativeFallbackN is how many free models to include in models[] array.
 	OpenRouterNativeFallbackN int
 }

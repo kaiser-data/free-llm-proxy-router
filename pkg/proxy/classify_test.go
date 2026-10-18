@@ -1,0 +1,374 @@
+package proxy
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"testing"
+	"time"
+)
+
+// TestClassifyFailure covers every row of the retry-ladder decision table:
+// the verdict must be exactly one of retry_same / fallback / fail_fast per
+// failure class (second P0 pass, task C).
+func TestClassifyFailure(t *testing.T) {
+	// Wrap real context errors the way *url.Error does in production —
+	// errors.Is/errors.As must see through them.
+	resetErr := fmt.Errorf("post \"http://up\": read tcp 1.2.3.4:5->5.4.3.2:443: read: connection reset by peer")
+	eofErr := fmt.Errorf("post \"http://up\": unexpected EOF")
+	refusedErr := fmt.Errorf("post \"http://up\": dial tcp 1.2.3.4:443: connect: connection refused")
+	canceledErr := fmt.Errorf("post \"http://up\": %w", context.Canceled)
+	timeoutErr := fmt.Errorf("post \"http://up\": %w", context.DeadlineExceeded)
+
+	tests := []struct {
+		name string
+		in   FailureInput
+		want FailureDecision
+	}{
+		// --- transport failures (no response at all) ---
+		{"connreset with retries left", FailureInput{Err: resetErr, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		{"connreset retries exhausted", FailureInput{Err: resetErr, RetriesDone: 1, MaxRetries: 1}, FallbackNext},
+		{"unexpected eof with retries left", FailureInput{Err: eofErr, RetriesDone: 0, MaxRetries: 2}, RetrySame},
+		{"connection refused with retries left", FailureInput{Err: refusedErr, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		{"client canceled", FailureInput{Err: canceledErr}, FailFast},
+		{"first timeout retries same", FailureInput{Err: timeoutErr, TimeoutsDone: 0, RetryOn5xx: true, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		{"second timeout falls back", FailureInput{Err: timeoutErr, TimeoutsDone: 1, RetryOn5xx: true, RetriesDone: 0, MaxRetries: 2}, FallbackNext},
+		{"timeout gated by retry_on_5xx", FailureInput{Err: timeoutErr, TimeoutsDone: 0, RetryOn5xx: false, RetriesDone: 0, MaxRetries: 1}, FallbackNext},
+		{"timeout with no retries left", FailureInput{Err: timeoutErr, TimeoutsDone: 0, RetryOn5xx: true, RetriesDone: 1, MaxRetries: 1}, FallbackNext},
+
+		// --- 429 (per-model quota — never retries the same candidate;
+		// retry_on_429 is retired and ignored) ---
+		{"429 flag on falls back (flag retired)", FailureInput{StatusCode: 429, RetryOn429: true, RetriesDone: 0, MaxRetries: 1}, FallbackNext},
+		{"429 flag off falls back", FailureInput{StatusCode: 429, RetryOn429: false}, FallbackNext},
+		{"429 retry-after longer than budget", FailureInput{StatusCode: 429, RetryOn429: true, RetryAfter: 60 * time.Second, RemainingBudget: 10 * time.Second}, FallbackNext},
+		{"429 retry-after fits budget (still no same retry)", FailureInput{StatusCode: 429, RetryOn429: true, RetryAfter: 2 * time.Second, RemainingBudget: 30 * time.Second, RetriesDone: 0, MaxRetries: 1}, FallbackNext},
+		{"429 retries exhausted", FailureInput{StatusCode: 429, RetryOn429: true, RetriesDone: 1, MaxRetries: 1}, FallbackNext},
+
+		// --- 408 ---
+		{"408 with retries left", FailureInput{StatusCode: http.StatusRequestTimeout, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		{"408 retries exhausted", FailureInput{StatusCode: http.StatusRequestTimeout, RetriesDone: 1, MaxRetries: 1}, FallbackNext},
+
+		// --- per-model / per-provider availability ---
+		{"404 model gone", FailureInput{StatusCode: 404}, FallbackNext},
+		{"401 auth", FailureInput{StatusCode: 401}, FallbackNext},
+		{"403 auth", FailureInput{StatusCode: 403}, FallbackNext},
+
+		// --- fail-fast payload classes ---
+		{"413 payload too large", FailureInput{StatusCode: 413}, FailFast},
+		{"400 genuine payload defect", FailureInput{StatusCode: 400, Body: []byte(`{"error":{"message":"messages is invalid"}}`)}, FailFast},
+		{"400 empty body", FailureInput{StatusCode: 400}, FailFast},
+		{"400 content policy refusal", FailureInput{StatusCode: 400, Body: []byte(`{"error":{"code":"content_policy_violation"}}`)}, FailFast},
+		{"400 context length exceeded", FailureInput{StatusCode: 400, Body: []byte(`{"error":{"message":"This model's maximum context length is 8192 tokens"}}`)}, FallbackNext},
+		{"400 unsupported modality", FailureInput{StatusCode: 400, Body: []byte(`{"error":{"message":"image input is not supported by this model"}}`)}, FallbackNext},
+		{"409 conflict", FailureInput{StatusCode: 409}, FailFast},
+		{"422 unprocessable", FailureInput{StatusCode: 422}, FailFast},
+
+		// --- 5xx ---
+		{"500 flag on retries same", FailureInput{StatusCode: 500, RetryOn5xx: true, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		{"502 retries same", FailureInput{StatusCode: 502, RetryOn5xx: true, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		{"503 retries same", FailureInput{StatusCode: 503, RetryOn5xx: true, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		{"504 retries same", FailureInput{StatusCode: 504, RetryOn5xx: true, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		{"529 overloaded retries same", FailureInput{StatusCode: 529, RetryOn5xx: true, RetriesDone: 0, MaxRetries: 1}, RetrySame},
+		{"500 retries exhausted", FailureInput{StatusCode: 500, RetryOn5xx: true, RetriesDone: 1, MaxRetries: 1}, FallbackNext},
+		{"500 flag off falls back", FailureInput{StatusCode: 500, RetryOn5xx: false}, FallbackNext},
+		{"503 retry-after longer than budget", FailureInput{StatusCode: 503, RetryOn5xx: true, RetryAfter: 120 * time.Second, RemainingBudget: 30 * time.Second}, FallbackNext},
+
+		// --- success is not a failure (defensive default) ---
+		{"200 handled by callers", FailureInput{StatusCode: 200}, RetrySame},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifyFailure(tt.in); got != tt.want {
+				t.Errorf("ClassifyFailure(%+v) = %s, want %s", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseRetryAfter covers the two Retry-After formats and the invalid
+// cases (all of which must yield 0, never a negative sleep).
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{"delta seconds", "30", 30 * time.Second},
+		{"delta seconds zero", "0", 0},
+		{"delta seconds negative", "-5", 0},
+		{"empty", "", 0},
+		{"garbage", "soon", 0},
+		{"http date future", now.Add(90 * time.Second).UTC().Format(http.TimeFormat), 90 * time.Second},
+		{"http date past", now.Add(-90 * time.Second).UTC().Format(http.TimeFormat), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseRetryAfter(tt.value, now)
+			if got != tt.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// fakeNetTimeout mimics the net.Error the http.Client produces when its
+// timeout cap fires (Timeout()=true, and Unwrap sees context.DeadlineExceeded
+// in production).
+type fakeNetTimeout struct{}
+
+func (fakeNetTimeout) Error() string   { return "read tcp: i/o timeout" }
+func (fakeNetTimeout) Timeout() bool   { return true }
+func (fakeNetTimeout) Temporary() bool { return true }
+
+// TestIsTimeoutErr: net.Error timeouts and context deadlines classify as
+// timeouts; plain transport errors and cancels do not.
+func TestIsTimeoutErr(t *testing.T) {
+	if !isTimeoutErr(fmt.Errorf("post: %w", fakeNetTimeout{})) {
+		t.Errorf("net.Error timeout should classify as timeout")
+	}
+	if !isTimeoutErr(fmt.Errorf("post: %w", context.DeadlineExceeded)) {
+		t.Errorf("context deadline should classify as timeout")
+	}
+	if isTimeoutErr(fmt.Errorf("post: %w", context.Canceled)) {
+		t.Errorf("canceled is not a timeout")
+	}
+	if isTimeoutErr(errors.New("connection reset by peer")) {
+		t.Errorf("reset is not a timeout")
+	}
+}
+
+// TestClassifyBadRequestPerProvider: the 400 subtype split (task I) against
+// the REAL error-body shapes of every provider family this repo routes to.
+// Context-length and modality complaints fall back (another candidate can
+// genuinely fix them); content-policy refusals and payload defects —
+// including the near-miss shapes that would misroute under bare-substring
+// markers — fail fast.
+func TestClassifyBadRequestPerProvider(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want FailureDecision
+	}{
+		// --- context length → FallbackNext ---
+		{"openai-style text (openrouter passthrough / vllm)",
+			`{"error":{"message":"This model's maximum context length is 8192 tokens. However, you requested 10006 tokens (6000 in the messages, 4006 in the completion). Please reduce the length of the messages or completion.","code":400}}`,
+			FallbackNext},
+		{"openrouter code style",
+			`{"error":{"code":"context_length_exceeded","message":"Context length exceeded for this model"}}`,
+			FallbackNext},
+		{"anthropic raw via openrouter",
+			`{"error":{"code":400,"message":"prompt is too long: 5000 tokens > 4096 maximum"}}`,
+			FallbackNext},
+		{"gemini",
+			`{"error":{"code":400,"message":"The input token count (50000) exceeds the maximum number of tokens allowed (32768).","status":"INVALID_ARGUMENT"}}`,
+			FallbackNext},
+		{"huggingface tgi",
+			`{"error":"Input validation error: inputs must have less than 4096 tokens. Given: 5000"}`,
+			FallbackNext},
+		{"groq",
+			`{"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 200000 tokens.","type":"invalid_request_error","code":"context_length_exceeded"}}`,
+			FallbackNext},
+		{"cerebras",
+			`{"error":{"message":"input is too long: 50000 tokens > 32768 maximum","type":"invalid_request_error"}}`,
+			FallbackNext},
+		{"nvidia nim",
+			`{"error":{"message":"This model's maximum context length is 4096 tokens. However, you requested 5000 tokens (4000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error"}}`,
+			FallbackNext},
+
+		// --- unsupported modality → FallbackNext ---
+		{"gemini image on text model",
+			`{"error":{"code":400,"message":"Image input is not supported by this model.","status":"INVALID_ARGUMENT"}}`,
+			FallbackNext},
+		{"openai image on text model",
+			`{"error":{"message":"This model does not support image input.","type":"invalid_request_error"}}`,
+			FallbackNext},
+		{"openrouter audio on text model",
+			`{"error":{"message":"This model does not support audio input","code":400}}`,
+			FallbackNext},
+
+		// --- content-policy refusal → FailFast ---
+		{"openai safety rejection",
+			`{"error":{"code":"content_filter","message":"Your request was rejected as a result of our safety system.","type":"invalid_request_error"}}`,
+			FailFast},
+		{"groq content filter",
+			`{"error":{"type":"request_error","code":"content_filter","message":"Content filter triggered: the prompt violates the usage policy"}}`,
+			FailFast},
+		{"openrouter content policy",
+			`{"error":{"message":"Provider returned error: the request violates the provider's content policy","code":400}}`,
+			FailFast},
+
+		// --- genuine payload defects → FailFast (unknown 400 never falls back) ---
+		{"groq schema error",
+			`{"error":{"message":"Invalid 'tools[0]': array items must be objects","type":"invalid_request_error"}}`,
+			FailFast},
+		{"openai unknown argument",
+			`{"error":{"message":"Unrecognized request argument supplied: temperature","type":"invalid_request_error"}}`,
+			FailFast},
+		{"gemini invalid value",
+			`{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"temperature_x\"","status":"INVALID_ARGUMENT"}}`,
+			FailFast},
+		{"huggingface malformed inputs",
+			`{"error":"Input validation error: ` + "`parameters`" + ` must be a JSON object"}`,
+			FailFast},
+		{"regression guard: model id contains vision",
+			`{"error":{"message":"Invalid parameter: messages for meta-llama/llama-3.2-11b-vision-instruct: 'content' must be a string","type":"invalid_request_error"}}`,
+			FailFast},
+		{"regression guard: malformed image_url field",
+			`{"error":{"message":"Invalid type for 'messages[0].content[0].image_url': expected an object with 'url'","type":"invalid_request_error"}}`,
+			FailFast},
+		{"empty body", "", FailFast},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyFailure(FailureInput{StatusCode: 400, Body: []byte(tt.body)})
+			if got != tt.want {
+				t.Errorf("ClassifyFailure(400, %q) = %s, want %s", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFinalFailureDecision: at walk level (retries spent) every retryable
+// class collapses to FallbackNext and only true client/context defects stay
+// FailFast.
+func TestFinalFailureDecision(t *testing.T) {
+	resp := &Response{StatusCode: 500, Body: []byte("boom")}
+	if got := finalFailureDecision(resp, nil); got != FallbackNext {
+		t.Errorf("final 500 = %s, want fallback", got)
+	}
+	if got := finalFailureDecision(nil, context.Canceled); got != FailFast {
+		t.Errorf("final canceled = %s, want fail_fast", got)
+	}
+	if got := finalFailureDecision(&Response{StatusCode: 400, Body: []byte("bad payload")}, nil); got != FailFast {
+		t.Errorf("final 400 = %s, want fail_fast", got)
+	}
+	if got := finalFailureDecision(&Response{StatusCode: 401}, nil); got != FallbackNext {
+		t.Errorf("final 401 = %s, want fallback", got)
+	}
+}
+
+// TestClassifyUnknown400Policy locks the round-8 cross-model confirm rows:
+// only the UNRECOGNIZED 400 branch consults FailureInput.Policy, and any
+// policy other than cross_model_confirm fails closed (historical FailFast).
+func TestClassifyUnknown400Policy(t *testing.T) {
+	unknown := []byte(`{"error":{"message":"mystery barrel exploded","code":400}}`)
+	policy := []byte(`{"error":{"code":"content_filter","message":"rejected by our safety system"}}`)
+	tests := []struct {
+		name string
+		in   FailureInput
+		want FailureDecision
+	}{
+		{"zero value keeps fail_fast", FailureInput{StatusCode: 400, Body: unknown}, FailFast},
+		{"empty policy keeps fail_fast", FailureInput{StatusCode: 400, Body: unknown, Policy: "", ConfirmN: 2, SeenDistinct: 0}, FailFast},
+		{"typo policy fails closed", FailureInput{StatusCode: 400, Body: unknown, Policy: "cross_model_cofirm", ConfirmN: 2, SeenDistinct: 0}, FailFast},
+		{"confirm 2 first distinct model walks on", FailureInput{StatusCode: 400, Body: unknown, Policy: policyCrossModelConfirm, ConfirmN: 2, SeenDistinct: 1}, FallbackNext},
+		{"confirm 2 second distinct model fail-fasts", FailureInput{StatusCode: 400, Body: unknown, Policy: policyCrossModelConfirm, ConfirmN: 2, SeenDistinct: 2}, FailFast},
+		{"confirm 3 keeps walking through two failures", FailureInput{StatusCode: 400, Body: unknown, Policy: policyCrossModelConfirm, ConfirmN: 3, SeenDistinct: 2}, FallbackNext},
+		{"confirm 0 disables the policy", FailureInput{StatusCode: 400, Body: unknown, Policy: policyCrossModelConfirm, ConfirmN: 0, SeenDistinct: 0}, FailFast},
+		{"policy never overrides content-policy refusal", FailureInput{StatusCode: 400, Body: policy, Policy: policyCrossModelConfirm, ConfirmN: 2, SeenDistinct: 1}, FailFast},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifyFailure(tt.in); got != tt.want {
+				t.Errorf("ClassifyFailure(%+v) = %s, want %s", tt.in, got, tt.want)
+			}
+		})
+	}
+	// Context-length stays FallbackNext under the policy — recognized
+	// subclasses keep their verdicts.
+	ctxBody := []byte(`{"error":{"message":"This model's maximum context length is 4096 tokens"}}`)
+	if got := ClassifyFailure(FailureInput{StatusCode: 400, Body: ctxBody, Policy: policyCrossModelConfirm, ConfirmN: 2, SeenDistinct: 9}); got != FallbackNext {
+		t.Errorf("context-length under policy = %s, want fallback", got)
+	}
+}
+
+// TestClassifyModelUnsupported400 locks the round-12 subclass: a 400 naming
+// the MODEL itself as unserved (live UnoRouter shape from the 50-request
+// soak) walks on — never the unknown-400 confirm dance, never a
+// payload-defect fail-fast, because the same payload succeeds elsewhere.
+func TestClassifyModelUnsupported400(t *testing.T) {
+	live := []byte(`{"error":{"message":"Model ling-3.0-flash-sante:free not supported (request id: 202610141752059615692358268d9d6WUP8wiNz)","type":"invalid_request_error","param":"","code":"invalid_model"}}`)
+	if got := classifyBadRequestSubtype(live); got != bad400ModelUnsupported {
+		t.Fatalf("live UnoRouter body = %d, want bad400ModelUnsupported", got)
+	}
+	// Zero policy: recognized subclasses keep FallbackNext — the payload
+	// was fine (the same prompt returned 200 from another model in the
+	// same soak).
+	if got := ClassifyFailure(FailureInput{StatusCode: 400, Body: live}); got != FallbackNext {
+		t.Fatalf("live body with zero policy = %s, want fallback", got)
+	}
+	// A payload defect that merely mentions the model stays unknown.
+	payload := []byte(`{"error":{"message":"Invalid 'model': empty string","type":"invalid_request_error"}}`)
+	if got := classifyBadRequestSubtype(payload); got != bad400Unknown {
+		t.Fatalf("payload defect = %d, want bad400Unknown", got)
+	}
+	// Feature-support shapes keep their own classes (checked first).
+	tools := []byte(`{"error":{"message":"Model qwen/qwen3 does not support tools."}}`)
+	if got := classifyBadRequestSubtype(tools); got != bad400Tools {
+		t.Fatalf("tools shape = %d, want bad400Tools", got)
+	}
+	modality := []byte(`{"error":{"message":"image input is not supported by this model"}}`)
+	if got := classifyBadRequestSubtype(modality); got != bad400ContextLength {
+		t.Fatalf("modality shape = %d, want bad400ContextLength", got)
+	}
+}
+
+// TestClassifyUpstreamBadInput400 locks the round-13 subclass: the kiwi
+// adapter's own template rejecting the TRANSFORMED payload (live body from
+// unorouter/aura-1:free during the round-13 smoke — an OpenAI-valid
+// streaming payload that answered 200 from other models in the same run)
+// walks on; genuinely-broken payload shapes stay unknown / fail-fast.
+func TestClassifyUpstreamBadInput400(t *testing.T) {
+	live := []byte(`{"error":{"message":"AiError: Bad input: Error: required properties at '/' are 'text' (246e70da-76ec-4b29-ac25-40d60403840c) (request id: 202610141904063091884728268d9d62Vv4fvLZ)","type":"bad_response"}}`)
+	if got := classifyBadRequestSubtype(live); got != bad400UpstreamBadInput {
+		t.Fatalf("live kiwi adapter body = %d, want bad400UpstreamBadInput", got)
+	}
+	// Zero policy: recognized subclasses keep FallbackNext — the payload
+	// was fine (the same prompt answered 200 from another model seconds
+	// earlier in the same smoke).
+	if got := ClassifyFailure(FailureInput{StatusCode: 400, Body: live}); got != FallbackNext {
+		t.Fatalf("live body with zero policy = %s, want fallback", got)
+	}
+	// Narrowness: "required properties" WITHOUT the adapter signature stays
+	// unknown — genuine client-payload validation must not walk.
+	onlyRequired := []byte(`{"error":{"message":"required properties are missing: messages"}}`)
+	if got := classifyBadRequestSubtype(onlyRequired); got != bad400Unknown {
+		t.Fatalf("required-properties-only = %d, want bad400Unknown", got)
+	}
+	// Narrowness: "AiError: Bad input" without the template signature stays
+	// unknown.
+	onlyAiError := []byte(`{"error":{"message":"AiError: Bad input: unknown field 'temperature_q'"}}`)
+	if got := classifyBadRequestSubtype(onlyAiError); got != bad400Unknown {
+		t.Fatalf("aierror-only = %d, want bad400Unknown", got)
+	}
+	// Content-policy keeps FailFast (checked before the new subclass).
+	policy := []byte(`{"error":{"message":"AiError: Bad input: required properties at '/' are 'text'","type":"content_filter"}}`)
+	if got := classifyBadRequestSubtype(policy); got != bad400ContentPolicy {
+		t.Fatalf("content-policy conj = %d, want bad400ContentPolicy", got)
+	}
+	// Round 14: the gemma adapter's Gemini-style rejection (live body from
+	// unorouter/gemma-4-31b-it:free 2026-10-14 19:31 — the same model
+	// served identical "kiwi-auto" traffic at 19:17/19:18/19:21).
+	gemma := []byte(`{"error":{"code":400,"message":"Request contains an invalid argument. (request id: 202610141931116721004928268d9d6nEfaGUos)","status":"INVALID_ARGUMENT"}}`)
+	if got := classifyBadRequestSubtype(gemma); got != bad400UpstreamBadInput {
+		t.Fatalf("live gemma adapter body = %d, want bad400UpstreamBadInput", got)
+	}
+	if got := ClassifyFailure(FailureInput{StatusCode: 400, Body: gemma}); got != FallbackNext {
+		t.Fatalf("gemma body with zero policy = %s, want fallback", got)
+	}
+	// Narrowness: the gemma phrase WITHOUT the adapter-family suffix stays
+	// unknown — a generic "invalid argument" must not walk.
+	gemmaNoSuffix := []byte(`{"error":{"message":"Request contains an invalid argument."}}`)
+	if got := classifyBadRequestSubtype(gemmaNoSuffix); got != bad400Unknown {
+		t.Fatalf("gemma phrase without request id = %d, want bad400Unknown", got)
+	}
+	// Narrowness: the "request id:" suffix alone (no adapter phrase) stays
+	// unknown.
+	onlySuffix := []byte(`{"error":{"message":"(request id: 202610141931116721004928268d9d6nEfaGUos)"}}`)
+	if got := classifyBadRequestSubtype(onlySuffix); got != bad400Unknown {
+		t.Fatalf("request-id-only = %d, want bad400Unknown", got)
+	}
+}

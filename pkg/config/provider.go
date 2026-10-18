@@ -1,6 +1,31 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+)
+
+// envRefPattern matches "${VAR}" references in literal config values so an
+// API key can be sourced from the environment without hardcoding it:
+//
+//	api_key: "${UNOROUTER_API_KEY}"
+var envRefPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// expandEnvRefs replaces every "${NAME}" in s with the value of NAME,
+// checking real environment variables first, then dotenv files (same lookup
+// order as api_key_env). Unknown references expand to the empty string: a
+// missing key yields "no auth header" rather than a literal "${NAME}"
+// being sent upstream.
+func expandEnvRefs(s string) string {
+	if s == "" || !strings.Contains(s, "${") {
+		return s
+	}
+	return envRefPattern.ReplaceAllStringFunc(s, func(ref string) string {
+		return lookupEnv(ref[2 : len(ref)-1])
+	})
+}
 
 // ProviderConfig holds all configuration for a single provider.
 type ProviderConfig struct {
@@ -36,6 +61,34 @@ type ProviderConfig struct {
 
 	// PreferredVolumeModel is used by StrategyVolume to pick highest-RPD model.
 	PreferredVolumeModel string `mapstructure:"preferred_volume_model"`
+
+	// RPM caps the per-model request rate the slot limiter (task L0) allows
+	// for this provider: at most RPM reservations per sliding minute per
+	// model id. 0 (default) disables slot limiting for the provider —
+	// requests enter upstreams ungated and rely on upstream 429 handling
+	// exactly as before. Set it to the provider's documented per-model
+	// per-minute quota (UnoRouter: 1).
+	//
+	// The quota this models is PER MODEL, not per provider: the same number
+	// applies to every model of the provider, but each model id counts its
+	// own slots (SlotLimiter keys by "provider/model").
+	RPM int `mapstructure:"rpm_limit"`
+
+	// RPMLimits overrides RPM for specific model IDs
+	// (providers[].rpm_limit_overrides: {"model-id": 3}). A key present in
+	// the map wins over RPM for that model; a value of 0 removes slot
+	// limiting for that model entirely. Models absent from the map keep the
+	// provider-wide RPM.
+	RPMLimits map[string]int `mapstructure:"rpm_limit_overrides"`
+}
+
+// RPMFor resolves the effective slot cap for one model of this provider:
+// the per-model override when present, the provider-wide RPM otherwise.
+func (p *ProviderConfig) RPMFor(modelID string) int {
+	if v, ok := p.RPMLimits[modelID]; ok {
+		return v
+	}
+	return p.RPM
 }
 
 // NativeFeatures lists provider-native request capabilities.
@@ -74,24 +127,34 @@ type DiscoveryConfig struct {
 
 	// HubAPIFilters is passed to the HF Hub API for model filtering.
 	HubAPIFilters string `mapstructure:"hub_api_filters"`
+
+	// Refresh opts the provider into the proxy's live :free-model refresh
+	// (task Q): the proxy calls GET /v1/models for it at boot and every
+	// models.model_refresh_minutes, keeping the canonical groups in sync
+	// with the provider's current free list. Off by default — a provider
+	// must explicitly opt in (the scanner call is an upstream request and
+	// some discovery sources are heavy).
+	Refresh bool `mapstructure:"refresh"`
 }
 
 // ResolvedAPIKey returns the bare API key (no header name, no prefix).
 // Useful for providers that pass the key as a query parameter (e.g. Gemini).
-// Lookup order: real env var → dotenv file → literal api_key field.
+// Lookup order: real env var → dotenv file → literal api_key field (with
+// "${VAR}" references expanded).
 func (p *ProviderConfig) ResolvedAPIKey() string {
 	if p.APIKeyEnv != "" {
 		if v := lookupEnv(p.APIKeyEnv); v != "" {
 			return v
 		}
 	}
-	return p.APIKey
+	return expandEnvRefs(p.APIKey)
 }
 
 // ResolvedAuth returns the effective API key and auth header values.
-// The env var takes precedence over the literal key.
+// The env var takes precedence over the literal key (whose "${VAR}"
+// references, if any, are expanded).
 func (p *ProviderConfig) ResolvedAuth() (header, value string) {
-	key := p.APIKey
+	key := expandEnvRefs(p.APIKey)
 	if p.APIKeyEnv != "" {
 		if v := lookupEnv(p.APIKeyEnv); v != "" {
 			key = v
@@ -117,8 +180,8 @@ func (p *ProviderConfig) ResolvedAuth() (header, value string) {
 // The proxy rotates to the next slot automatically on 429.
 func (p *ProviderConfig) AllKeys() []string {
 	var keys []string
-	if p.APIKey != "" {
-		keys = append(keys, p.APIKey)
+	if key := expandEnvRefs(p.APIKey); key != "" {
+		keys = append(keys, key)
 	}
 	if p.APIKeyEnv != "" {
 		if v := lookupEnv(p.APIKeyEnv); v != "" {
@@ -136,4 +199,21 @@ func (p *ProviderConfig) AllKeys() []string {
 // NumKeys returns the number of API keys available for this provider.
 func (p *ProviderConfig) NumKeys() int {
 	return len(p.AllKeys())
+}
+
+// ResolvedTimeout parses the per-provider timeout field ("30s", "90s", …)
+// into a Duration; 0 means unset or invalid, and the caller falls back to
+// the global fallback.provider_timeout_seconds. The field was previously
+// declared (and documented in configs/config.example.yaml) but never read —
+// wiring it here makes it a working per-upstream override of the buffered
+// attempt timeout.
+func (p *ProviderConfig) ResolvedTimeout() time.Duration {
+	if p.Timeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(p.Timeout)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }

@@ -10,8 +10,8 @@ import (
 // CorrelatedModel groups entries from different providers that share the same
 // underlying model family/weights.
 type CorrelatedModel struct {
-	Family   string
-	Entries  []catalog.CatalogEntry
+	Family  string
+	Entries []catalog.CatalogEntry
 }
 
 // Correlate groups catalog entries by their detected family.

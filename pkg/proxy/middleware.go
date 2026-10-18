@@ -23,14 +23,20 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 	})
 }
 
-// loggingMiddleware logs request method, path, status, and duration.
-// It does NOT log Authorization headers, request bodies, or API keys.
+// loggingMiddleware logs request method, path, request id, status, and
+// duration. It does NOT log Authorization headers, request bodies, or API
+// keys. The request id is read back from the X-Request-Id response header
+// (requestIDFor pins it) — "-" when the handler did not set one.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rw, r)
-		log.Printf("%s %s %d %v", r.Method, r.URL.Path, rw.status, time.Since(start))
+		reqID := rw.Header().Get("X-Request-Id")
+		if reqID == "" {
+			reqID = "-"
+		}
+		log.Printf("%s %s req=%s %d %v", r.Method, r.URL.Path, reqID, rw.status, time.Since(start))
 	})
 }
 
@@ -48,6 +54,10 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 }
 
 // responseWriter wraps http.ResponseWriter to capture the status code.
+// It forwards Flush so streaming handlers keep their per-read flushing
+// through the middleware stack — without this, the http.Flusher type
+// assertion in StreamProxy.Forward fails and SSE responses buffer until
+// the handler returns.
 type responseWriter struct {
 	http.ResponseWriter
 	status int
@@ -56,4 +66,10 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }

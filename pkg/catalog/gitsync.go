@@ -32,14 +32,14 @@ type GitSyncConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 
 	// Scanner settings — only set on the machine that runs free-llm-scan.
-	RepoPath      string `mapstructure:"repo_path"`        // path to local git repo; defaults to "."
-	CatalogInRepo string `mapstructure:"catalog_in_repo"`  // file path inside repo; defaults to "data/catalog.json"
-	AutoPush      bool   `mapstructure:"auto_push"`        // commit+push after every scan
-	ScanInterval  string `mapstructure:"scan_interval"`    // run a full scan every N hours; e.g. "168h"
+	RepoPath      string `mapstructure:"repo_path"`       // path to local git repo; defaults to "."
+	CatalogInRepo string `mapstructure:"catalog_in_repo"` // file path inside repo; defaults to "data/catalog.json"
+	AutoPush      bool   `mapstructure:"auto_push"`       // commit+push after every scan
+	ScanInterval  string `mapstructure:"scan_interval"`   // run a full scan every N hours; e.g. "168h"
 
 	// Replica settings — set on every other machine.
-	RemoteURL    string `mapstructure:"remote_url"`     // raw GitHub URL of data/catalog.json
-	PullInterval string `mapstructure:"pull_interval"`  // how often to fetch; e.g. "168h"
+	RemoteURL    string `mapstructure:"remote_url"`    // raw GitHub URL of data/catalog.json
+	PullInterval string `mapstructure:"pull_interval"` // how often to fetch; e.g. "168h"
 }
 
 // ScanFunc is the callback StartSync uses to trigger a full provider scan.

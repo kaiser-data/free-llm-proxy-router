@@ -11,8 +11,8 @@ import (
 // UsageSnapshot is a serialisable record of per-provider usage, stored in usage.json.
 // It survives proxy restarts.
 type UsageSnapshot struct {
-	SavedAt   time.Time                     `json:"saved_at"`
-	Providers map[string]ProviderUsage       `json:"providers"`
+	SavedAt   time.Time                `json:"saved_at"`
+	Providers map[string]ProviderUsage `json:"providers"`
 }
 
 // ProviderUsage holds the saved window counts for a provider.
