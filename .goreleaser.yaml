@@ -1,0 +1,50 @@
+version: 2
+
+project_name: free-llm-proxy-router
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: free-llm-proxy
+    main: ./cmd/proxy
+    binary: free-llm-proxy
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w"]
+  - id: free-llm-scan
+    main: ./cmd/scan
+    binary: free-llm-scan
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w"]
+  - id: free-llm-bench
+    main: ./cmd/bench
+    binary: free-llm-bench
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w"]
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - .env.example
+      - configs/*
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^chore:", "^test:"]
