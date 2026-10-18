@@ -100,3 +100,30 @@ func (c *Catalog) FreeEntries() []CatalogEntry {
 	}
 	return out
 }
+
+// KeepUnscanned copies entries from prev for every provider that has no
+// entries in c (scan failed, key missing, provider down). It returns the IDs
+// of the providers that were carried forward. Used by scheduled scans that may
+// not have keys for every provider, so a partial scan never wipes models.
+func (c *Catalog) KeepUnscanned(prev *Catalog) []string {
+	if prev == nil {
+		return nil
+	}
+	scanned := make(map[string]bool)
+	for _, e := range c.Entries {
+		scanned[e.ProviderID] = true
+	}
+	var kept []string
+	seen := make(map[string]bool)
+	for _, e := range prev.Entries {
+		if scanned[e.ProviderID] {
+			continue
+		}
+		if !seen[e.ProviderID] {
+			seen[e.ProviderID] = true
+			kept = append(kept, e.ProviderID)
+		}
+		c.Entries = append(c.Entries, e)
+	}
+	return kept
+}
