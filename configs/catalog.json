@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-10-26T07:17:53.503026119Z",
+  "updated_at": "2026-10-26T12:06:37.906664661Z",
   "entries": [
     {
       "provider_id": "openrouter",
@@ -8,8 +8,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 262144,
-      "discovered_at": "2026-10-26T07:17:53.717072942Z",
-      "last_verified_at": "2026-10-26T07:17:53.717073032Z"
+      "discovered_at": "2026-10-26T12:06:37.966890628Z",
+      "last_verified_at": "2026-10-26T12:06:37.966890738Z"
     },
     {
       "provider_id": "openrouter",
@@ -17,8 +17,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 262144,
-      "discovered_at": "2026-10-26T07:17:53.717073904Z",
-      "last_verified_at": "2026-10-26T07:17:53.717073964Z"
+      "discovered_at": "2026-10-26T12:06:37.96689152Z",
+      "last_verified_at": "2026-10-26T12:06:37.966891569Z"
     },
     {
       "provider_id": "openrouter",
@@ -26,8 +26,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 1000000,
-      "discovered_at": "2026-10-26T07:17:53.717074885Z",
-      "last_verified_at": "2026-10-26T07:17:53.717074936Z"
+      "discovered_at": "2026-10-26T12:06:37.966892Z",
+      "last_verified_at": "2026-10-26T12:06:37.966892061Z"
     },
     {
       "provider_id": "openrouter",
@@ -35,8 +35,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 512000,
-      "discovered_at": "2026-10-26T07:17:53.717076228Z",
-      "last_verified_at": "2026-10-26T07:17:53.717076278Z"
+      "discovered_at": "2026-10-26T12:06:37.966892922Z",
+      "last_verified_at": "2026-10-26T12:06:37.966892982Z"
     },
     {
       "provider_id": "openrouter",
@@ -44,8 +44,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 65536,
-      "discovered_at": "2026-10-26T07:17:53.717076408Z",
-      "last_verified_at": "2026-10-26T07:17:53.717076468Z"
+      "discovered_at": "2026-10-26T12:06:37.966893112Z",
+      "last_verified_at": "2026-10-26T12:06:37.966893163Z"
     },
     {
       "provider_id": "openrouter",
@@ -53,8 +53,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 1000000,
-      "discovered_at": "2026-10-26T07:17:53.71707705Z",
-      "last_verified_at": "2026-10-26T07:17:53.7170771Z"
+      "discovered_at": "2026-10-26T12:06:37.966894104Z",
+      "last_verified_at": "2026-10-26T12:06:37.966894154Z"
     },
     {
       "provider_id": "openrouter",
@@ -62,8 +62,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 1048576,
-      "discovered_at": "2026-10-26T07:17:53.71707721Z",
-      "last_verified_at": "2026-10-26T07:17:53.71707727Z"
+      "discovered_at": "2026-10-26T12:06:37.966894275Z",
+      "last_verified_at": "2026-10-26T12:06:37.966894325Z"
     },
     {
       "provider_id": "openrouter",
@@ -71,8 +71,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 262144,
-      "discovered_at": "2026-10-26T07:17:53.71707737Z",
-      "last_verified_at": "2026-10-26T07:17:53.71707743Z"
+      "discovered_at": "2026-10-26T12:06:37.966894435Z",
+      "last_verified_at": "2026-10-26T12:06:37.966894485Z"
     },
     {
       "provider_id": "openrouter",
@@ -80,8 +80,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 1048576,
-      "discovered_at": "2026-10-26T07:17:53.71707753Z",
-      "last_verified_at": "2026-10-26T07:17:53.717077591Z"
+      "discovered_at": "2026-10-26T12:06:37.966894595Z",
+      "last_verified_at": "2026-10-26T12:06:37.966894645Z"
     },
     {
       "provider_id": "openrouter",
@@ -89,8 +89,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 262144,
-      "discovered_at": "2026-10-26T07:17:53.717078372Z",
-      "last_verified_at": "2026-10-26T07:17:53.717078422Z"
+      "discovered_at": "2026-10-26T12:06:37.966895176Z",
+      "last_verified_at": "2026-10-26T12:06:37.966895236Z"
     },
     {
       "provider_id": "openrouter",
@@ -98,8 +98,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 256000,
-      "discovered_at": "2026-10-26T07:17:53.717078532Z",
-      "last_verified_at": "2026-10-26T07:17:53.717078592Z"
+      "discovered_at": "2026-10-26T12:06:37.966899655Z",
+      "last_verified_at": "2026-10-26T12:06:37.966899705Z"
     },
     {
       "provider_id": "openrouter",
@@ -107,8 +107,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 128000,
-      "discovered_at": "2026-10-26T07:17:53.717078703Z",
-      "last_verified_at": "2026-10-26T07:17:53.717078763Z"
+      "discovered_at": "2026-10-26T12:06:37.966899825Z",
+      "last_verified_at": "2026-10-26T12:06:37.966899885Z"
     },
     {
       "provider_id": "openrouter",
@@ -116,8 +116,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 1000000,
-      "discovered_at": "2026-10-26T07:17:53.717078843Z",
-      "last_verified_at": "2026-10-26T07:17:53.717078893Z"
+      "discovered_at": "2026-10-26T12:06:37.966899965Z",
+      "last_verified_at": "2026-10-26T12:06:37.966900025Z"
     },
     {
       "provider_id": "openrouter",
@@ -125,8 +125,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 256000,
-      "discovered_at": "2026-10-26T07:17:53.717079264Z",
-      "last_verified_at": "2026-10-26T07:17:53.717079314Z"
+      "discovered_at": "2026-10-26T12:06:37.966900256Z",
+      "last_verified_at": "2026-10-26T12:06:37.966900316Z"
     },
     {
       "provider_id": "openrouter",
@@ -134,8 +134,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 262144,
-      "discovered_at": "2026-10-26T07:17:53.717079654Z",
-      "last_verified_at": "2026-10-26T07:17:53.717079715Z"
+      "discovered_at": "2026-10-26T12:06:37.966900546Z",
+      "last_verified_at": "2026-10-26T12:06:37.966900597Z"
     },
     {
       "provider_id": "openrouter",
@@ -143,8 +143,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 262144,
-      "discovered_at": "2026-10-26T07:17:53.717079805Z",
-      "last_verified_at": "2026-10-26T07:17:53.717079855Z"
+      "discovered_at": "2026-10-26T12:06:37.966900677Z",
+      "last_verified_at": "2026-10-26T12:06:37.966900737Z"
     },
     {
       "provider_id": "openrouter",
@@ -152,8 +152,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 1048576,
-      "discovered_at": "2026-10-26T07:17:53.717080356Z",
-      "last_verified_at": "2026-10-26T07:17:53.717080406Z"
+      "discovered_at": "2026-10-26T12:06:37.966900827Z",
+      "last_verified_at": "2026-10-26T12:06:37.966900887Z"
     },
     {
       "provider_id": "openrouter",
@@ -161,8 +161,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 1048576,
-      "discovered_at": "2026-10-26T07:17:53.717080506Z",
-      "last_verified_at": "2026-10-26T07:17:53.717080566Z"
+      "discovered_at": "2026-10-26T12:06:37.966900967Z",
+      "last_verified_at": "2026-10-26T12:06:37.966901027Z"
     },
     {
       "provider_id": "openrouter",
@@ -170,8 +170,8 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 262144,
-      "discovered_at": "2026-10-26T07:17:53.717081508Z",
-      "last_verified_at": "2026-10-26T07:17:53.717081568Z"
+      "discovered_at": "2026-10-26T12:06:37.966901468Z",
+      "last_verified_at": "2026-10-26T12:06:37.966901519Z"
     },
     {
       "provider_id": "openrouter",
@@ -179,616 +179,616 @@
       "is_free": true,
       "tier_type": "free",
       "context_window": 200000,
-      "discovered_at": "2026-10-26T07:17:53.717081819Z",
-      "last_verified_at": "2026-10-26T07:17:53.717081869Z"
+      "discovered_at": "2026-10-26T12:06:37.966901759Z",
+      "last_verified_at": "2026-10-26T12:06:37.966901819Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "01-ai/yi-large",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.57509847Z",
-      "last_verified_at": "2026-10-26T07:17:54.57509854Z"
+      "discovered_at": "2026-10-26T12:06:38.720451376Z",
+      "last_verified_at": "2026-10-26T12:06:38.720451456Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "adept/fuyu-8b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575099221Z",
-      "last_verified_at": "2026-10-26T07:17:54.575099281Z"
+      "discovered_at": "2026-10-26T12:06:38.720452037Z",
+      "last_verified_at": "2026-10-26T12:06:38.720452097Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "ai21labs/jamba-1.5-large-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575100554Z",
-      "last_verified_at": "2026-10-26T07:17:54.575100614Z"
+      "discovered_at": "2026-10-26T12:06:38.720453009Z",
+      "last_verified_at": "2026-10-26T12:06:38.720453059Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "aisingapore/sea-lion-7b-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575101576Z",
-      "last_verified_at": "2026-10-26T07:17:54.575101636Z"
+      "discovered_at": "2026-10-26T12:06:38.72045364Z",
+      "last_verified_at": "2026-10-26T12:06:38.7204537Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "bigcode/starcoder2-15b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575101896Z",
-      "last_verified_at": "2026-10-26T07:17:54.575101956Z"
+      "discovered_at": "2026-10-26T12:06:38.720453951Z",
+      "last_verified_at": "2026-10-26T12:06:38.720454001Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "deepseek-ai/deepseek-coder-6.7b-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575102748Z",
-      "last_verified_at": "2026-10-26T07:17:54.575102808Z"
+      "discovered_at": "2026-10-26T12:06:38.720454842Z",
+      "last_verified_at": "2026-10-26T12:06:38.720454902Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "deepseek-ai/deepseek-v4.1-flash",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575103028Z",
-      "last_verified_at": "2026-10-26T07:17:54.575103088Z"
+      "discovered_at": "2026-10-26T12:06:38.720455143Z",
+      "last_verified_at": "2026-10-26T12:06:38.720455203Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "google/codegemma-1.1-7b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575103309Z",
-      "last_verified_at": "2026-10-26T07:17:54.575103369Z"
+      "discovered_at": "2026-10-26T12:06:38.720455403Z",
+      "last_verified_at": "2026-10-26T12:06:38.720455463Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "google/codegemma-7b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575104281Z",
-      "last_verified_at": "2026-10-26T07:17:54.575104331Z"
+      "discovered_at": "2026-10-26T12:06:38.720456285Z",
+      "last_verified_at": "2026-10-26T12:06:38.720456335Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "google/deplot",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575104581Z",
-      "last_verified_at": "2026-10-26T07:17:54.575104641Z"
+      "discovered_at": "2026-10-26T12:06:38.720456616Z",
+      "last_verified_at": "2026-10-26T12:06:38.720456676Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "google/diffusiongemma-26b-a4b-it",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575104922Z",
-      "last_verified_at": "2026-10-26T07:17:54.575104982Z"
+      "discovered_at": "2026-10-26T12:06:38.720456946Z",
+      "last_verified_at": "2026-10-26T12:06:38.720457006Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "google/gemma-2b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575105272Z",
-      "last_verified_at": "2026-10-26T07:17:54.575105333Z"
+      "discovered_at": "2026-10-26T12:06:38.720457287Z",
+      "last_verified_at": "2026-10-26T12:06:38.720457347Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "google/gemma-3-12b-it",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575105563Z",
-      "last_verified_at": "2026-10-26T07:17:54.575105613Z"
+      "discovered_at": "2026-10-26T12:06:38.720457527Z",
+      "last_verified_at": "2026-10-26T12:06:38.720457587Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "google/gemma-3-4b-it",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575105813Z",
-      "last_verified_at": "2026-10-26T07:17:54.575105864Z"
+      "discovered_at": "2026-10-26T12:06:38.720457768Z",
+      "last_verified_at": "2026-10-26T12:06:38.720457828Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "google/gemma-4-31b-it",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575106074Z",
-      "last_verified_at": "2026-10-26T07:17:54.575106124Z"
+      "discovered_at": "2026-10-26T12:06:38.720457988Z",
+      "last_verified_at": "2026-10-26T12:06:38.720458038Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "google/recurrentgemma-2b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575106305Z",
-      "last_verified_at": "2026-10-26T07:17:54.575106365Z"
+      "discovered_at": "2026-10-26T12:06:38.720458249Z",
+      "last_verified_at": "2026-10-26T12:06:38.720458309Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "ibm/granite-3.0-3b-a800m-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575106625Z",
-      "last_verified_at": "2026-10-26T07:17:54.575106675Z"
+      "discovered_at": "2026-10-26T12:06:38.720458549Z",
+      "last_verified_at": "2026-10-26T12:06:38.720458609Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "ibm/granite-3.0-8b-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575107998Z",
-      "last_verified_at": "2026-10-26T07:17:54.575108058Z"
+      "discovered_at": "2026-10-26T12:06:38.720459501Z",
+      "last_verified_at": "2026-10-26T12:06:38.720459551Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "ibm/granite-34b-code-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575108268Z",
-      "last_verified_at": "2026-10-26T07:17:54.575108328Z"
+      "discovered_at": "2026-10-26T12:06:38.720459752Z",
+      "last_verified_at": "2026-10-26T12:06:38.720459812Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "ibm/granite-8b-code-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575108529Z",
-      "last_verified_at": "2026-10-26T07:17:54.575108589Z"
+      "discovered_at": "2026-10-26T12:06:38.720460002Z",
+      "last_verified_at": "2026-10-26T12:06:38.720460052Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "meta/codellama-70b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575108789Z",
-      "last_verified_at": "2026-10-26T07:17:54.575108839Z"
+      "discovered_at": "2026-10-26T12:06:38.720460263Z",
+      "last_verified_at": "2026-10-26T12:06:38.720460313Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "meta/llama-3.2-11b-vision-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.57510911Z",
-      "last_verified_at": "2026-10-26T07:17:54.57510917Z"
+      "discovered_at": "2026-10-26T12:06:38.720460553Z",
+      "last_verified_at": "2026-10-26T12:06:38.720460603Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "meta/llama-3.2-90b-vision-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.57510936Z",
-      "last_verified_at": "2026-10-26T07:17:54.57510941Z"
+      "discovered_at": "2026-10-26T12:06:38.720460813Z",
+      "last_verified_at": "2026-10-26T12:06:38.720460874Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "meta/llama-guard-4-12b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575109611Z",
-      "last_verified_at": "2026-10-26T07:17:54.575109671Z"
+      "discovered_at": "2026-10-26T12:06:38.720461054Z",
+      "last_verified_at": "2026-10-26T12:06:38.720461104Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "meta/llama2-70b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575109881Z",
-      "last_verified_at": "2026-10-26T07:17:54.575109931Z"
+      "discovered_at": "2026-10-26T12:06:38.720461305Z",
+      "last_verified_at": "2026-10-26T12:06:38.720461355Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "meta/muse-glimmer-30b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575110122Z",
-      "last_verified_at": "2026-10-26T07:17:54.575110182Z"
+      "discovered_at": "2026-10-26T12:06:38.720461525Z",
+      "last_verified_at": "2026-10-26T12:06:38.720461585Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "microsoft/kosmos-2",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575110402Z",
-      "last_verified_at": "2026-10-26T07:17:54.575110452Z"
+      "discovered_at": "2026-10-26T12:06:38.720461786Z",
+      "last_verified_at": "2026-10-26T12:06:38.720461835Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "microsoft/phi-3-vision-128k-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575110743Z",
-      "last_verified_at": "2026-10-26T07:17:54.575110793Z"
+      "discovered_at": "2026-10-26T12:06:38.720462146Z",
+      "last_verified_at": "2026-10-26T12:06:38.720462206Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "microsoft/phi-3.5-moe-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575111033Z",
-      "last_verified_at": "2026-10-26T07:17:54.575111094Z"
+      "discovered_at": "2026-10-26T12:06:38.720462437Z",
+      "last_verified_at": "2026-10-26T12:06:38.720462487Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "minimaxai/minimax-m3.1-flash",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575111324Z",
-      "last_verified_at": "2026-10-26T07:17:54.575111374Z"
+      "discovered_at": "2026-10-26T12:06:38.720462707Z",
+      "last_verified_at": "2026-10-26T12:06:38.720462767Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "mistralai/codestral-22b-instruct-v0.1",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575111655Z",
-      "last_verified_at": "2026-10-26T07:17:54.575111705Z"
+      "discovered_at": "2026-10-26T12:06:38.720463028Z",
+      "last_verified_at": "2026-10-26T12:06:38.720463088Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "mistralai/mistral-7b-instruct-v0.3",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575111945Z",
-      "last_verified_at": "2026-10-26T07:17:54.575111995Z"
+      "discovered_at": "2026-10-26T12:06:38.720463328Z",
+      "last_verified_at": "2026-10-26T12:06:38.720463378Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "mistralai/mistral-large",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575112176Z",
-      "last_verified_at": "2026-10-26T07:17:54.575112236Z"
+      "discovered_at": "2026-10-26T12:06:38.720463559Z",
+      "last_verified_at": "2026-10-26T12:06:38.720463619Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "mistralai/mistral-large-2-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575112476Z",
-      "last_verified_at": "2026-10-26T07:17:54.575112526Z"
+      "discovered_at": "2026-10-26T12:06:38.720463839Z",
+      "last_verified_at": "2026-10-26T12:06:38.720463899Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "mistralai/mixtral-8x22b-v0.1",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575112747Z",
-      "last_verified_at": "2026-10-26T07:17:54.575112797Z"
+      "discovered_at": "2026-10-26T12:06:38.72046411Z",
+      "last_verified_at": "2026-10-26T12:06:38.72046417Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "moonshotai/kimi-k2.6",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575112977Z",
-      "last_verified_at": "2026-10-26T07:17:54.575113037Z"
+      "discovered_at": "2026-10-26T12:06:38.72046435Z",
+      "last_verified_at": "2026-10-26T12:06:38.7204644Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nv-mistralai/mistral-nemo-12b-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575113247Z",
-      "last_verified_at": "2026-10-26T07:17:54.575113308Z"
+      "discovered_at": "2026-10-26T12:06:38.720464621Z",
+      "last_verified_at": "2026-10-26T12:06:38.720464681Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/ai-synthetic-video-detector",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575115402Z",
-      "last_verified_at": "2026-10-26T07:17:54.575115462Z"
+      "discovered_at": "2026-10-26T12:06:38.720466314Z",
+      "last_verified_at": "2026-10-26T12:06:38.720466374Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/cosmos-reason2-8b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575115652Z",
-      "last_verified_at": "2026-10-26T07:17:54.575115712Z"
+      "discovered_at": "2026-10-26T12:06:38.720466564Z",
+      "last_verified_at": "2026-10-26T12:06:38.720466624Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/ising-calibration-1.5-31b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575116143Z",
-      "last_verified_at": "2026-10-26T07:17:54.575116193Z"
+      "discovered_at": "2026-10-26T12:06:38.720467045Z",
+      "last_verified_at": "2026-10-26T12:06:38.720467095Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/llama-3.1-nemoguard-8b-content-safety",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575116564Z",
-      "last_verified_at": "2026-10-26T07:17:54.575116614Z"
+      "discovered_at": "2026-10-26T12:06:38.720467446Z",
+      "last_verified_at": "2026-10-26T12:06:38.720467496Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/llama-3.1-nemoguard-8b-topic-control",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575116874Z",
-      "last_verified_at": "2026-10-26T07:17:54.575116925Z"
+      "discovered_at": "2026-10-26T12:06:38.720467767Z",
+      "last_verified_at": "2026-10-26T12:06:38.720467817Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/llama-3.1-nemotron-51b-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575117205Z",
-      "last_verified_at": "2026-10-26T07:17:54.575117255Z"
+      "discovered_at": "2026-10-26T12:06:38.720468077Z",
+      "last_verified_at": "2026-10-26T12:06:38.720468137Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/llama-3.1-nemotron-70b-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575117475Z",
-      "last_verified_at": "2026-10-26T07:17:54.575117526Z"
+      "discovered_at": "2026-10-26T12:06:38.720468318Z",
+      "last_verified_at": "2026-10-26T12:06:38.720468378Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575117796Z",
-      "last_verified_at": "2026-10-26T07:17:54.575117856Z"
+      "discovered_at": "2026-10-26T12:06:38.720468648Z",
+      "last_verified_at": "2026-10-26T12:06:38.720468708Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575118067Z",
-      "last_verified_at": "2026-10-26T07:17:54.575118127Z"
+      "discovered_at": "2026-10-26T12:06:38.720468959Z",
+      "last_verified_at": "2026-10-26T12:06:38.720469009Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/llama3-chatqa-1.5-70b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575118838Z",
-      "last_verified_at": "2026-10-26T07:17:54.575118888Z"
+      "discovered_at": "2026-10-26T12:06:38.72046973Z",
+      "last_verified_at": "2026-10-26T12:06:38.72046979Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/mistral-nemo-minitron-8b-8k-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575119239Z",
-      "last_verified_at": "2026-10-26T07:17:54.575119299Z"
+      "discovered_at": "2026-10-26T12:06:38.720470151Z",
+      "last_verified_at": "2026-10-26T12:06:38.720470211Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.57511969Z",
-      "last_verified_at": "2026-10-26T07:17:54.57511975Z"
+      "discovered_at": "2026-10-26T12:06:38.720470652Z",
+      "last_verified_at": "2026-10-26T12:06:38.720470702Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-3-super-120b-a12b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.57512002Z",
-      "last_verified_at": "2026-10-26T07:17:54.57512008Z"
+      "discovered_at": "2026-10-26T12:06:38.720470973Z",
+      "last_verified_at": "2026-10-26T12:06:38.720471023Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-3-ultra-550b-a55b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575120251Z",
-      "last_verified_at": "2026-10-26T07:17:54.575120311Z"
+      "discovered_at": "2026-10-26T12:06:38.720471203Z",
+      "last_verified_at": "2026-10-26T12:06:38.720471263Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-3.5-bolt-e4b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575120521Z",
-      "last_verified_at": "2026-10-26T07:17:54.575120581Z"
+      "discovered_at": "2026-10-26T12:06:38.720471504Z",
+      "last_verified_at": "2026-10-26T12:06:38.720471554Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-3.5-content-safety",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575120812Z",
-      "last_verified_at": "2026-10-26T07:17:54.575120862Z"
+      "discovered_at": "2026-10-26T12:06:38.720471824Z",
+      "last_verified_at": "2026-10-26T12:06:38.720471884Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-3.5-lightning-30b-a3b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575121283Z",
-      "last_verified_at": "2026-10-26T07:17:54.575121343Z"
+      "discovered_at": "2026-10-26T12:06:38.720472295Z",
+      "last_verified_at": "2026-10-26T12:06:38.720472355Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-3.5-super-vl-120b-a12b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575121563Z",
-      "last_verified_at": "2026-10-26T07:17:54.575121623Z"
+      "discovered_at": "2026-10-26T12:06:38.720472596Z",
+      "last_verified_at": "2026-10-26T12:06:38.720472656Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-4-340b-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575121834Z",
-      "last_verified_at": "2026-10-26T07:17:54.575121884Z"
+      "discovered_at": "2026-10-26T12:06:38.720472866Z",
+      "last_verified_at": "2026-10-26T12:06:38.720472916Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-4-340b-reward",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575122114Z",
-      "last_verified_at": "2026-10-26T07:17:54.575122164Z"
+      "discovered_at": "2026-10-26T12:06:38.720473147Z",
+      "last_verified_at": "2026-10-26T12:06:38.720473197Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-nano-3-30b-a3b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575122395Z",
-      "last_verified_at": "2026-10-26T07:17:54.575122445Z"
+      "discovered_at": "2026-10-26T12:06:38.720473417Z",
+      "last_verified_at": "2026-10-26T12:06:38.720473477Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-parse",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575122655Z",
-      "last_verified_at": "2026-10-26T07:17:54.575122705Z"
+      "discovered_at": "2026-10-26T12:06:38.720473678Z",
+      "last_verified_at": "2026-10-26T12:06:38.720473728Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nemotron-parse-2.0",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575122906Z",
-      "last_verified_at": "2026-10-26T07:17:54.575122956Z"
+      "discovered_at": "2026-10-26T12:06:38.720473938Z",
+      "last_verified_at": "2026-10-26T12:06:38.720473988Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/neva-22b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575123156Z",
-      "last_verified_at": "2026-10-26T07:17:54.575123216Z"
+      "discovered_at": "2026-10-26T12:06:38.720474189Z",
+      "last_verified_at": "2026-10-26T12:06:38.720474249Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/nvclip",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575123547Z",
-      "last_verified_at": "2026-10-26T07:17:54.575123597Z"
+      "discovered_at": "2026-10-26T12:06:38.720474559Z",
+      "last_verified_at": "2026-10-26T12:06:38.72047461Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/riva-translate-4b-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575123847Z",
-      "last_verified_at": "2026-10-26T07:17:54.575123908Z"
+      "discovered_at": "2026-10-26T12:06:38.72047487Z",
+      "last_verified_at": "2026-10-26T12:06:38.72047492Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/riva-translate-4b-instruct-v2",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575124138Z",
-      "last_verified_at": "2026-10-26T07:17:54.575124198Z"
+      "discovered_at": "2026-10-26T12:06:38.72047516Z",
+      "last_verified_at": "2026-10-26T12:06:38.720475221Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "nvidia/vila",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575124519Z",
-      "last_verified_at": "2026-10-26T07:17:54.575124569Z"
+      "discovered_at": "2026-10-26T12:06:38.720475521Z",
+      "last_verified_at": "2026-10-26T12:06:38.720475571Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "openai/gpt-oss-20b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575124779Z",
-      "last_verified_at": "2026-10-26T07:17:54.57512484Z"
+      "discovered_at": "2026-10-26T12:06:38.720475762Z",
+      "last_verified_at": "2026-10-26T12:06:38.720475812Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "poolside/laguna-xs-2.1",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.57512508Z",
-      "last_verified_at": "2026-10-26T07:17:54.57512513Z"
+      "discovered_at": "2026-10-26T12:06:38.720476052Z",
+      "last_verified_at": "2026-10-26T12:06:38.720476112Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "stepfun-ai/step-5-preview",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575125471Z",
-      "last_verified_at": "2026-10-26T07:17:54.575125531Z"
+      "discovered_at": "2026-10-26T12:06:38.720476433Z",
+      "last_verified_at": "2026-10-26T12:06:38.720476493Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "writer/palmyra-creative-122b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575125791Z",
-      "last_verified_at": "2026-10-26T07:17:54.575125841Z"
+      "discovered_at": "2026-10-26T12:06:38.720476754Z",
+      "last_verified_at": "2026-10-26T12:06:38.720476814Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "writer/palmyra-fin-70b-32k",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575126082Z",
-      "last_verified_at": "2026-10-26T07:17:54.575126132Z"
+      "discovered_at": "2026-10-26T12:06:38.720477064Z",
+      "last_verified_at": "2026-10-26T12:06:38.720477124Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "writer/palmyra-med-70b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575126312Z",
-      "last_verified_at": "2026-10-26T07:17:54.575126372Z"
+      "discovered_at": "2026-10-26T12:06:38.720477304Z",
+      "last_verified_at": "2026-10-26T12:06:38.720477355Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "writer/palmyra-med-70b-32k",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575126543Z",
-      "last_verified_at": "2026-10-26T07:17:54.575126593Z"
+      "discovered_at": "2026-10-26T12:06:38.720477535Z",
+      "last_verified_at": "2026-10-26T12:06:38.720477585Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "z-ai/glm-5.3",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575126893Z",
-      "last_verified_at": "2026-10-26T07:17:54.575126943Z"
+      "discovered_at": "2026-10-26T12:06:38.720477896Z",
+      "last_verified_at": "2026-10-26T12:06:38.720477946Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "z-ai/glm-5.3-flash",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575127164Z",
-      "last_verified_at": "2026-10-26T07:17:54.575127214Z"
+      "discovered_at": "2026-10-26T12:06:38.720478156Z",
+      "last_verified_at": "2026-10-26T12:06:38.720478216Z"
     },
     {
       "provider_id": "nvidia-nim",
       "model_id": "zyphra/zamba2-7b-instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:54.575128106Z",
-      "last_verified_at": "2026-10-26T07:17:54.575128166Z"
+      "discovered_at": "2026-10-26T12:06:38.720478427Z",
+      "last_verified_at": "2026-10-26T12:06:38.720478477Z"
     },
     {
       "provider_id": "huggingface",
       "model_id": "reflection/Beam-1.0-501B-A23B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008784715Z",
-      "last_verified_at": "2026-10-26T07:17:55.008784784Z",
+      "discovered_at": "2026-10-26T12:06:38.977747422Z",
+      "last_verified_at": "2026-10-26T12:06:38.977747492Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -798,8 +798,8 @@
       "model_id": "LiquidAI/LFM2.5-24B-A2B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008785806Z",
-      "last_verified_at": "2026-10-26T07:17:55.008785866Z",
+      "discovered_at": "2026-10-26T12:06:38.977748594Z",
+      "last_verified_at": "2026-10-26T12:06:38.977748664Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -809,8 +809,8 @@
       "model_id": "prism-ml/Ternary-Bonsai-2-27B-gguf",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008786508Z",
-      "last_verified_at": "2026-10-26T07:17:55.008786558Z",
+      "discovered_at": "2026-10-26T12:06:38.977749335Z",
+      "last_verified_at": "2026-10-26T12:06:38.977749406Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -820,8 +820,8 @@
       "model_id": "OBLITERATUS/Qwen3.8-27B-OBLITERATED",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008787039Z",
-      "last_verified_at": "2026-10-26T07:17:55.008787089Z",
+      "discovered_at": "2026-10-26T12:06:38.977750157Z",
+      "last_verified_at": "2026-10-26T12:06:38.977750227Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -831,8 +831,8 @@
       "model_id": "zai-org/GLM-5.3",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.0087874Z",
-      "last_verified_at": "2026-10-26T07:17:55.00878746Z",
+      "discovered_at": "2026-10-26T12:06:38.977750588Z",
+      "last_verified_at": "2026-10-26T12:06:38.977750648Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -842,8 +842,8 @@
       "model_id": "XiaomiMiMo/MiMo-V2.6-Pro-RL",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008797348Z",
-      "last_verified_at": "2026-10-26T07:17:55.008797408Z",
+      "discovered_at": "2026-10-26T12:06:38.977752361Z",
+      "last_verified_at": "2026-10-26T12:06:38.977752431Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -853,8 +853,8 @@
       "model_id": "inclusionAI/Ling-3.1-flash",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008797849Z",
-      "last_verified_at": "2026-10-26T07:17:55.008797899Z",
+      "discovered_at": "2026-10-26T12:06:38.977752782Z",
+      "last_verified_at": "2026-10-26T12:06:38.977752842Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -864,30 +864,8 @@
       "model_id": "openai/gpt-oss-20b",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.00879815Z",
-      "last_verified_at": "2026-10-26T07:17:55.0087982Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "Qwen/Qwen3-8B",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.00879844Z",
-      "last_verified_at": "2026-10-26T07:17:55.008798501Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008801166Z",
-      "last_verified_at": "2026-10-26T07:17:55.008801226Z",
+      "discovered_at": "2026-10-26T12:06:38.977753183Z",
+      "last_verified_at": "2026-10-26T12:06:38.977753253Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -897,30 +875,8 @@
       "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008801496Z",
-      "last_verified_at": "2026-10-26T07:17:55.008801556Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "deepseek-ai/DeepSeek-R1",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008801787Z",
-      "last_verified_at": "2026-10-26T07:17:55.008801847Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "Qwen/Qwen3-0.6B",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008802067Z",
-      "last_verified_at": "2026-10-26T07:17:55.008802117Z",
+      "discovered_at": "2026-10-26T12:06:38.977754235Z",
+      "last_verified_at": "2026-10-26T12:06:38.977754305Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -930,19 +886,52 @@
       "model_id": "deepseek-ai/DeepSeek-V4-Flash",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008802718Z",
-      "last_verified_at": "2026-10-26T07:17:55.008802769Z",
+      "discovered_at": "2026-10-26T12:06:38.97776254Z",
+      "last_verified_at": "2026-10-26T12:06:38.977762611Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
     },
     {
       "provider_id": "huggingface",
-      "model_id": "openai/gpt-oss-120b",
+      "model_id": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008803089Z",
-      "last_verified_at": "2026-10-26T07:17:55.008803139Z",
+      "discovered_at": "2026-10-26T12:06:38.977763051Z",
+      "last_verified_at": "2026-10-26T12:06:38.977763121Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "Qwen/Qwen3-8B",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977763402Z",
+      "last_verified_at": "2026-10-26T12:06:38.977763472Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "deepseek-ai/DeepSeek-R1",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977763873Z",
+      "last_verified_at": "2026-10-26T12:06:38.977763943Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "Qwen/Qwen3-0.6B",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977764263Z",
+      "last_verified_at": "2026-10-26T12:06:38.977764334Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -952,19 +941,8 @@
       "model_id": "Qwen/Qwen3-4B-Instruct-2507",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.00880337Z",
-      "last_verified_at": "2026-10-26T07:17:55.00880342Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "deepseek-ai/DeepSeek-V4-Pro",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.00880364Z",
-      "last_verified_at": "2026-10-26T07:17:55.0088037Z",
+      "discovered_at": "2026-10-26T12:06:38.977764574Z",
+      "last_verified_at": "2026-10-26T12:06:38.977764644Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -974,8 +952,30 @@
       "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008803921Z",
-      "last_verified_at": "2026-10-26T07:17:55.008803981Z",
+      "discovered_at": "2026-10-26T12:06:38.977764915Z",
+      "last_verified_at": "2026-10-26T12:06:38.977764985Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "deepseek-ai/DeepSeek-V4-Pro",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977765236Z",
+      "last_verified_at": "2026-10-26T12:06:38.977765305Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "openai/gpt-oss-120b",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977765646Z",
+      "last_verified_at": "2026-10-26T12:06:38.977765716Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -985,8 +985,8 @@
       "model_id": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008806525Z",
-      "last_verified_at": "2026-10-26T07:17:55.008806586Z",
+      "discovered_at": "2026-10-26T12:06:38.977768702Z",
+      "last_verified_at": "2026-10-26T12:06:38.977768772Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -996,30 +996,8 @@
       "model_id": "Qwen/Qwen3.8-2.4T-A95B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008806846Z",
-      "last_verified_at": "2026-10-26T07:17:55.008806896Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "IFM/K2-Horizon-7B",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008807127Z",
-      "last_verified_at": "2026-10-26T07:17:55.008807177Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "poolside/Laguna-S-2.1",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008807397Z",
-      "last_verified_at": "2026-10-26T07:17:55.008807447Z",
+      "discovered_at": "2026-10-26T12:06:38.977769093Z",
+      "last_verified_at": "2026-10-26T12:06:38.977769163Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1029,8 +1007,19 @@
       "model_id": "ornith-ai/Ornith-1.5-9B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008807728Z",
-      "last_verified_at": "2026-10-26T07:17:55.008807778Z",
+      "discovered_at": "2026-10-26T12:06:38.977769463Z",
+      "last_verified_at": "2026-10-26T12:06:38.977769533Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "IFM/K2-Horizon-7B",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977769794Z",
+      "last_verified_at": "2026-10-26T12:06:38.977769864Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1040,8 +1029,19 @@
       "model_id": "Qwen/Qwen2.5-0.5B-Instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008807998Z",
-      "last_verified_at": "2026-10-26T07:17:55.008808059Z",
+      "discovered_at": "2026-10-26T12:06:38.977770225Z",
+      "last_verified_at": "2026-10-26T12:06:38.977770295Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "poolside/Laguna-S-2.1",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977770555Z",
+      "last_verified_at": "2026-10-26T12:06:38.977770626Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1051,8 +1051,8 @@
       "model_id": "Qwen/Qwen2.5-3B-Instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008808279Z",
-      "last_verified_at": "2026-10-26T07:17:55.008808339Z",
+      "discovered_at": "2026-10-26T12:06:38.977770866Z",
+      "last_verified_at": "2026-10-26T12:06:38.977770936Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1062,52 +1062,8 @@
       "model_id": "Qwen/Qwen3-14B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008808609Z",
-      "last_verified_at": "2026-10-26T07:17:55.00880866Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "tencent/Hy4-preview",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.00880889Z",
-      "last_verified_at": "2026-10-26T07:17:55.00880895Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "Qwen/Qwen2.5-Coder-32B-Instruct",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.00880917Z",
-      "last_verified_at": "2026-10-26T07:17:55.008809231Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008809451Z",
-      "last_verified_at": "2026-10-26T07:17:55.008809511Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "reflection/Beam-1.0-501B-A23B-NVFP4",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008809882Z",
-      "last_verified_at": "2026-10-26T07:17:55.008809932Z",
+      "discovered_at": "2026-10-26T12:06:38.977771196Z",
+      "last_verified_at": "2026-10-26T12:06:38.977771267Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1117,63 +1073,30 @@
       "model_id": "Qwen/Qwen2.5-7B-Instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008810152Z",
-      "last_verified_at": "2026-10-26T07:17:55.008810212Z",
+      "discovered_at": "2026-10-26T12:06:38.977771507Z",
+      "last_verified_at": "2026-10-26T12:06:38.977771567Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
     },
     {
       "provider_id": "huggingface",
-      "model_id": "zai-org/GLM-4.7-Flash",
+      "model_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008810423Z",
-      "last_verified_at": "2026-10-26T07:17:55.008810483Z",
+      "discovered_at": "2026-10-26T12:06:38.977771838Z",
+      "last_verified_at": "2026-10-26T12:06:38.977771898Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
     },
     {
       "provider_id": "huggingface",
-      "model_id": "Qwen/Qwen3-Coder-Next",
+      "model_id": "tencent/Hy4-preview",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008810704Z",
-      "last_verified_at": "2026-10-26T07:17:55.008810753Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "zai-org/GLM-5.2",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008814671Z",
-      "last_verified_at": "2026-10-26T07:17:55.008814721Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "empero-ai/Qwythos-9B-Claude-Mythos-5-1M",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008815262Z",
-      "last_verified_at": "2026-10-26T07:17:55.008815322Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008815553Z",
-      "last_verified_at": "2026-10-26T07:17:55.008815603Z",
+      "discovered_at": "2026-10-26T12:06:38.977772158Z",
+      "last_verified_at": "2026-10-26T12:06:38.977772229Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1183,8 +1106,85 @@
       "model_id": "IFM/K2-Horizon-MoVA-36B-A4B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008815823Z",
-      "last_verified_at": "2026-10-26T07:17:55.008815873Z",
+      "discovered_at": "2026-10-26T12:06:38.977772479Z",
+      "last_verified_at": "2026-10-26T12:06:38.977772549Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "reflection/Beam-1.0-501B-A23B-NVFP4",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.97777296Z",
+      "last_verified_at": "2026-10-26T12:06:38.97777303Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "Qwen/Qwen2.5-Coder-32B-Instruct",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977773291Z",
+      "last_verified_at": "2026-10-26T12:06:38.977773351Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "zai-org/GLM-4.7-Flash",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977773601Z",
+      "last_verified_at": "2026-10-26T12:06:38.977773661Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "Qwen/Qwen3-Coder-Next",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977773962Z",
+      "last_verified_at": "2026-10-26T12:06:38.977774032Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "zai-org/GLM-5.2",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977774272Z",
+      "last_verified_at": "2026-10-26T12:06:38.977774342Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "empero-ai/Qwythos-9B-Claude-Mythos-5-1M",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977775034Z",
+      "last_verified_at": "2026-10-26T12:06:38.977775104Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.977780023Z",
+      "last_verified_at": "2026-10-26T12:06:38.977780093Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1194,8 +1194,8 @@
       "model_id": "IFM/K2-Horizon-3.7B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008816094Z",
-      "last_verified_at": "2026-10-26T07:17:55.008816154Z",
+      "discovered_at": "2026-10-26T12:06:38.977811753Z",
+      "last_verified_at": "2026-10-26T12:06:38.977811833Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1205,8 +1205,8 @@
       "model_id": "IFM/K2-Horizon-375B-A23B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008825722Z",
-      "last_verified_at": "2026-10-26T07:17:55.008825782Z",
+      "discovered_at": "2026-10-26T12:06:38.977822403Z",
+      "last_verified_at": "2026-10-26T12:06:38.977822473Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1216,8 +1216,8 @@
       "model_id": "nex-agi/Nex-N2.5-mini",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008826113Z",
-      "last_verified_at": "2026-10-26T07:17:55.008826162Z",
+      "discovered_at": "2026-10-26T12:06:38.977822914Z",
+      "last_verified_at": "2026-10-26T12:06:38.977822984Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1227,8 +1227,8 @@
       "model_id": "Qwen/Qwen2.5-0.5B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008826393Z",
-      "last_verified_at": "2026-10-26T07:17:55.008826443Z",
+      "discovered_at": "2026-10-26T12:06:38.977823254Z",
+      "last_verified_at": "2026-10-26T12:06:38.977823325Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1238,8 +1238,8 @@
       "model_id": "Qwen/Qwen2.5-72B-Instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008826814Z",
-      "last_verified_at": "2026-10-26T07:17:55.008826874Z",
+      "discovered_at": "2026-10-26T12:06:38.977823585Z",
+      "last_verified_at": "2026-10-26T12:06:38.977823645Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1249,19 +1249,8 @@
       "model_id": "Qwen/Qwen2.5-Coder-7B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008827114Z",
-      "last_verified_at": "2026-10-26T07:17:55.008827175Z",
-      "metadata": {
-        "pipeline_tag": "text-generation"
-      }
-    },
-    {
-      "provider_id": "huggingface",
-      "model_id": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008827395Z",
-      "last_verified_at": "2026-10-26T07:17:55.008827445Z",
+      "discovered_at": "2026-10-26T12:06:38.977823906Z",
+      "last_verified_at": "2026-10-26T12:06:38.977823976Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1271,8 +1260,8 @@
       "model_id": "prism-ml/Ternary-Bonsai-27B-gguf",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008827756Z",
-      "last_verified_at": "2026-10-26T07:17:55.008827816Z",
+      "discovered_at": "2026-10-26T12:06:38.977824316Z",
+      "last_verified_at": "2026-10-26T12:06:38.977824387Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1282,8 +1271,8 @@
       "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008828056Z",
-      "last_verified_at": "2026-10-26T07:17:55.008828106Z",
+      "discovered_at": "2026-10-26T12:06:38.977824707Z",
+      "last_verified_at": "2026-10-26T12:06:38.977824777Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1293,8 +1282,8 @@
       "model_id": "Qwen/Qwen2.5-Coder-1.5B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008828347Z",
-      "last_verified_at": "2026-10-26T07:17:55.008828397Z",
+      "discovered_at": "2026-10-26T12:06:38.977825048Z",
+      "last_verified_at": "2026-10-26T12:06:38.977825118Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1304,8 +1293,8 @@
       "model_id": "Qwen/Qwen2.5-Coder-14B-Instruct",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008828647Z",
-      "last_verified_at": "2026-10-26T07:17:55.008828697Z",
+      "discovered_at": "2026-10-26T12:06:38.977825378Z",
+      "last_verified_at": "2026-10-26T12:06:38.977825449Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1315,8 +1304,19 @@
       "model_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008828918Z",
-      "last_verified_at": "2026-10-26T07:17:55.008828978Z",
+      "discovered_at": "2026-10-26T12:06:38.977825709Z",
+      "last_verified_at": "2026-10-26T12:06:38.977825779Z",
+      "metadata": {
+        "pipeline_tag": "text-generation"
+      }
+    },
+    {
+      "provider_id": "huggingface",
+      "model_id": "Qwen/Qwen3-1.7B",
+      "is_free": true,
+      "tier_type": "free",
+      "discovered_at": "2026-10-26T12:06:38.97782605Z",
+      "last_verified_at": "2026-10-26T12:06:38.97782612Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }
@@ -1326,8 +1326,8 @@
       "model_id": "Qwen/Qwen3-4B",
       "is_free": true,
       "tier_type": "free",
-      "discovered_at": "2026-10-26T07:17:55.008829188Z",
-      "last_verified_at": "2026-10-26T07:17:55.008829248Z",
+      "discovered_at": "2026-10-26T12:06:38.97782638Z",
+      "last_verified_at": "2026-10-26T12:06:38.97782645Z",
       "metadata": {
         "pipeline_tag": "text-generation"
       }

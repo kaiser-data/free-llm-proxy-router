@@ -185,6 +185,7 @@ Discovered automatically by scanning each provider's model API. Use any of them 
 | `Qwen/Qwen2.5-Coder-7B` | – |
 | `Qwen/Qwen2.5-Coder-7B-Instruct` | – |
 | `Qwen/Qwen3-0.6B` | – |
+| `Qwen/Qwen3-1.7B` | – |
 | `Qwen/Qwen3-14B` | – |
 | `Qwen/Qwen3-4B` | – |
 | `Qwen/Qwen3-4B-Instruct-2507` | – |
@@ -203,7 +204,6 @@ Discovered automatically by scanning each provider's model API. Use any of them 
 | `empero-ai/Qwythos-9B-Claude-Mythos-5-1M` | – |
 | `inclusionAI/Ling-3.1-flash` | – |
 | `nex-agi/Nex-N2.5-mini` | – |
-| `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4` | – |
 | `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` | – |
 | `openai/gpt-oss-120b` | – |
 | `openai/gpt-oss-20b` | – |
