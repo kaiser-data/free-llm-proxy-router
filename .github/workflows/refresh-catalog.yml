@@ -3,6 +3,8 @@ name: Refresh free models
 # Weekly scan of every provider's model API. Updates configs/catalog.json and
 # FREE_MODELS.md. Providers without a repository secret keep their previous
 # entries (--keep-unscanned), so a partial set of keys never wipes the list.
+# --all-providers also scans providers that are off by default; OpenRouter,
+# NVIDIA NIM and Hugging Face list their models without any key.
 #
 # Secrets (Settings → Secrets and variables → Actions), all optional:
 #   OPENROUTER_API_KEY GROQ_API_KEY GEMINI_API_KEY MISTRAL_API_KEY
@@ -50,7 +52,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./bin/free-llm-scan -c configs/config.example.yaml --catalog configs/catalog.json \
-            update --keep-unscanned
+            update --keep-unscanned --all-providers
 
       - name: Render FREE_MODELS.md
         run: ./bin/free-llm-scan -c configs/config.example.yaml --catalog configs/catalog.json export-md -o FREE_MODELS.md

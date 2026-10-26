@@ -56,7 +56,7 @@ func main() {
 
 // updateCmd scans all enabled providers and writes catalog.json.
 func updateCmd() *cobra.Command {
-	var keepUnscanned bool
+	var keepUnscanned, allProviders bool
 	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Scan all enabled providers and update catalog.json",
@@ -72,8 +72,18 @@ func updateCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
+			providers := cfg.Providers
+			if allProviders {
+				// Discovery is read-only, so scan providers that are off for routing too.
+				providers = make([]config.ProviderConfig, len(cfg.Providers))
+				copy(providers, cfg.Providers)
+				for i := range providers {
+					providers[i].Enabled = true
+				}
+			}
+
 			dispatcher := scan.NewDispatcher()
-			cat, err := dispatcher.ScanAll(ctx, cfg.Providers)
+			cat, err := dispatcher.ScanAll(ctx, providers)
 			if err != nil {
 				return fmt.Errorf("scanning providers: %w", err)
 			}
@@ -107,6 +117,8 @@ func updateCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&keepUnscanned, "keep-unscanned", false,
 		"keep previous entries for providers that returned nothing (missing key, outage)")
+	cmd.Flags().BoolVar(&allProviders, "all-providers", false,
+		"also scan providers disabled in the config (some catalogs need no API key)")
 	return cmd
 }
 
