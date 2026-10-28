@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -68,8 +69,11 @@ func TestFallbackChain_404TriggersCooldown(t *testing.T) {
 
 	_, _ = fc.Execute(context.Background(), req)
 
-	if !rl.IsOnCooldown("testprovider") {
-		t.Error("expected testprovider to be on cooldown after 404, got not on cooldown")
+	if !rl.IsOnCooldown("testprovider/test-model") {
+		t.Error("expected test-model to be on cooldown after 404")
+	}
+	if rl.IsOnCooldown("testprovider") {
+		t.Error("a 404 for one model must not put the whole provider on cooldown")
 	}
 }
 
@@ -129,5 +133,99 @@ func TestBuildBodyServiceTierOnlyWhenConfigured(t *testing.T) {
 	body = fc.buildBody("groq", raw, "llama-3.3-70b-versatile")
 	if body["service_tier"] != "flex" {
 		t.Fatalf("service_tier = %v, want flex", body["service_tier"])
+	}
+}
+
+func TestIsZeroQuota(t *testing.T) {
+	gemini := []byte(`[{"error":{"code":429,"message":"Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-nano-banana-2.1"}}]`)
+	if !isZeroQuota(gemini) {
+		t.Error("Gemini zero-quota 429 not detected")
+	}
+	if isZeroQuota([]byte(`{"error":{"message":"limit: 10, model: x"}}`)) {
+		t.Error("limit: 10 detected as zero quota")
+	}
+}
+
+// listStrategy returns the given entries in order.
+type listStrategy []strategy.RankedEntry
+
+func (l listStrategy) Name() string { return "list" }
+func (l listStrategy) Rank(_ strategy.Request, _ []catalog.CatalogEntry, _ *models.EnrichedCatalog) []strategy.RankedEntry {
+	return l
+}
+
+func TestFallbackChain_429TriesNextModelOfSameProvider(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["model"] == "paid-model" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"error":{"message":"Quota exceeded for metric: free_tier_requests, limit: 0, model: paid-model"}}`))
+			return
+		}
+		w.Write([]byte(`{"model":"free-model","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	fc, rl, _ := newTestChain(srv.URL, "gemini", "paid-model")
+	fc.Strategy = listStrategy{
+		{ProviderID: "gemini", ModelID: "paid-model"},
+		{ProviderID: "gemini", ModelID: "free-model"},
+	}
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil {
+		t.Fatalf("expected the second model to answer, got %v", err)
+	}
+	if resp.UsedModel != "free-model" {
+		t.Errorf("UsedModel = %q, want free-model", resp.UsedModel)
+	}
+	if !rl.IsOnCooldown("gemini/paid-model") {
+		t.Error("expected paid-model on cooldown after zero-quota 429")
+	}
+}
+
+func TestFallbackChain_ModelErrorsCappedPerProvider(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, `{"error":{"message":"model not found"}}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "nvidia-nim", "m0")
+	fc.Cfg.Fallback.MaxAttempts = 10
+	var ranked listStrategy
+	for _, id := range []string{"m0", "m1", "m2", "m3", "m4", "m5"} {
+		ranked = append(ranked, strategy.RankedEntry{ProviderID: "nvidia-nim", ModelID: id})
+	}
+	fc.Strategy = ranked
+	_, _ = fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if calls != maxModelsPerProvider {
+		t.Errorf("provider called %d times, want %d", calls, maxModelsPerProvider)
+	}
+}
+
+func TestStripGeminiThoughts(t *testing.T) {
+	in := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"<thought>*   Question: capital?\n    *   Rome.</thought>Rome"}}],"model":"gemma-4-26b-a4b-it"}`)
+	var out struct {
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(StripGeminiThoughts(in), &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.Choices[0].Message.Content; got != "Rome" {
+		t.Errorf("content = %q, want Rome", got)
+	}
+	if out.Model != "gemma-4-26b-a4b-it" {
+		t.Errorf("model field lost: %q", out.Model)
+	}
+	plain := []byte(`{"choices":[{"message":{"content":"no thoughts here"}}]}`)
+	if string(StripGeminiThoughts(plain)) != string(plain) {
+		t.Error("body without <thought> must be returned unchanged")
 	}
 }

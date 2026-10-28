@@ -118,8 +118,8 @@ func (s *GeminiScanner) ScanFreeModels(ctx context.Context, cfg config.ProviderC
 		if modelID == "" {
 			continue
 		}
-		// Skip model IDs that signal paid-only tiers
-		if isGeminiPaidOnly(modelID) {
+		// Skip paid-only and non-chat models (image, music, speech, robotics…)
+		if isGeminiPaidOnly(modelID) || isNonChatModel(modelID) {
 			continue
 		}
 

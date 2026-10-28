@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -66,6 +67,25 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	log.Printf("catalog: %d free model(s) loaded from %s", freeCount, cfg.Catalog.Path)
 	if freeCount == 0 {
 		log.Printf("warning: catalog is empty — run 'free-llm-scan update' to discover free models")
+	}
+
+	var ready, noKey []string
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
+		switch {
+		case !p.Enabled:
+		case p.MissingKey():
+			noKey = append(noKey, p.ID)
+		default:
+			ready = append(ready, p.ID)
+		}
+	}
+	log.Printf("providers ready: %s", strings.Join(ready, ", "))
+	if len(noKey) > 0 {
+		log.Printf("providers skipped (no API key): %s", strings.Join(noKey, ", "))
+	}
+	if len(ready) == 0 {
+		log.Printf("warning: no provider has an API key — add one to .env (see .env.example)")
 	}
 
 	// Check catalog staleness

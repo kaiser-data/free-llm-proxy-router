@@ -152,8 +152,10 @@ func isEligibleModel(providerID, modelID, modelType string, endpoints []string) 
 // rerankers, speech, image generation and safety classifiers (which return a score).
 var nonChatPatterns = []string{
 	"embed", "rerank", "image", "vision-only",
-	"tts", "stt", "whisper", "orpheus",
+	"tts", "stt", "whisper", "orpheus", "transcribe",
 	"guard",
+	// Gemini media and agent models listed alongside chat models
+	"nano-banana", "lyria", "robotics", "computer-use", "deep-research",
 }
 
 // isNonChatModel reports whether a model ID looks like a non-chat model.

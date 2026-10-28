@@ -133,6 +133,12 @@ func (p *ProviderConfig) AllKeys() []string {
 	return keys
 }
 
+// MissingKey reports whether the provider expects an API key (api_key_env is
+// set) but none is configured. Keyless providers such as local Ollama never miss one.
+func (p *ProviderConfig) MissingKey() bool {
+	return p.APIKeyEnv != "" && len(p.AllKeys()) == 0
+}
+
 // NumKeys returns the number of API keys available for this provider.
 func (p *ProviderConfig) NumKeys() int {
 	return len(p.AllKeys())

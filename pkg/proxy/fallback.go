@@ -100,6 +100,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	// faster, more reliable providers (Groq, Cerebras, Gemini) are even tried.
 	attempt := 0
 	failedProviders := make(map[string]bool)
+	providerTries := make(map[string]int)
 	for _, r := range ranked {
 		if attempt >= maxAttempts {
 			break
@@ -178,13 +179,20 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					}
 				}
 			}
-			// Apply per-status cooldown logic.
+			// Apply per-status cooldown logic. 429 and 404 concern one model,
+			// so the chain may still try other models from the same provider.
+			modelLevel := false
 			if resp != nil {
 				switch resp.StatusCode {
 				case 429:
+					modelLevel = true
 					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 					info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
 					waitDur := info.WaitDuration()
+					if isZeroQuota(resp.Body) {
+						// Quota "limit: 0" means the model is not on this key's free tier.
+						waitDur = zeroQuotaCooldown
+					}
 					until := time.Now().Add(waitDur)
 					// Cooldown on the specific model, not the whole provider.
 					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, until)
@@ -199,14 +207,21 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(10*time.Minute))
 					log.Printf("fallback: %s auth error %d — cooldown 10min", r.ProviderID, resp.StatusCode)
 				case 404:
+					modelLevel = true
 					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
-					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(5*time.Minute))
-					log.Printf("fallback: %s model %s not found — cooldown 5min", r.ProviderID, r.ModelID)
+					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, time.Now().Add(missingModelCooldown))
+					log.Printf("fallback: %s model %s not found — model cooldown %s", r.ProviderID, r.ModelID, missingModelCooldown)
 				}
 			}
 			statusCode := 0
 			if resp != nil {
 				statusCode = resp.StatusCode
+			}
+			providerTries[r.ProviderID]++
+			if modelLevel && providerTries[r.ProviderID] < maxModelsPerProvider {
+				// The provider itself is fine; try its next ranked model.
+				log.Printf("fallback: %s/%s status %d — trying next model%s", r.ProviderID, r.ModelID, statusCode, upstreamErrSnippet(resp, err))
+				continue
 			}
 			log.Printf("fallback: %s/%s status %d — skipping provider%s", r.ProviderID, r.ModelID, statusCode, upstreamErrSnippet(resp, err))
 			fc.ReliabilityTracker.Record(r.ProviderID, false)
@@ -282,6 +297,10 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
+	if cfg.ID == "gemini" && resp.StatusCode == http.StatusOK {
+		respBody = StripGeminiThoughts(respBody)
+	}
+
 	// Extract the actual model used (OpenRouter fills this in)
 	usedModel := ""
 	if resp.StatusCode == http.StatusOK {
@@ -302,12 +321,7 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 }
 
 func (fc *FallbackChain) findProvider(id string) *config.ProviderConfig {
-	for i := range fc.Cfg.Providers {
-		if fc.Cfg.Providers[i].ID == id && fc.Cfg.Providers[i].Enabled {
-			return &fc.Cfg.Providers[i]
-		}
-	}
-	return nil
+	return findProviderCfg(fc.Cfg, id)
 }
 
 func (fc *FallbackChain) collectProviderModels(providerID string, ranked []strategy.RankedEntry) []string {
@@ -370,6 +384,24 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 		body["service_tier"] = pc.NativeFeatures.ServiceTier
 	}
 	return body
+}
+
+const (
+	// maxModelsPerProvider bounds how many models of one provider a single
+	// request tries after model-level errors (429/404), so a large catalog
+	// such as NVIDIA NIM cannot use up every attempt.
+	maxModelsPerProvider = 3
+	// zeroQuotaCooldown applies when a 429 reports a quota "limit: 0": the
+	// model is listed but not on the free tier, so retrying soon is pointless.
+	zeroQuotaCooldown = 24 * time.Hour
+	// missingModelCooldown applies when a provider returns 404 for a model.
+	missingModelCooldown = time.Hour
+)
+
+// isZeroQuota reports whether a 429 body says the quota for this model is zero
+// (Gemini returns "limit: 0" for models outside the free tier).
+func isZeroQuota(body []byte) bool {
+	return bytes.Contains(body, []byte("limit: 0,"))
 }
 
 // upstreamErrSnippet returns a short " (...)" suffix describing why an upstream

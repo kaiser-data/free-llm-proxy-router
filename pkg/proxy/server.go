@@ -379,9 +379,12 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, `{"error":"use /v1/chat/completions — legacy completions not supported"}`, http.StatusNotImplemented)
 }
 
+// findProviderCfg returns the enabled provider with the given ID, or nil.
+// Providers that need an API key but have none are treated as unavailable,
+// so requests don't spend a round trip on a guaranteed 401.
 func findProviderCfg(cfg *config.Config, providerID string) *config.ProviderConfig {
 	for i := range cfg.Providers {
-		if cfg.Providers[i].ID == providerID && cfg.Providers[i].Enabled {
+		if cfg.Providers[i].ID == providerID && cfg.Providers[i].Enabled && !cfg.Providers[i].MissingKey() {
 			return &cfg.Providers[i]
 		}
 	}
