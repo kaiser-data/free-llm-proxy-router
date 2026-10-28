@@ -60,3 +60,15 @@ func TestErrors_Unauthorized(t *testing.T) {
 	}
 	decodeOpenAIError(t, rec)
 }
+
+func TestErrors_BodyTooLarge(t *testing.T) {
+	rec := httptest.NewRecorder()
+	big := strings.NewReader(`{"model":"auto","x":"` + strings.Repeat("a", maxRequestBodyBytes) + `"}`)
+	(&Server{}).handleChatCompletions(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", big))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+	if _, code := decodeOpenAIError(t, rec); code != "request_too_large" {
+		t.Errorf("code = %q, want request_too_large", code)
+	}
+}

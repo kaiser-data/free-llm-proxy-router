@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -107,6 +108,11 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
+// maxRequestBodyBytes caps chat request bodies. Generous enough for long
+// contexts and a few base64 images, small enough that one client can't make
+// the proxy buffer an unbounded body in memory.
+const maxRequestBodyBytes = 16 << 20
+
 // handleChatCompletions is the main OpenAI-compat chat endpoint.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -114,8 +120,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large",
+				fmt.Sprintf("request body exceeds %d MB", maxRequestBodyBytes>>20))
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_body", "failed to read request body")
 		return
 	}
