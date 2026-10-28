@@ -101,6 +101,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	attempt := 0
 	failedProviders := make(map[string]bool)
 	providerTries := make(map[string]int)
+	var lastTruncated *Response // empty finish_reason=length reply, used only if nothing better answers
 	for _, r := range ranked {
 		if attempt >= maxAttempts {
 			break
@@ -256,6 +257,18 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
 			fc.GeminiTracker.RecordRequest(r.ModelID, stratReq.EstimatedPromptTokens)
 		}
+		if isEmptyTruncated(resp.Body) {
+			// Reasoning models (gpt-oss) can spend a small max_tokens budget on
+			// hidden reasoning and return no content. Try another model, but keep
+			// this reply in case nothing better comes back.
+			log.Printf("fallback: %s/%s returned empty content (finish_reason=length) — trying next model", r.ProviderID, r.ModelID)
+			lastTruncated = resp
+			providerTries[r.ProviderID]++
+			if providerTries[r.ProviderID] >= maxModelsPerProvider {
+				failedProviders[r.ProviderID] = true
+			}
+			continue
+		}
 		return resp, nil
 	}
 
@@ -271,6 +284,9 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		fc.ReliabilityTracker.Record("openrouter", false)
 	}
 
+	if lastTruncated != nil {
+		return lastTruncated, nil
+	}
 	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempt)
 }
 
@@ -463,4 +479,24 @@ func estimateTokens(msgs []map[string]any) int {
 		}
 	}
 	return total
+}
+
+// isEmptyTruncated reports whether a chat completion has no usable output
+// because it hit max_tokens: empty content, no tool calls, finish_reason "length".
+func isEmptyTruncated(body []byte) bool {
+	var parsed struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Content   *string `json:"content"`
+				ToolCalls []any   `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(body, &parsed) != nil || len(parsed.Choices) == 0 {
+		return false
+	}
+	c := parsed.Choices[0]
+	empty := c.Message.Content == nil || strings.TrimSpace(*c.Message.Content) == ""
+	return c.FinishReason == "length" && empty && len(c.Message.ToolCalls) == 0
 }

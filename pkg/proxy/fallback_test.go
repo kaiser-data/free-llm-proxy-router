@@ -336,3 +336,56 @@ func TestFallbackChain_ModelErrorsDoNotCoolDownProvider(t *testing.T) {
 		t.Error("model-level 429s must not put the whole provider on cooldown")
 	}
 }
+
+func TestFallbackChain_EmptyTruncatedTriesNextModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["model"] == "reasoner" {
+			w.Write([]byte(`{"model":"reasoner","choices":[{"message":{"content":""},"finish_reason":"length"}]}`))
+			return
+		}
+		w.Write([]byte(`{"model":"chat-model","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "groq", "reasoner")
+	fc.Strategy = listStrategy{
+		{ProviderID: "groq", ModelID: "reasoner"},
+		{ProviderID: "groq", ModelID: "chat-model"},
+	}
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "chat-model" {
+		t.Fatalf("expected chat-model after empty truncated reply, got resp=%v err=%v", resp, err)
+	}
+}
+
+func TestFallbackChain_EmptyTruncatedReturnedWhenNothingElse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"model":"reasoner","choices":[{"message":{"content":""},"finish_reason":"length"}]}`))
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "groq", "reasoner")
+	fc.Strategy = listStrategy{{ProviderID: "groq", ModelID: "reasoner"}}
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "reasoner" {
+		t.Fatalf("expected the truncated reply rather than exhaustion, got resp=%v err=%v", resp, err)
+	}
+}
+
+func TestIsEmptyTruncated(t *testing.T) {
+	cases := map[string]bool{
+		`{"choices":[{"message":{"content":""},"finish_reason":"length"}]}`:                     true,
+		`{"choices":[{"message":{"content":null},"finish_reason":"length"}]}`:                   true,
+		`{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}`:              false,
+		`{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}`:                       false,
+		`{"choices":[{"message":{"content":null,"tool_calls":[{}]},"finish_reason":"length"}]}`: false,
+		`not json`: false,
+	}
+	for body, want := range cases {
+		if got := isEmptyTruncated([]byte(body)); got != want {
+			t.Errorf("isEmptyTruncated(%s) = %v, want %v", body, got, want)
+		}
+	}
+}
