@@ -118,6 +118,7 @@ nfpms:
     maintainer: kaiser-data <61822885+kaiser-data@users.noreply.github.com>
     license: MIT
     formats: [deb, rpm, apk]
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
     bindir: /usr/lib/free-llm-proxy-router
     contents:
       - src: configs/
