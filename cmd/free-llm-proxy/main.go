@@ -109,8 +109,10 @@ func runProxy(cmd *cobra.Command, args []string) error {
 
 	// Load persisted rate-limit usage
 	usagePath := "~/.free-llm-proxy-router/usage.json"
-	if _, err := ratelimit.LoadUsage(usagePath); err != nil {
-		log.Printf("usage.json not found (starting fresh): %v", err)
+	if usage, err := ratelimit.LoadUsage(usagePath); err != nil {
+		log.Printf("usage.json unreadable (starting fresh): %v", err)
+	} else {
+		rateLimiter.Restore(usage)
 	}
 
 	// Set up reliability tracker
@@ -189,15 +191,35 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		defer stopWatch()
 	}
 
+	// Persist daily usage and reliability stats periodically and on shutdown,
+	// so a crash or kill -9 loses at most a few minutes of quota tracking.
+	saveState := func() {
+		if err := ratelimit.SaveUsage(rateLimiter.Snapshot(), usagePath); err != nil {
+			log.Printf("saving usage: %v", err)
+		}
+		if err := reliability.Save(reliabilityTracker, relPath); err != nil {
+			log.Printf("saving reliability: %v", err)
+		}
+	}
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				saveState()
+			}
+		}
+	}()
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		log.Printf("proxy: shutting down...")
-		// Save reliability stats on shutdown
-		if err := reliability.Save(reliabilityTracker, relPath); err != nil {
-			log.Printf("saving reliability: %v", err)
-		}
+		saveState()
 		cancel()
 	}()
 
