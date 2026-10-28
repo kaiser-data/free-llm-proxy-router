@@ -48,3 +48,86 @@ changelog:
   sort: asc
   filters:
     exclude: ["^docs:", "^chore:", "^test:"]
+
+# Container images (linux amd64/arm64) on GHCR, joined into one multi-arch tag.
+dockers:
+  - id: image-amd64
+    ids: [free-llm-proxy, free-llm-scan]
+    goos: linux
+    goarch: amd64
+    use: buildx
+    image_templates:
+      - "ghcr.io/kaiser-data/free-llm-proxy-router:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.source=https://github.com/kaiser-data/free-llm-proxy-router"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    extra_files: [configs]
+  - id: image-arm64
+    ids: [free-llm-proxy, free-llm-scan]
+    goos: linux
+    goarch: arm64
+    use: buildx
+    image_templates:
+      - "ghcr.io/kaiser-data/free-llm-proxy-router:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.source=https://github.com/kaiser-data/free-llm-proxy-router"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    extra_files: [configs]
+
+docker_manifests:
+  - name_template: "ghcr.io/kaiser-data/free-llm-proxy-router:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/kaiser-data/free-llm-proxy-router:{{ .Version }}-amd64"
+      - "ghcr.io/kaiser-data/free-llm-proxy-router:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/kaiser-data/free-llm-proxy-router:latest"
+    image_templates:
+      - "ghcr.io/kaiser-data/free-llm-proxy-router:{{ .Version }}-amd64"
+      - "ghcr.io/kaiser-data/free-llm-proxy-router:{{ .Version }}-arm64"
+
+# Homebrew formula in kaiser-data/homebrew-tap. Binaries and configs/ live
+# together in libexec so config.FindDataFile finds the bundled files through
+# the bin/ symlinks. Skipped when HOMEBREW_TAP_TOKEN is unset.
+brews:
+  - name: free-llm-proxy-router
+    repository:
+      owner: kaiser-data
+      name: homebrew-tap
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_TOKEN" "") "" }}true{{ end }}'
+    directory: Formula
+    homepage: https://github.com/kaiser-data/free-llm-proxy-router
+    description: One OpenAI-compatible endpoint over every free LLM API tier
+    license: MIT
+    install: |
+      libexec.install "free-llm-proxy", "free-llm-scan", "free-llm-bench", "configs"
+      bin.install_symlink libexec/"free-llm-proxy", libexec/"free-llm-scan", libexec/"free-llm-bench"
+    test: |
+      assert_match "free-llm-proxy", shell_output("#{bin}/free-llm-proxy --help")
+
+# Linux packages: binaries + configs/ in /usr/lib/free-llm-proxy-router,
+# symlinked into /usr/bin.
+nfpms:
+  - id: linux-packages
+    package_name: free-llm-proxy-router
+    homepage: https://github.com/kaiser-data/free-llm-proxy-router
+    description: One OpenAI-compatible endpoint over every free LLM API tier
+    maintainer: kaiser-data <61822885+kaiser-data@users.noreply.github.com>
+    license: MIT
+    formats: [deb, rpm, apk]
+    bindir: /usr/lib/free-llm-proxy-router
+    contents:
+      - src: configs/
+        dst: /usr/lib/free-llm-proxy-router/configs
+      - src: /usr/lib/free-llm-proxy-router/free-llm-proxy
+        dst: /usr/bin/free-llm-proxy
+        type: symlink
+      - src: /usr/lib/free-llm-proxy-router/free-llm-scan
+        dst: /usr/bin/free-llm-scan
+        type: symlink
+      - src: /usr/lib/free-llm-proxy-router/free-llm-bench
+        dst: /usr/bin/free-llm-bench
+        type: symlink
