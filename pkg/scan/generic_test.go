@@ -19,6 +19,7 @@ func TestIsNonChatModel(t *testing.T) {
 		"gemini-robotics-er-2-preview",
 		"gemini-2.5-computer-use-preview-10-2025",
 		"deep-research-preview-04-2026",
+		"antigravity-preview-latest",
 	}
 	for _, id := range nonChat {
 		if !isNonChatModel(id) {

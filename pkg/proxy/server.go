@@ -164,6 +164,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			req.MaxTokens = int(mt)
 		}
 		// Redirect routing: specific model takes precedence over strategy.
+		// A pinned model that has left the free catalog falls back to the
+		// profile's strategy rather than failing every request.
+		if profile.Model != "" && !catalogHasModel(cat, profile.Model) {
+			log.Printf("agent profile %q: pinned model %q not in free catalog — using strategy instead", req.Model, profile.Model)
+			profile.Model = ""
+		}
 		if profile.Model != "" {
 			req.Model = profile.Model
 			raw["model"] = profile.Model
@@ -263,6 +269,21 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 	req.Model = ""
 	raw["model"] = ""
 	s.executeStrategyChain(w, r, cfg, cat, req, raw)
+}
+
+// catalogHasModel reports whether a model ID ("model" or "provider/model") is
+// in the free catalog.
+func catalogHasModel(cat *catalog.Catalog, model string) bool {
+	targetProvider, targetModel := "", model
+	if idx := strings.IndexByte(model, '/'); idx >= 0 {
+		targetProvider, targetModel = model[:idx], model[idx+1:]
+	}
+	for _, e := range cat.Entries {
+		if matchEntry(e, model, targetProvider, targetModel) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchEntry reports whether a catalog entry matches the requested model.

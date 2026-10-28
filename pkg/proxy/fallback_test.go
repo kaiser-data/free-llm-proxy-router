@@ -3,9 +3,11 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
@@ -227,5 +229,110 @@ func TestStripGeminiThoughts(t *testing.T) {
 	plain := []byte(`{"choices":[{"message":{"content":"no thoughts here"}}]}`)
 	if string(StripGeminiThoughts(plain)) != string(plain) {
 		t.Error("body without <thought> must be returned unchanged")
+	}
+}
+
+func TestFallbackChain_400TriesNextModelOfSameProvider(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["model"] == "interactions-only" {
+			http.Error(w, `{"error":{"code":400,"message":"This model only supports Interactions API."}}`, http.StatusBadRequest)
+			return
+		}
+		w.Write([]byte(`{"model":"chat-model","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "gemini", "interactions-only")
+	fc.Strategy = listStrategy{
+		{ProviderID: "gemini", ModelID: "interactions-only"},
+		{ProviderID: "gemini", ModelID: "chat-model"},
+	}
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "chat-model" {
+		t.Fatalf("expected chat-model to answer after a model-specific 400, got resp=%v err=%v", resp, err)
+	}
+}
+
+func TestFallbackChain_OverloadedModelTriesNext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["model"] == "busy-model" {
+			http.Error(w, `{"error":{"code":503,"message":"This model is currently experiencing high demand."}}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Write([]byte(`{"model":"idle-model","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "gemini", "busy-model")
+	fc.Strategy = listStrategy{
+		{ProviderID: "gemini", ModelID: "busy-model"},
+		{ProviderID: "gemini", ModelID: "idle-model"},
+	}
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "idle-model" {
+		t.Fatalf("expected idle-model after a 503 on busy-model, got resp=%v err=%v", resp, err)
+	}
+}
+
+func TestFallbackChain_AuthErrorSkipsProvider(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, `{"error":{"message":"Invalid API Key"}}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "groq", "a")
+	fc.Strategy = listStrategy{{ProviderID: "groq", ModelID: "a"}, {ProviderID: "groq", ModelID: "b"}}
+	_, _ = fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if calls != 1 {
+		t.Errorf("provider called %d times after 401, want 1", calls)
+	}
+}
+
+func TestCallProviderHonorsTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+		}
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "slow", "m")
+	pc := fc.Cfg.Providers[0]
+	pc.Timeout = "50ms"
+	start := time.Now()
+	_, err := fc.callProvider(context.Background(), pc, map[string]any{"model": "m"})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if time.Since(start) > 400*time.Millisecond {
+		t.Errorf("timeout not applied: took %v", time.Since(start))
+	}
+}
+
+func TestFallbackChain_ModelErrorsDoNotCoolDownProvider(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"limit: 0, model: x"}}`, http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	fc, rl, _ := newTestChain(srv.URL, "gemini", "m0")
+	fc.Cfg.Fallback.MaxAttempts = 20
+	var ranked listStrategy
+	for i := 0; i < 12; i++ {
+		ranked = append(ranked, strategy.RankedEntry{ProviderID: "gemini", ModelID: fmt.Sprintf("m%d", i)})
+	}
+	fc.Strategy = ranked
+	for i := 0; i < 4; i++ {
+		_, _ = fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	}
+	if rl.IsOnCooldown("gemini") {
+		t.Error("model-level 429s must not put the whole provider on cooldown")
 	}
 }

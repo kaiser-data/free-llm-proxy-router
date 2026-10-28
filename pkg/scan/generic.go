@@ -156,6 +156,7 @@ var nonChatPatterns = []string{
 	"guard",
 	// Gemini media and agent models listed alongside chat models
 	"nano-banana", "lyria", "robotics", "computer-use", "deep-research",
+	"antigravity", // Interactions API only, no chat completions
 }
 
 // isNonChatModel reports whether a model ID looks like a non-chat model.

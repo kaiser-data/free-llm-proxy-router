@@ -179,13 +179,19 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					}
 				}
 			}
-			// Apply per-status cooldown logic. 429 and 404 concern one model,
-			// so the chain may still try other models from the same provider.
-			modelLevel := false
+			if ctx.Err() != nil {
+				// Client went away; not the provider's fault.
+				return nil, ctx.Err()
+			}
+			// Apply per-status cooldown logic.
+			// Only auth errors and transport failures (resp == nil) mean the
+			// provider itself is unusable. Any other status is treated as
+			// model-specific: free tiers often fail one model (quota, retired,
+			// overloaded) while the provider's other models still answer.
+			modelLevel := resp != nil
 			if resp != nil {
 				switch resp.StatusCode {
 				case 429:
-					modelLevel = true
 					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 					info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
 					waitDur := info.WaitDuration()
@@ -201,13 +207,13 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 						newIdx := fc.RateLimiter.RotateKey(r.ProviderID, providerCfg.NumKeys())
 						log.Printf("fallback: %s/%s rate limited — rotated to key slot %d", r.ProviderID, r.ModelID, newIdx+1)
 					} else {
-						log.Printf("fallback: %s/%s rate limited — cooldown until %s", r.ProviderID, r.ModelID, until.Format("15:04:05"))
+						log.Printf("fallback: %s/%s rate limited — model cooldown %s", r.ProviderID, r.ModelID, waitDur.Round(time.Second))
 					}
 				case 401, 403:
+					modelLevel = false
 					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(10*time.Minute))
 					log.Printf("fallback: %s auth error %d — cooldown 10min", r.ProviderID, resp.StatusCode)
 				case 404:
-					modelLevel = true
 					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, time.Now().Add(missingModelCooldown))
 					log.Printf("fallback: %s model %s not found — model cooldown %s", r.ProviderID, r.ModelID, missingModelCooldown)
@@ -224,10 +230,14 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 				continue
 			}
 			log.Printf("fallback: %s/%s status %d — skipping provider%s", r.ProviderID, r.ModelID, statusCode, upstreamErrSnippet(resp, err))
-			fc.ReliabilityTracker.Record(r.ProviderID, false)
-			if fc.ReliabilityTracker.ShouldCooldown(r.ProviderID) {
-				fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(30*time.Second))
-				log.Printf("fallback: %s reliability below 50%% — short cooldown", r.ProviderID)
+			// Model-level failures say nothing about the provider's health, so
+			// only auth and transport errors count against its reliability.
+			if !modelLevel {
+				fc.ReliabilityTracker.Record(r.ProviderID, false)
+				if fc.ReliabilityTracker.ShouldCooldown(r.ProviderID) {
+					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(30*time.Second))
+					log.Printf("fallback: %s reliability below 50%% — short cooldown", r.ProviderID)
+				}
 			}
 			failedProviders[r.ProviderID] = true // don't try other models from this provider
 			continue
@@ -265,6 +275,11 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 }
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
+	if d, err := time.ParseDuration(cfg.Timeout); err == nil && d > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
+	}
 	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 
 	data, err := json.Marshal(body)
@@ -388,7 +403,7 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 
 const (
 	// maxModelsPerProvider bounds how many models of one provider a single
-	// request tries after model-level errors (429/404), so a large catalog
+	// request tries after model-level errors (anything but auth/transport), so a large catalog
 	// such as NVIDIA NIM cannot use up every attempt.
 	maxModelsPerProvider = 3
 	// zeroQuotaCooldown applies when a 429 reports a quota "limit: 0": the
