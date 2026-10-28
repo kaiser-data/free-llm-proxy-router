@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -372,27 +373,58 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	w.Write(resp.Body)
 }
 
-// handleModels returns the list of available free models.
+// handleModels lists what a client can put in "model": "auto", the routing
+// strategies, the configured agent profiles, then every free catalog model
+// (deduplicated by ID; owned_by is the first provider serving it). UIs like
+// Open WebUI and Continue only offer IDs that appear here.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	cat := s.catalog.Load()
+	cfg := s.cfg.Load()
 	type modelEntry struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
 		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
 	}
-	var models []modelEntry
-	for _, e := range cat.FreeEntries() {
-		models = append(models, modelEntry{
-			ID:     e.ModelID,
-			Object: "model",
-		})
+	models := []modelEntry{}
+	seen := map[string]bool{}
+	add := func(id, owner string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		models = append(models, modelEntry{ID: id, Object: "model", OwnedBy: owner})
 	}
-	resp := map[string]any{
+
+	add("auto", "free-llm-proxy-router")
+	if s.strategyReg != nil {
+		names := s.strategyReg.Names()
+		sort.Strings(names)
+		for _, n := range names {
+			add(n, "free-llm-proxy-router")
+		}
+	}
+	if cfg != nil {
+		agents := make([]string, 0, len(cfg.Proxy.Agents))
+		for n := range cfg.Proxy.Agents {
+			agents = append(agents, n)
+		}
+		sort.Strings(agents)
+		for _, n := range agents {
+			add(n, "free-llm-proxy-router")
+		}
+	}
+	if cat != nil {
+		for _, e := range cat.FreeEntries() {
+			add(e.ModelID, e.ProviderID)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
 		"object": "list",
 		"data":   models,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	})
 }
 
 // handleCompletions is a stub for text-completion requests.
