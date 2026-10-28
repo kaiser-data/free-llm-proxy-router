@@ -389,3 +389,38 @@ func TestIsEmptyTruncated(t *testing.T) {
 		}
 	}
 }
+
+func TestFallbackChain_OpenRouterFollowsStrategyOrder(t *testing.T) {
+	orHits := 0
+	or := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		orHits++
+		w.Write([]byte(`{"model":"or-model","choices":[{"message":{"content":"from openrouter"}}]}`))
+	}))
+	defer or.Close()
+	groq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"model":"fast","choices":[{"message":{"content":"from groq"}}]}`))
+	}))
+	defer groq.Close()
+
+	fc, _, _ := newTestChain(groq.URL, "groq", "fast")
+	fc.Cfg.Providers = append(fc.Cfg.Providers, config.ProviderConfig{ID: "openrouter", BaseURL: or.URL, Enabled: true})
+	ranked := listStrategy{
+		{ProviderID: "groq", ModelID: "fast"},
+		{ProviderID: "openrouter", ModelID: "or-model"},
+	}
+	fc.Strategy = ranked
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "fast" {
+		t.Fatalf("expected groq (ranked first) to answer, got resp=%v err=%v", resp, err)
+	}
+	if orHits != 0 {
+		t.Errorf("openrouter called %d times although groq was ranked first and answered", orHits)
+	}
+
+	// Ranked first, OpenRouter answers before Groq is tried.
+	fc.Strategy = listStrategy{ranked[1], ranked[0]}
+	resp, err = fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "or-model" {
+		t.Fatalf("expected openrouter (ranked first) to answer, got resp=%v err=%v", resp, err)
+	}
+}

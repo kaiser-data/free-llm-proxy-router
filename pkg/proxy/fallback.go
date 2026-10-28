@@ -77,19 +77,29 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		maxAttempts = 5
 	}
 
-	// Step 1: Try OpenRouter with models[] array (native fallback)
-	if or := fc.findProvider("openrouter"); or != nil {
-		openRouterModels := fc.collectProviderModels("openrouter", ranked)
-		if len(openRouterModels) > 0 {
-			body := BuildOpenRouterRequest(req.Raw, openRouterModels)
-			resp, err := fc.callProvider(ctx, *or, body)
-			if err == nil && resp.StatusCode == http.StatusOK {
-				fc.ReliabilityTracker.Record("openrouter", true)
-				return resp, nil
-			}
-			log.Printf("fallback: openrouter models[] failed — continuing%s", upstreamErrSnippet(resp, err))
-			fc.ReliabilityTracker.Record("openrouter", false)
+	// OpenRouter is called once, with all its ranked models in a models[]
+	// array (native fallback), at the position of its best-ranked entry, so a
+	// strategy that ranks Groq or Cerebras first gets them first.
+	openRouterTried := false
+	tryOpenRouter := func() *Response {
+		openRouterTried = true
+		or := fc.findProvider("openrouter")
+		if or == nil {
+			return nil
 		}
+		openRouterModels := fc.collectProviderModels("openrouter", ranked)
+		if len(openRouterModels) == 0 {
+			return nil
+		}
+		body := BuildOpenRouterRequest(req.Raw, openRouterModels)
+		resp, err := fc.callProvider(ctx, *or, body)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			fc.ReliabilityTracker.Record("openrouter", true)
+			return resp
+		}
+		log.Printf("fallback: openrouter models[] failed — continuing%s", upstreamErrSnippet(resp, err))
+		fc.ReliabilityTracker.Record("openrouter", false)
+		return nil
 	}
 
 	// Step 2–4: Try one model per provider in ranked order.
@@ -106,8 +116,15 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		if attempt >= maxAttempts {
 			break
 		}
-		// Skip OpenRouter entries — already tried above via models[] array.
 		if r.ProviderID == "openrouter" {
+			if !openRouterTried {
+				if resp := tryOpenRouter(); resp != nil {
+					return resp, nil
+				}
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+			}
 			continue
 		}
 		// Skip providers that already returned an error this request.
