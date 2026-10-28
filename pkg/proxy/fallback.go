@@ -22,7 +22,7 @@ import (
 //
 // Fallback order:
 //  1. OpenRouter with models[] array (native intra-provider fallback)
-//  2. Groq with service_tier: auto
+//  2. Groq (service_tier only if configured; free orgs reject "auto")
 //  3. Gemini (4-dimensional rate limit check)
 //  4. Remaining providers (sorted by strategy)
 //  5. OpenRouter with model: "openrouter/free" (ultimate fallback)
@@ -87,7 +87,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 				fc.ReliabilityTracker.Record("openrouter", true)
 				return resp, nil
 			}
-			log.Printf("fallback: openrouter models[] failed (%v) — continuing", err)
+			log.Printf("fallback: openrouter models[] failed — continuing%s", upstreamErrSnippet(resp, err))
 			fc.ReliabilityTracker.Record("openrouter", false)
 		}
 	}
@@ -100,6 +100,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	// faster, more reliable providers (Groq, Cerebras, Gemini) are even tried.
 	attempt := 0
 	failedProviders := make(map[string]bool)
+	providerTries := make(map[string]int)
 	for _, r := range ranked {
 		if attempt >= maxAttempts {
 			break
@@ -178,13 +179,26 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					}
 				}
 			}
+			if ctx.Err() != nil {
+				// Client went away; not the provider's fault.
+				return nil, ctx.Err()
+			}
 			// Apply per-status cooldown logic.
+			// Only auth errors and transport failures (resp == nil) mean the
+			// provider itself is unusable. Any other status is treated as
+			// model-specific: free tiers often fail one model (quota, retired,
+			// overloaded) while the provider's other models still answer.
+			modelLevel := resp != nil
 			if resp != nil {
 				switch resp.StatusCode {
 				case 429:
 					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 					info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
 					waitDur := info.WaitDuration()
+					if isZeroQuota(resp.Body) {
+						// Quota "limit: 0" means the model is not on this key's free tier.
+						waitDur = zeroQuotaCooldown
+					}
 					until := time.Now().Add(waitDur)
 					// Cooldown on the specific model, not the whole provider.
 					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, until)
@@ -193,26 +207,37 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 						newIdx := fc.RateLimiter.RotateKey(r.ProviderID, providerCfg.NumKeys())
 						log.Printf("fallback: %s/%s rate limited — rotated to key slot %d", r.ProviderID, r.ModelID, newIdx+1)
 					} else {
-						log.Printf("fallback: %s/%s rate limited — cooldown until %s", r.ProviderID, r.ModelID, until.Format("15:04:05"))
+						log.Printf("fallback: %s/%s rate limited — model cooldown %s", r.ProviderID, r.ModelID, waitDur.Round(time.Second))
 					}
 				case 401, 403:
+					modelLevel = false
 					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(10*time.Minute))
 					log.Printf("fallback: %s auth error %d — cooldown 10min", r.ProviderID, resp.StatusCode)
 				case 404:
 					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
-					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(5*time.Minute))
-					log.Printf("fallback: %s model %s not found — cooldown 5min", r.ProviderID, r.ModelID)
+					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, time.Now().Add(missingModelCooldown))
+					log.Printf("fallback: %s model %s not found — model cooldown %s", r.ProviderID, r.ModelID, missingModelCooldown)
 				}
 			}
 			statusCode := 0
 			if resp != nil {
 				statusCode = resp.StatusCode
 			}
-			log.Printf("fallback: %s/%s status %d — skipping provider", r.ProviderID, r.ModelID, statusCode)
-			fc.ReliabilityTracker.Record(r.ProviderID, false)
-			if fc.ReliabilityTracker.ShouldCooldown(r.ProviderID) {
-				fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(30*time.Second))
-				log.Printf("fallback: %s reliability below 50%% â short cooldown", r.ProviderID)
+			providerTries[r.ProviderID]++
+			if modelLevel && providerTries[r.ProviderID] < maxModelsPerProvider {
+				// The provider itself is fine; try its next ranked model.
+				log.Printf("fallback: %s/%s status %d — trying next model%s", r.ProviderID, r.ModelID, statusCode, upstreamErrSnippet(resp, err))
+				continue
+			}
+			log.Printf("fallback: %s/%s status %d — skipping provider%s", r.ProviderID, r.ModelID, statusCode, upstreamErrSnippet(resp, err))
+			// Model-level failures say nothing about the provider's health, so
+			// only auth and transport errors count against its reliability.
+			if !modelLevel {
+				fc.ReliabilityTracker.Record(r.ProviderID, false)
+				if fc.ReliabilityTracker.ShouldCooldown(r.ProviderID) {
+					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(30*time.Second))
+					log.Printf("fallback: %s reliability below 50%% — short cooldown", r.ProviderID)
+				}
 			}
 			failedProviders[r.ProviderID] = true // don't try other models from this provider
 			continue
@@ -250,6 +275,11 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 }
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
+	if d, err := time.ParseDuration(cfg.Timeout); err == nil && d > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
+	}
 	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 
 	data, err := json.Marshal(body)
@@ -282,6 +312,10 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
+	if cfg.ID == "gemini" && resp.StatusCode == http.StatusOK {
+		respBody = StripGeminiThoughts(respBody)
+	}
+
 	// Extract the actual model used (OpenRouter fills this in)
 	usedModel := ""
 	if resp.StatusCode == http.StatusOK {
@@ -302,12 +336,7 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 }
 
 func (fc *FallbackChain) findProvider(id string) *config.ProviderConfig {
-	for i := range fc.Cfg.Providers {
-		if fc.Cfg.Providers[i].ID == id && fc.Cfg.Providers[i].Enabled {
-			return &fc.Cfg.Providers[i]
-		}
-	}
-	return nil
+	return findProviderCfg(fc.Cfg, id)
 }
 
 func (fc *FallbackChain) collectProviderModels(providerID string, ranked []strategy.RankedEntry) []string {
@@ -364,10 +393,46 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 		}
 	}
 
-	if providerID == "groq" {
-		body = BuildGroqRequest(body)
+	// Provider-native service tier (e.g. Groq), only when explicitly configured:
+	// Groq rejects service_tier "auto" for free-tier orgs with a 400.
+	if pc := fc.findProvider(providerID); pc != nil && pc.NativeFeatures.ServiceTier != "" {
+		body["service_tier"] = pc.NativeFeatures.ServiceTier
 	}
 	return body
+}
+
+const (
+	// maxModelsPerProvider bounds how many models of one provider a single
+	// request tries after model-level errors (anything but auth/transport), so a large catalog
+	// such as NVIDIA NIM cannot use up every attempt.
+	maxModelsPerProvider = 3
+	// zeroQuotaCooldown applies when a 429 reports a quota "limit: 0": the
+	// model is listed but not on the free tier, so retrying soon is pointless.
+	zeroQuotaCooldown = 24 * time.Hour
+	// missingModelCooldown applies when a provider returns 404 for a model.
+	missingModelCooldown = time.Hour
+)
+
+// isZeroQuota reports whether a 429 body says the quota for this model is zero
+// (Gemini returns "limit: 0" for models outside the free tier).
+func isZeroQuota(body []byte) bool {
+	return bytes.Contains(body, []byte("limit: 0,"))
+}
+
+// upstreamErrSnippet returns a short " (...)" suffix describing why an upstream
+// call failed, for logging. It never includes request data or API keys.
+func upstreamErrSnippet(resp *Response, err error) string {
+	if err != nil {
+		return fmt.Sprintf(" (%v)", err)
+	}
+	if resp == nil || len(resp.Body) == 0 {
+		return ""
+	}
+	msg := strings.Join(strings.Fields(string(resp.Body)), " ")
+	if len(msg) > 200 {
+		msg = msg[:200] + "…"
+	}
+	return " (" + msg + ")"
 }
 
 // parseHFLoadingWait extracts the estimated_time from a HuggingFace 503 body.

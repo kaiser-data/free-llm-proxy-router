@@ -47,7 +47,7 @@ proxy:
 
     # Pinned model for tasks that need consistency
     reliable:
-      model: "groq/llama-3.3-70b-versatile"
+      model: "groq/openai/gpt-oss-120b"
       defaults:
         temperature: 0.7
         max_tokens: 4096
@@ -61,7 +61,7 @@ proxy:
     # Pinned high-quality model for token-efficient subtasks
     # Usage: ask-precise "your question"
     precise:
-      model: "groq/llama-3.3-70b-versatile"
+      model: "groq/openai/gpt-oss-120b"
       overrides:
         temperature: 0.1
         max_tokens: 400
@@ -74,7 +74,7 @@ fallback:
   cerebras_request_spacing_ms: 100
 
 refresh:
-  model: "groq/llama-3.3-70b-versatile"
+  model: "groq/openai/gpt-oss-120b"
   provider: "groq"
   schedule: "weekly"
   prompt_file: "configs/refresh-prompt.txt"
@@ -157,7 +157,7 @@ providers:
     discovery:
       models_endpoint: "https://generativelanguage.googleapis.com/v1beta/models"
     rate_limit_notes: "4 dimensions: RPM/TPM/RPD/IPM. Per GCP project. RPD resets midnight PT."
-    preferred_volume_model: "gemini-2.0-flash-lite"
+    preferred_volume_model: "gemini-3.1-flash-lite"
 
   - id: mistral
     name: "Mistral AI"

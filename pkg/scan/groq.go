@@ -41,14 +41,6 @@ type groqModelsResponse struct {
 	} `json:"data"`
 }
 
-// audioModelIDs contains model IDs that are audio-only (not chat).
-// These are excluded from the free chat catalog.
-var audioModelIDs = map[string]bool{
-	"whisper-large-v3":       true,
-	"whisper-large-v3-turbo": true,
-	"distil-whisper-large-v3-en": true,
-}
-
 func (s *GroqScanner) ScanFreeModels(ctx context.Context, cfg config.ProviderConfig) ([]catalog.CatalogEntry, error) {
 	endpoint := cfg.Discovery.ModelsEndpoint
 	if endpoint == "" {
@@ -88,8 +80,8 @@ func (s *GroqScanner) ScanFreeModels(ctx context.Context, cfg config.ProviderCon
 
 	var entries []catalog.CatalogEntry
 	for _, m := range gr.Data {
-		// Skip audio-only models
-		if audioModelIDs[m.ID] {
+		// Skip speech, embedding and safety-classifier models
+		if isNonChatModel(m.ID) {
 			continue
 		}
 		entries = append(entries, catalog.CatalogEntry{
