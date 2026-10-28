@@ -22,7 +22,7 @@ import (
 //
 // Fallback order:
 //  1. OpenRouter with models[] array (native intra-provider fallback)
-//  2. Groq with service_tier: auto
+//  2. Groq (service_tier only if configured; free orgs reject "auto")
 //  3. Gemini (4-dimensional rate limit check)
 //  4. Remaining providers (sorted by strategy)
 //  5. OpenRouter with model: "openrouter/free" (ultimate fallback)
@@ -87,7 +87,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 				fc.ReliabilityTracker.Record("openrouter", true)
 				return resp, nil
 			}
-			log.Printf("fallback: openrouter models[] failed (%v) — continuing", err)
+			log.Printf("fallback: openrouter models[] failed — continuing%s", upstreamErrSnippet(resp, err))
 			fc.ReliabilityTracker.Record("openrouter", false)
 		}
 	}
@@ -208,11 +208,11 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			if resp != nil {
 				statusCode = resp.StatusCode
 			}
-			log.Printf("fallback: %s/%s status %d — skipping provider", r.ProviderID, r.ModelID, statusCode)
+			log.Printf("fallback: %s/%s status %d — skipping provider%s", r.ProviderID, r.ModelID, statusCode, upstreamErrSnippet(resp, err))
 			fc.ReliabilityTracker.Record(r.ProviderID, false)
 			if fc.ReliabilityTracker.ShouldCooldown(r.ProviderID) {
 				fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(30*time.Second))
-				log.Printf("fallback: %s reliability below 50%% â short cooldown", r.ProviderID)
+				log.Printf("fallback: %s reliability below 50%% — short cooldown", r.ProviderID)
 			}
 			failedProviders[r.ProviderID] = true // don't try other models from this provider
 			continue
@@ -364,10 +364,28 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 		}
 	}
 
-	if providerID == "groq" {
-		body = BuildGroqRequest(body)
+	// Provider-native service tier (e.g. Groq), only when explicitly configured:
+	// Groq rejects service_tier "auto" for free-tier orgs with a 400.
+	if pc := fc.findProvider(providerID); pc != nil && pc.NativeFeatures.ServiceTier != "" {
+		body["service_tier"] = pc.NativeFeatures.ServiceTier
 	}
 	return body
+}
+
+// upstreamErrSnippet returns a short " (...)" suffix describing why an upstream
+// call failed, for logging. It never includes request data or API keys.
+func upstreamErrSnippet(resp *Response, err error) string {
+	if err != nil {
+		return fmt.Sprintf(" (%v)", err)
+	}
+	if resp == nil || len(resp.Body) == 0 {
+		return ""
+	}
+	msg := strings.Join(strings.Fields(string(resp.Body)), " ")
+	if len(msg) > 200 {
+		msg = msg[:200] + "…"
+	}
+	return " (" + msg + ")"
 }
 
 // parseHFLoadingWait extracts the estimated_time from a HuggingFace 503 body.

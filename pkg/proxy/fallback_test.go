@@ -111,3 +111,23 @@ func TestFallbackChain_404MarksNeedsReverification(t *testing.T) {
 		t.Error("expected test-model to be flagged NeedsReverification after 404")
 	}
 }
+
+func TestBuildBodyServiceTierOnlyWhenConfigured(t *testing.T) {
+	cfg := &config.Config{Providers: []config.ProviderConfig{{ID: "groq", Enabled: true}}}
+	fc := &FallbackChain{Cfg: cfg}
+	raw := map[string]any{"model": "auto", "stream": true}
+
+	body := fc.buildBody("groq", raw, "llama-3.3-70b-versatile")
+	if _, ok := body["service_tier"]; ok {
+		t.Fatalf("service_tier sent without config (free Groq orgs reject it): %v", body)
+	}
+	if _, ok := body["stream"]; ok {
+		t.Fatalf("stream must be stripped for buffered fallback: %v", body)
+	}
+
+	cfg.Providers[0].NativeFeatures.ServiceTier = "flex"
+	body = fc.buildBody("groq", raw, "llama-3.3-70b-versatile")
+	if body["service_tier"] != "flex" {
+		t.Fatalf("service_tier = %v, want flex", body["service_tier"])
+	}
+}

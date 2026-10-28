@@ -145,13 +145,26 @@ func isEligibleModel(providerID, modelID, modelType string, endpoints []string) 
 		}
 	}
 
-	// Skip embedding/reranking/image models by name pattern
-	for _, skip := range []string{"embed", "rerank", "image", "vision-only", "tts", "stt", "whisper"} {
-		if strings.Contains(lower, skip) {
-			return false
+	return !isNonChatModel(lower)
+}
+
+// nonChatPatterns match model IDs that cannot answer a chat request: embeddings,
+// rerankers, speech, image generation and safety classifiers (which return a score).
+var nonChatPatterns = []string{
+	"embed", "rerank", "image", "vision-only",
+	"tts", "stt", "whisper", "orpheus",
+	"guard",
+}
+
+// isNonChatModel reports whether a model ID looks like a non-chat model.
+func isNonChatModel(modelID string) bool {
+	lower := strings.ToLower(modelID)
+	for _, p := range nonChatPatterns {
+		if strings.Contains(lower, p) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func hasEndpoint(endpoints []string, target string) bool {

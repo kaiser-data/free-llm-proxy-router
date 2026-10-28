@@ -7,10 +7,9 @@ package proxy
 // Last verified: 2026-02-28
 // Native features: models[] array fallback, openrouter/free router
 
-// Provider: Groq — service_tier: auto
+// Provider: Groq — service_tier is sent only when native_features.service_tier
+// is set in config. Free-tier orgs get a 400 for "auto" (verified 2026-10-28).
 // Docs: https://console.groq.com/docs/api-reference
-// Last verified: 2026-02-28
-// Native features: service_tier field
 
 // BuildOpenRouterRequest returns a modified request body that uses OpenRouter's
 // native models[] fallback array. OpenRouter tries each model in order,
@@ -34,13 +33,6 @@ func OpenRouterFreeRouterRequest(req map[string]any) map[string]any {
 	body["model"] = "openrouter/free"
 	delete(body, "models")  // clear any previous models[] array
 	delete(body, "stream")  // non-streaming for consistent JSON response
-	return body
-}
-
-// BuildGroqRequest injects service_tier: "auto" to maximise Groq's available capacity.
-func BuildGroqRequest(req map[string]any) map[string]any {
-	body := copyMap(req)
-	body["service_tier"] = "auto"
 	return body
 }
 
