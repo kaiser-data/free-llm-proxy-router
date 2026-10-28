@@ -109,20 +109,20 @@ func (s *Server) Start(ctx context.Context) error {
 // handleChatCompletions is the main OpenAI-compat chat endpoint.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method_not_allowed", "method not allowed")
 		return
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, `{"error":"failed to read request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_body", "failed to read request body")
 		return
 	}
 	r.Body.Close()
 
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_json", "request body is not valid JSON")
 		return
 	}
 
@@ -261,7 +261,8 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		// Any error or non-2xx — try next catalog entry.
 	}
 	if !found {
-		http.Error(w, fmt.Sprintf(`{"error":"model %q not found in free catalog"}`, req.Model), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "invalid_request_error", "model_not_found",
+			fmt.Sprintf("model %q not found in free catalog", req.Model))
 		return
 	}
 	// Model found but all direct attempts failed — fall back to strategy chain.
@@ -397,7 +398,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 // handleCompletions is a stub for text-completion requests.
 // Most modern models only support chat; this returns a helpful error.
 func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, `{"error":"use /v1/chat/completions — legacy completions not supported"}`, http.StatusNotImplemented)
+	writeError(w, http.StatusNotImplemented, "invalid_request_error", "unsupported_endpoint",
+		"legacy completions are not supported; use /v1/chat/completions")
 }
 
 // findProviderCfg returns the enabled provider with the given ID, or nil.

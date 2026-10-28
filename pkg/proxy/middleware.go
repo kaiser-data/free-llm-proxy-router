@@ -19,7 +19,7 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "authentication_error", "invalid_api_key", "invalid or missing proxy auth token")
 	})
 }
 
@@ -40,7 +40,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Printf("panic: %v", rec)
-				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+				writeError(w, http.StatusInternalServerError, "server_error", "internal_error", "internal server error")
 			}
 		}()
 		next.ServeHTTP(w, r)
