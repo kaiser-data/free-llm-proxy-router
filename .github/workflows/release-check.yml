@@ -1,0 +1,56 @@
+name: Release check
+
+# Dry-runs the full goreleaser pipeline (archives, docker images, Homebrew
+# formula, deb/rpm/apk) on PRs that touch packaging, without publishing.
+on:
+  pull_request:
+    paths:
+      - .goreleaser.yaml
+      - Dockerfile
+      - .github/workflows/**
+      - go.mod
+      - cmd/**
+      - configs/**
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: GoReleaser snapshot
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+
+      - name: Smoke-test the amd64 image
+        run: |
+          img=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -- '-amd64$' | head -1)
+          docker run -d --name proxy -p 8080:8080 "$img"
+          for i in $(seq 1 20); do curl -fs localhost:8080/health && break; sleep 0.5; done
+          docker logs proxy
+          curl -fs localhost:8080/health
+
+      - name: Inspect packages
+        run: |
+          ls -la dist/
+          dpkg-deb -c $(ls dist/*amd64*.deb | head -1) | grep -E 'usr/(bin|lib)/'
