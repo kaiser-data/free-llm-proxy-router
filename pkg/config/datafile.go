@@ -35,3 +35,22 @@ func FindDataFile(name, configPath string) string {
 	}
 	return filepath.Join("configs", name)
 }
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// CatalogReadPath returns the catalog file to load at startup: the configured
+// path if it exists, otherwise the catalog.json bundled with the release
+// (so a fresh install has models before the first 'free-llm-scan update').
+// Writers and watchers must keep using the configured path.
+func CatalogReadPath(path, configPath string) string {
+	if fileExists(expandHome(path)) {
+		return path
+	}
+	if bundled := FindDataFile("catalog.json", configPath); fileExists(bundled) {
+		return bundled
+	}
+	return path
+}

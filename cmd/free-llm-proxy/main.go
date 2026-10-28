@@ -58,13 +58,14 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		cfg.Proxy.Strategy = stratName
 	}
 
-	// Load model catalog
-	cat, err := catalog.Load(cfg.Catalog.Path)
+	// Load model catalog (bundled catalog.json until the first scan writes cfg.Catalog.Path)
+	catPath := config.CatalogReadPath(cfg.Catalog.Path, cfgFile)
+	cat, err := catalog.Load(catPath)
 	if err != nil {
 		return fmt.Errorf("loading catalog: %w", err)
 	}
 	freeCount := len(cat.FreeEntries())
-	log.Printf("catalog: %d free model(s) loaded from %s", freeCount, cfg.Catalog.Path)
+	log.Printf("catalog: %d free model(s) loaded from %s", freeCount, catPath)
 	if freeCount == 0 {
 		log.Printf("warning: catalog is empty — run 'free-llm-scan update' to discover free models")
 	}
@@ -89,7 +90,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check catalog staleness
-	if catalog.IsStale(cfg.Catalog.Path, time.Duration(cfg.Catalog.MaxAgeHours)*time.Hour) {
+	if catalog.IsStale(catPath, time.Duration(cfg.Catalog.MaxAgeHours)*time.Hour) {
 		log.Printf("warning: catalog is older than %dh — consider running 'free-llm-scan update'",
 			cfg.Catalog.MaxAgeHours)
 	}

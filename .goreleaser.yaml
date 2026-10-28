@@ -8,21 +8,21 @@ before:
 
 builds:
   - id: free-llm-proxy
-    main: ./cmd/proxy
+    main: ./cmd/free-llm-proxy
     binary: free-llm-proxy
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ldflags: ["-s -w"]
   - id: free-llm-scan
-    main: ./cmd/scan
+    main: ./cmd/free-llm-scan
     binary: free-llm-scan
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ldflags: ["-s -w"]
   - id: free-llm-bench
-    main: ./cmd/bench
+    main: ./cmd/free-llm-bench
     binary: free-llm-bench
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]

@@ -37,7 +37,7 @@ jobs:
           cache: true
 
       - name: Build scanner
-        run: go build -o bin/free-llm-scan ./cmd/scan
+        run: go build -o bin/free-llm-scan ./cmd/free-llm-scan
 
       - name: Scan providers
         env:
