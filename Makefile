@@ -9,22 +9,22 @@ all: build
 
 build: ## Build all three binaries
 	@mkdir -p $(BINDIR)
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-proxy ./cmd/proxy
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-scan ./cmd/scan
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-bench ./cmd/bench
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-proxy ./cmd/free-llm-proxy
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-scan ./cmd/free-llm-scan
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-bench ./cmd/free-llm-bench
 	@echo "Built: $(BINDIR)/free-llm-proxy, $(BINDIR)/free-llm-scan, $(BINDIR)/free-llm-bench"
 
 build-proxy: ## Build only the proxy binary
 	@mkdir -p $(BINDIR)
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-proxy ./cmd/proxy
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-proxy ./cmd/free-llm-proxy
 
 build-scan: ## Build only the scan binary
 	@mkdir -p $(BINDIR)
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-scan ./cmd/scan
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-scan ./cmd/free-llm-scan
 
 build-bench: ## Build only the bench binary
 	@mkdir -p $(BINDIR)
-	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-bench ./cmd/bench
+	$(GOCMD) build $(LDFLAGS) -o $(BINDIR)/free-llm-bench ./cmd/free-llm-bench
 
 test: ## Run unit tests
 	$(GOCMD) test ./... -count=1

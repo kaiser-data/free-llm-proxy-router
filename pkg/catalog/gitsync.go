@@ -183,7 +183,9 @@ func gitCommitPush(localCatalogPath string, cfg GitSyncConfig) error {
 
 	for _, args := range [][]string{
 		{"add", catalogInRepo},
-		{"commit", "--allow-empty", "-m", msg},
+		// The pathspec limits the commit to the catalog, so anything else
+		// already staged in the repo stays out of the automated commit.
+		{"commit", "--allow-empty", "-m", msg, "--", catalogInRepo},
 		{"push"},
 	} {
 		out, err := gitCmd(repoPath, args...)
@@ -196,9 +198,18 @@ func gitCommitPush(localCatalogPath string, cfg GitSyncConfig) error {
 	return nil
 }
 
-// fetchURL downloads url and atomically replaces localPath.
+// maxRemoteCatalogBytes caps a replica download. Real catalogs are a few
+// hundred KB; anything near this size is not a catalog.
+const maxRemoteCatalogBytes = 16 << 20
+
+// fetchClient bounds a replica pull so a stalled server cannot hang the loop.
+var fetchClient = &http.Client{Timeout: 60 * time.Second}
+
+// fetchURL downloads url, checks that it is a non-empty catalog, and only then
+// atomically replaces localPath. An error page, a truncated file or an empty
+// catalog leaves the current catalog in place.
 func fetchURL(url, localPath string) error {
-	resp, err := http.Get(url) //nolint:gosec // URL from user config
+	resp, err := fetchClient.Get(url) //nolint:gosec // URL from user config
 	if err != nil {
 		return fmt.Errorf("fetch %s: %w", url, err)
 	}
@@ -207,24 +218,31 @@ func fetchURL(url, localPath string) error {
 		return fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
 	}
 
-	tmp := localPath + ".tmp"
-	f, err := os.Create(tmp)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteCatalogBytes+1))
 	if err != nil {
-		return err
+		return fmt.Errorf("fetch %s: %w", url, err)
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
+	if len(data) > maxRemoteCatalogBytes {
+		return fmt.Errorf("fetch %s: response exceeds %d bytes", url, maxRemoteCatalogBytes)
 	}
-	f.Close()
+	var c Catalog
+	if err := json.Unmarshal(data, &c); err != nil {
+		return fmt.Errorf("fetch %s: not a catalog: %w", url, err)
+	}
+	if len(c.Entries) == 0 {
+		return fmt.Errorf("fetch %s: catalog has no entries", url)
+	}
 
+	localPath = expandHome(localPath)
+	tmp := localPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
 	if err := os.Rename(tmp, localPath); err != nil {
 		os.Remove(tmp)
 		return err
 	}
-	count, _ := countEntries(localPath)
-	log.Printf("gitsync: pulled %d models from %s", count, url)
+	log.Printf("gitsync: pulled %d models from %s", len(c.Entries), url)
 	return nil
 }
 
