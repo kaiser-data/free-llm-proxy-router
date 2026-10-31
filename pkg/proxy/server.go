@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -86,14 +88,17 @@ func (s *Server) Start(ctx context.Context) error {
 	handler = authMiddleware(cfg.Proxy.AuthToken, handler)
 
 	s.httpServer = &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Proxy.Port),
+		Addr:         net.JoinHostPort(cfg.Proxy.Host, strconv.Itoa(cfg.Proxy.Port)),
 		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("free-llm-proxy listening on :%d (strategy: %s)", cfg.Proxy.Port, cfg.Proxy.Strategy)
+	log.Printf("free-llm-proxy listening on %s (strategy: %s)", s.httpServer.Addr, cfg.Proxy.Strategy)
+	if cfg.Proxy.AuthToken == "" && !isLoopbackHost(cfg.Proxy.Host) {
+		log.Printf("warning: listening on %q without proxy.auth_token — anyone who can reach this port can spend your provider quotas", cfg.Proxy.Host)
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -106,6 +111,15 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// isLoopbackHost reports whether a listen host only accepts local connections.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // maxRequestBodyBytes caps chat request bodies. Generous enough for long
@@ -153,8 +167,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if stream, ok := raw["stream"].(bool); ok {
 		req.Stream = stream
 	}
-	if mt, ok := raw["max_tokens"].(float64); ok {
-		req.MaxTokens = int(mt)
+	if mt, ok := toInt(raw["max_tokens"]); ok {
+		req.MaxTokens = mt
 	}
 
 	cfg := s.cfg.Load()
@@ -173,8 +187,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			raw[k] = v
 		}
 		// Re-read max_tokens in case defaults/overrides changed it.
-		if mt, ok := raw["max_tokens"].(float64); ok {
-			req.MaxTokens = int(mt)
+		if mt, ok := toInt(raw["max_tokens"]); ok {
+			req.MaxTokens = mt
 		}
 		// Redirect routing: specific model takes precedence over strategy.
 		// A pinned model that has left the free catalog falls back to the
@@ -368,21 +382,42 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		return
 	}
 
-	if !req.Stream && resp.StatusCode == http.StatusOK {
+	if !req.Stream && resp.StatusCode == http.StatusOK && !resp.Truncated {
 		s.cache.Set(raw, resp.Body)
 	}
 
-	for k, vals := range resp.Header {
-		for _, v := range vals {
-			w.Header().Add(k, v)
-		}
-	}
+	copyUpstreamHeaders(w.Header(), resp.Header)
 	if resp.UsedModel != "" {
 		w.Header().Set("X-Used-Model", resp.UsedModel)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(resp.Body)
+}
+
+// upstreamOnlyHeaders describe the upstream connection or the upstream body as
+// it was on the wire. The proxy re-frames the body (and may rewrite it, e.g.
+// StripGeminiThoughts), so forwarding them would corrupt the response.
+var upstreamOnlyHeaders = map[string]bool{
+	"Content-Length":    true,
+	"Content-Encoding":  true,
+	"Transfer-Encoding": true,
+	"Connection":        true,
+	"Keep-Alive":        true,
+	"Set-Cookie":        true,
+}
+
+// copyUpstreamHeaders forwards upstream response headers (rate-limit info,
+// request IDs) except framing, hop-by-hop and cookie headers.
+func copyUpstreamHeaders(dst, src http.Header) {
+	for k, vals := range src {
+		if upstreamOnlyHeaders[http.CanonicalHeaderKey(k)] {
+			continue
+		}
+		for _, v := range vals {
+			dst.Add(k, v)
+		}
+	}
 }
 
 // handleModels lists what a client can put in "model": "auto", the routing

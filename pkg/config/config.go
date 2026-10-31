@@ -24,6 +24,9 @@ type Config struct {
 
 // ProxyConfig holds proxy server settings.
 type ProxyConfig struct {
+	// Host is the listen address. Default 127.0.0.1: the proxy spends your
+	// provider quotas, so exposing it to the network is opt-in.
+	Host      string `mapstructure:"host"`
 	Port      int    `mapstructure:"port"`
 	AuthToken string `mapstructure:"auth_token"`
 	CacheTTL  int    `mapstructure:"cache_ttl"`
@@ -221,6 +224,7 @@ func Watch(path string, onChange func(*Config)) (stop func(), err error) {
 
 // setDefaults installs sensible defaults into a viper instance.
 func setDefaults(v *viper.Viper) {
+	v.SetDefault("proxy.host", "127.0.0.1")
 	v.SetDefault("proxy.port", 8080)
 	v.SetDefault("proxy.cache_ttl", 300)
 	v.SetDefault("proxy.log_level", "info")

@@ -13,4 +13,7 @@ COPY configs /app/configs
 # (HOME=/home/nonroot, writable). Mount a volume there to keep them.
 USER nonroot:nonroot
 EXPOSE 8080
-ENTRYPOINT ["/app/free-llm-proxy"]
+# The binary defaults to 127.0.0.1; inside a container that would be unreachable
+# through -p, so the image listens on all interfaces. Publish the port only on
+# localhost (-p 127.0.0.1:8080:8080) or set proxy.auth_token.
+ENTRYPOINT ["/app/free-llm-proxy", "--host", "0.0.0.0"]

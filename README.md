@@ -60,8 +60,10 @@ brew install kaiser-data/tap/free-llm-proxy-router
 **Docker** (linux/amd64, linux/arm64):
 
 ```bash
-docker run --rm -p 8080:8080 -e GROQ_API_KEY=gsk_... ghcr.io/kaiser-data/free-llm-proxy-router:latest
+docker run --rm -p 127.0.0.1:8080:8080 -e GROQ_API_KEY=gsk_... ghcr.io/kaiser-data/free-llm-proxy-router:latest
 ```
+
+The proxy spends your provider quotas, so it listens on `127.0.0.1` by default. To reach it from other machines, run it with `--host 0.0.0.0` (or set `proxy.host`) **and** set `proxy.auth_token`; clients then send it as their API key.
 
 **Debian/Ubuntu, Fedora, Alpine**: download the `.deb`, `.rpm` or `.apk` from [Releases](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest).
 
@@ -208,7 +210,9 @@ Key settings in `config.yaml`:
 ```yaml
 proxy:
   strategy: "adaptive"   # Default routing strategy
+  host: "127.0.0.1"      # "0.0.0.0" to expose it; set auth_token as well
   port: 8080
+  auth_token: ""         # Clients must send this as their API key when set
 
 catalog:
   max_age_hours: 24      # Re-scan after this many hours

@@ -57,6 +57,9 @@ type Response struct {
 	Body       []byte
 	// UsedModel is the model that actually served the request (from response body).
 	UsedModel string
+	// Truncated marks an empty finish_reason=length reply returned only because
+	// nothing better answered; it must not be cached.
+	Truncated bool
 }
 
 // Execute runs the fallback chain for the given request.
@@ -210,7 +213,6 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			if resp != nil {
 				switch resp.StatusCode {
 				case 429:
-					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 					info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
 					waitDur := info.WaitDuration()
 					if isZeroQuota(resp.Body) {
@@ -232,7 +234,6 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(10*time.Minute))
 					log.Printf("fallback: %s auth error %d — cooldown 10min", r.ProviderID, resp.StatusCode)
 				case 404:
-					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, time.Now().Add(missingModelCooldown))
 					log.Printf("fallback: %s model %s not found — model cooldown %s", r.ProviderID, r.ModelID, missingModelCooldown)
 				}
@@ -302,6 +303,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	}
 
 	if lastTruncated != nil {
+		lastTruncated.Truncated = true
 		return lastTruncated, nil
 	}
 	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempt)
@@ -406,18 +408,9 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 	if fc.Strategy != nil {
 		if overrides, ok := fc.Cfg.Proxy.StrategyOverrides[fc.Strategy.Name()]; ok {
 			if capRaw, ok := overrides["max_tokens_cap"]; ok {
-				var cap int
-				switch v := capRaw.(type) {
-				case int:
-					cap = v
-				case float64:
-					cap = int(v)
-				}
+				cap, _ := toInt(capRaw)
 				if cap > 0 {
-					current := 0
-					if mt, ok := body["max_tokens"].(float64); ok {
-						current = int(mt)
-					}
+					current, _ := toInt(body["max_tokens"])
 					if current == 0 || current > cap {
 						body["max_tokens"] = cap
 					}
@@ -496,6 +489,20 @@ func estimateTokens(msgs []map[string]any) int {
 		}
 	}
 	return total
+}
+
+// toInt converts a JSON (float64) or YAML (int) number to int. Request bodies
+// mix both once agent-profile defaults/overrides from the config are applied.
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	}
+	return 0, false
 }
 
 // isEmptyTruncated reports whether a chat completion has no usable output

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,24 +99,23 @@ func TestFallbackChain_401TriggersCooldown(t *testing.T) {
 	}
 }
 
-func TestFallbackChain_404MarksNeedsReverification(t *testing.T) {
+// Requests share one catalog; a failing upstream must not write to it while
+// other requests read it (run with -race).
+func TestFallbackChain_ConcurrentFailuresDoNotRaceOnCatalog(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"error":{"message":"model not found"}}`, http.StatusNotFound)
+		http.Error(w, `{"error":{"message":"slow down"}}`, http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
 
 	fc, _, cat := newTestChain(srv.URL, "testprovider", "test-model")
-	req := Request{
-		Model:    "test-model",
-		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	req := Request{Model: "test-model", Messages: []map[string]any{{"role": "user", "content": "hi"}}}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = fc.Execute(context.Background(), req) }()
+		go func() { defer wg.Done(); _ = cat.FreeEntries() }()
 	}
-
-	_, _ = fc.Execute(context.Background(), req)
-
-	entry := cat.Find("testprovider", "test-model")
-	if entry == nil || !entry.NeedsReverification {
-		t.Error("expected test-model to be flagged NeedsReverification after 404")
-	}
+	wg.Wait()
 }
 
 func TestBuildBodyServiceTierOnlyWhenConfigured(t *testing.T) {
@@ -371,6 +371,9 @@ func TestFallbackChain_EmptyTruncatedReturnedWhenNothingElse(t *testing.T) {
 	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
 	if err != nil || resp.UsedModel != "reasoner" {
 		t.Fatalf("expected the truncated reply rather than exhaustion, got resp=%v err=%v", resp, err)
+	}
+	if !resp.Truncated {
+		t.Error("a last-resort truncated reply must be flagged so it is not cached")
 	}
 }
 

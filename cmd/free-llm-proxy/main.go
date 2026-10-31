@@ -25,6 +25,7 @@ import (
 
 var (
 	cfgFile  string
+	host     string
 	port     int
 	stratName string
 )
@@ -36,6 +37,7 @@ func main() {
 		RunE:  runProxy,
 	}
 	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and ~/.free-llm-proxy-router/)")
+	root.Flags().StringVar(&host, "host", "", "override listen address (default from config: 127.0.0.1; use 0.0.0.0 to expose)")
 	root.Flags().IntVarP(&port, "port", "p", 0, "override proxy port (default from config: 8080)")
 	root.Flags().StringVarP(&stratName, "strategy", "s", "", "override strategy name")
 
@@ -50,6 +52,9 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+	if host != "" {
+		cfg.Proxy.Host = host
 	}
 	if port > 0 {
 		cfg.Proxy.Port = port
