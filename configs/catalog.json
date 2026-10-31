@@ -148,24 +148,6 @@
     },
     {
       "provider_id": "openrouter",
-      "model_id": "google/lyria-3-pro-preview",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 1048576,
-      "discovered_at": "2026-10-26T12:06:37.966900827Z",
-      "last_verified_at": "2026-10-26T12:06:37.966900887Z"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "google/lyria-3-clip-preview",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 1048576,
-      "discovered_at": "2026-10-26T12:06:37.966900967Z",
-      "last_verified_at": "2026-10-26T12:06:37.966901027Z"
-    },
-    {
-      "provider_id": "openrouter",
       "model_id": "nvidia/nemotron-3-super-120b-a12b:free",
       "is_free": true,
       "tier_type": "free",
@@ -368,14 +350,6 @@
     },
     {
       "provider_id": "nvidia-nim",
-      "model_id": "meta/llama-guard-4-12b",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T12:06:38.720461054Z",
-      "last_verified_at": "2026-10-26T12:06:38.720461104Z"
-    },
-    {
-      "provider_id": "nvidia-nim",
       "model_id": "meta/llama2-70b",
       "is_free": true,
       "tier_type": "free",
@@ -504,22 +478,6 @@
     },
     {
       "provider_id": "nvidia-nim",
-      "model_id": "nvidia/llama-3.1-nemoguard-8b-content-safety",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T12:06:38.720467446Z",
-      "last_verified_at": "2026-10-26T12:06:38.720467496Z"
-    },
-    {
-      "provider_id": "nvidia-nim",
-      "model_id": "nvidia/llama-3.1-nemoguard-8b-topic-control",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T12:06:38.720467767Z",
-      "last_verified_at": "2026-10-26T12:06:38.720467817Z"
-    },
-    {
-      "provider_id": "nvidia-nim",
       "model_id": "nvidia/llama-3.1-nemotron-51b-instruct",
       "is_free": true,
       "tier_type": "free",
@@ -533,14 +491,6 @@
       "tier_type": "free",
       "discovered_at": "2026-10-26T12:06:38.720468318Z",
       "last_verified_at": "2026-10-26T12:06:38.720468378Z"
-    },
-    {
-      "provider_id": "nvidia-nim",
-      "model_id": "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-10-26T12:06:38.720468648Z",
-      "last_verified_at": "2026-10-26T12:06:38.720468708Z"
     },
     {
       "provider_id": "nvidia-nim",
@@ -1397,48 +1347,12 @@
     },
     {
       "provider_id": "groq",
-      "model_id": "canopylabs/orpheus-v1-english",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 4000,
-      "discovered_at": "2026-03-05T06:17:50.940265609+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.940265681+01:00"
-    },
-    {
-      "provider_id": "groq",
-      "model_id": "meta-llama/llama-prompt-guard-2-22m",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 512,
-      "discovered_at": "2026-03-05T06:17:50.940280748+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.940280817+01:00"
-    },
-    {
-      "provider_id": "groq",
       "model_id": "allam-2-7b",
       "is_free": true,
       "tier_type": "free",
       "context_window": 4096,
       "discovered_at": "2026-03-05T06:17:50.94028111+01:00",
       "last_verified_at": "2026-03-05T06:17:50.940281181+01:00"
-    },
-    {
-      "provider_id": "groq",
-      "model_id": "meta-llama/llama-guard-4-12b",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.940281302+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.940281372+01:00"
-    },
-    {
-      "provider_id": "groq",
-      "model_id": "openai/gpt-oss-safeguard-20b",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.940281484+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.940281553+01:00"
     },
     {
       "provider_id": "groq",
@@ -1457,15 +1371,6 @@
       "context_window": 131072,
       "discovered_at": "2026-03-05T06:17:50.940281867+01:00",
       "last_verified_at": "2026-03-05T06:17:50.940281938+01:00"
-    },
-    {
-      "provider_id": "groq",
-      "model_id": "meta-llama/llama-prompt-guard-2-86m",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 512,
-      "discovered_at": "2026-03-05T06:17:50.940282044+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.940282182+01:00"
     },
     {
       "provider_id": "gemini",
@@ -1655,24 +1560,6 @@
       "context_window": 1048576,
       "discovered_at": "2026-03-05T06:17:51.077630624+01:00",
       "last_verified_at": "2026-03-05T06:17:51.077630974+01:00"
-    },
-    {
-      "provider_id": "gemini",
-      "model_id": "gemini-robotics-er-1.5-preview",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 1048576,
-      "discovered_at": "2026-03-05T06:17:51.077640265+01:00",
-      "last_verified_at": "2026-03-05T06:17:51.077640622+01:00"
-    },
-    {
-      "provider_id": "gemini",
-      "model_id": "gemini-2.5-computer-use-preview-10-2025",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:51.077643174+01:00",
-      "last_verified_at": "2026-03-05T06:17:51.077643531+01:00"
     },
     {
       "provider_id": "mistral",
@@ -2065,14 +1952,6 @@
       "tier_type": "free",
       "discovered_at": "2026-03-05T06:17:51.293445895+01:00",
       "last_verified_at": "2026-03-05T06:17:51.29344594+01:00"
-    },
-    {
-      "provider_id": "mistral",
-      "model_id": "voxtral-mini-transcribe-2507",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-03-05T06:17:51.293446266+01:00",
-      "last_verified_at": "2026-03-05T06:17:51.293446311+01:00"
     },
     {
       "provider_id": "mistral",

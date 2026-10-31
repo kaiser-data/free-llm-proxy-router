@@ -148,26 +148,9 @@ func isEligibleModel(providerID, modelID, modelType string, endpoints []string) 
 	return !isNonChatModel(lower)
 }
 
-// nonChatPatterns match model IDs that cannot answer a chat request: embeddings,
-// rerankers, speech, image generation and safety classifiers (which return a score).
-var nonChatPatterns = []string{
-	"embed", "rerank", "image", "vision-only",
-	"tts", "stt", "whisper", "orpheus", "transcribe",
-	"guard",
-	// Gemini media and agent models listed alongside chat models
-	"nano-banana", "lyria", "robotics", "computer-use", "deep-research",
-	"antigravity", // Interactions API only, no chat completions
-}
-
 // isNonChatModel reports whether a model ID looks like a non-chat model.
 func isNonChatModel(modelID string) bool {
-	lower := strings.ToLower(modelID)
-	for _, p := range nonChatPatterns {
-		if strings.Contains(lower, p) {
-			return true
-		}
-	}
-	return false
+	return !catalog.IsChatModel(modelID)
 }
 
 func hasEndpoint(endpoints []string, target string) bool {

@@ -78,3 +78,17 @@ func TestFormatContext(t *testing.T) {
 		}
 	}
 }
+
+// Routing reads FreeEntries, so a stale catalog that still lists a safety
+// classifier must not send chat requests to it (it answers with a score).
+func TestFreeEntries_SkipsNonChatModels(t *testing.T) {
+	c := &Catalog{Entries: []CatalogEntry{
+		{ProviderID: "groq", ModelID: "meta-llama/llama-prompt-guard-2-22m", IsFree: true},
+		{ProviderID: "nvidia-nim", ModelID: "nvidia/nv-embedqa-e5-v5", IsFree: true},
+		{ProviderID: "groq", ModelID: "openai/gpt-oss-120b", IsFree: true},
+	}}
+	got := c.FreeEntries()
+	if len(got) != 1 || got[0].ModelID != "openai/gpt-oss-120b" {
+		t.Errorf("FreeEntries = %+v, want only the chat model", got)
+	}
+}
