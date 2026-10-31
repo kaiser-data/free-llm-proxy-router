@@ -54,10 +54,23 @@ func (d *Dispatcher) ScanAll(ctx context.Context, providers []config.ProviderCon
 			log.Printf("scan: %s error: %v — continuing", p.ID, err)
 			continue
 		}
+		entries = dropNonChat(entries)
 		cat.Entries = append(cat.Entries, entries...)
 		log.Printf("scan: %s → %d entries", p.ID, len(entries))
 	}
 	return cat, nil
+}
+
+// dropNonChat removes embedders, classifiers and other models that cannot
+// answer chat requests. Applied to every scanner, so none can forget it.
+func dropNonChat(entries []catalog.CatalogEntry) []catalog.CatalogEntry {
+	out := entries[:0]
+	for _, e := range entries {
+		if catalog.IsChatModel(e.ModelID) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // scannerFor returns the ProviderScanner for the given provider ID.
