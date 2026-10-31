@@ -170,17 +170,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	// Start catalog git-sync (scanner or replica role, depending on config).
 	// scanFn is only invoked on the scanner machine; replicas leave it nil.
 	scanFn := func(scanCtx context.Context) error {
-		existing, _ := catalog.Load(cfg.Catalog.Path)
-		dispatcher := scan.NewDispatcher()
-		newCat, err := dispatcher.ScanAll(scanCtx, cfg.Providers)
-		if err != nil {
-			return err
-		}
-		if existing != nil {
-			newCat.Blocklist = existing.Blocklist
-		}
-		newCat.FilterBlocklisted()
-		return catalog.Save(newCat, cfg.Catalog.Path)
+		return rescanCatalog(scanCtx, cfg.Providers, cfg.Catalog.Path)
 	}
 	catalog.StartSync(ctx, cfg.Catalog.Path,
 		catalog.GitSyncConfig(cfg.Catalog.GitSync), scanFn)
@@ -229,4 +219,24 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}()
 
 	return srv.Start(ctx)
+}
+
+// rescanCatalog runs a full scan and saves it to path. A provider whose scan
+// fails or returns nothing keeps its previous entries: the scanner loop pushes
+// this file to every replica, so one flaky provider must not wipe its models
+// fleet-wide.
+func rescanCatalog(ctx context.Context, providers []config.ProviderConfig, path string) error {
+	existing, _ := catalog.Load(path)
+	newCat, err := scan.NewDispatcher().ScanAll(ctx, providers)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		newCat.Blocklist = existing.Blocklist
+	}
+	newCat.FilterBlocklisted()
+	if kept := newCat.KeepUnscanned(existing); len(kept) > 0 {
+		log.Printf("scan: no results from %v — kept their previous entries", kept)
+	}
+	return catalog.Save(newCat, path)
 }
