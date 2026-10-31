@@ -276,6 +276,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		}
 		resp, err := chain.callProvider(r.Context(), *provCfg, body)
 		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			s.rateLimiter.Provider(e.ProviderID).RecordRequest(e.ModelID)
 			if req.Stream {
 				writeCompletionAsSSE(w, resp.Body)
 				return

@@ -162,15 +162,17 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			}
 			spacingMs := fc.Cfg.Fallback.CerebrasRequestSpacingMs
 			if spacingMs > 0 {
-				time.Sleep(time.Duration(spacingMs) * time.Millisecond)
+				if err := sleepCtx(ctx, time.Duration(spacingMs)*time.Millisecond); err != nil {
+					return nil, err
+				}
 			}
 		}
 
 		// Gemini 4-dimensional rate check.
 		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
 			if !fc.GeminiTracker.CanRequest(r.ModelID, stratReq.EstimatedPromptTokens) {
-				log.Printf("fallback: gemini %s rate limited — skipping", r.ModelID)
-				failedProviders[r.ProviderID] = true
+				// Quotas are per model: skip this one, other Gemini models may have room.
+				log.Printf("fallback: gemini %s rate limited — skipping model", r.ModelID)
 				continue
 			}
 		}
@@ -192,10 +194,13 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
 				if waitMs := parseHFLoadingWait(resp.Body); waitMs > 0 {
 					log.Printf("fallback: huggingface model loading, waiting %dms", waitMs)
-					time.Sleep(time.Duration(waitMs) * time.Millisecond)
+					if err := sleepCtx(ctx, time.Duration(waitMs)*time.Millisecond); err != nil {
+						return nil, err
+					}
 					resp, err = fc.callProvider(ctx, *providerCfg, body)
 					if err == nil && resp.StatusCode == http.StatusOK {
 						fc.ReliabilityTracker.Record(r.ProviderID, true)
+						fc.RateLimiter.Provider(r.ProviderID).RecordRequest(r.ModelID)
 						return resp, nil
 					}
 				}
@@ -272,6 +277,8 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			_ = fc.GeminiTracker
 		}
 		fc.ReliabilityTracker.Record(r.ProviderID, true)
+		// Counted per model per day; this is what usage.json persists.
+		fc.RateLimiter.Provider(r.ProviderID).RecordRequest(r.ModelID)
 		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
 			fc.GeminiTracker.RecordRequest(r.ModelID, stratReq.EstimatedPromptTokens)
 		}
@@ -523,4 +530,16 @@ func isEmptyTruncated(body []byte) bool {
 	c := parsed.Choices[0]
 	empty := c.Message.Content == nil || strings.TrimSpace(*c.Message.Content) == ""
 	return c.FinishReason == "length" && empty && len(c.Message.ToolCalls) == 0
+}
+
+// sleepCtx waits for d or until ctx ends, whichever comes first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }

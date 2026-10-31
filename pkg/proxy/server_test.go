@@ -156,3 +156,21 @@ func TestRetryAfterSeconds(t *testing.T) {
 		}
 	}
 }
+
+func TestDirectModel_SuccessIsCountedInDailyUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"model":"gemma","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	s := newTestServer(upstream.URL, 0)
+	rec := httptest.NewRecorder()
+	s.handleChatCompletions(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gemini/gemma","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if got := s.rateLimiter.Snapshot().Providers["gemini"].ModelDayCounts["gemma"]; got != 1 {
+		t.Errorf("daily count = %d, want 1", got)
+	}
+}

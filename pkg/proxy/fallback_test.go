@@ -427,3 +427,66 @@ func TestFallbackChain_OpenRouterFollowsStrategyOrder(t *testing.T) {
 		t.Fatalf("expected openrouter (ranked first) to answer, got resp=%v err=%v", resp, err)
 	}
 }
+
+// Daily usage is persisted from the provider trackers, so a successful
+// request has to be counted there or usage.json stays empty.
+func TestFallbackChain_SuccessIsCountedInDailyUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	fc, rl, _ := newTestChain(srv.URL, "testprovider", "test-model")
+	for i := 0; i < 2; i++ {
+		if _, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := rl.Snapshot().Providers["testprovider"].ModelDayCounts["test-model"]; got != 2 {
+		t.Errorf("daily count = %d, want 2", got)
+	}
+}
+
+// One Gemini model over its local quota must not hide the other Gemini models.
+func TestFallbackChain_GeminiModelOverQuotaTriesNextGeminiModel(t *testing.T) {
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		gotModel, _ = body["model"].(string)
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "gemini", "full")
+	fc.Strategy = listStrategy{{ProviderID: "gemini", ModelID: "full"}, {ProviderID: "gemini", ModelID: "spare"}}
+	gt := ratelimit.NewGeminiTracker()
+	gt.SetLimits("full", ratelimit.GeminiModelLimits{RPM: 1})
+	gt.RecordRequest("full", 0)
+	fc.GeminiTracker = gt
+
+	if _, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}}); err != nil {
+		t.Fatalf("expected the spare Gemini model to answer: %v", err)
+	}
+	if gotModel != "spare" {
+		t.Errorf("upstream got model %q, want spare", gotModel)
+	}
+}
+
+// A HuggingFace cold-start wait must end when the client goes away.
+func TestFallbackChain_HFLoadingWaitHonoursContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"Model is currently loading","estimated_time":30}`))
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "huggingface", "m")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	fc.Execute(ctx, Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("Execute took %s after the context ended; the wait ignores ctx", took.Round(time.Millisecond))
+	}
+}
