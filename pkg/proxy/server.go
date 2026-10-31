@@ -361,16 +361,12 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	resp, err := chain.Execute(r.Context(), req)
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)
-		// Return a valid empty completion so the client sees no error message.
-		exhausted := fmt.Sprintf(`{"id":"exhausted","object":"chat.completion","created":%d,"model":"none","choices":[{"index":0,"message":{"role":"assistant","content":"I\u2019m temporarily unavailable \u2014 please try again in a moment."},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`, time.Now().Unix())
+		// A retryable error, not a fake completion: SDKs retry 503s and honour
+		// Retry-After, whereas a 200 would be taken as a real answer.
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(s.rateLimiter.EarliestRecovery())))
 		w.Header().Set("X-Proxy-Exhausted", "true")
-		if req.Stream {
-			writeCompletionAsSSE(w, []byte(exhausted))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(exhausted))
+		writeError(w, http.StatusServiceUnavailable, "server_error", "all_providers_exhausted",
+			"All free providers are rate-limited or failing. Retry after the Retry-After interval.")
 		return
 	}
 

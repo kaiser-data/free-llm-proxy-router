@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
@@ -114,3 +115,44 @@ func TestIsLoopbackHost(t *testing.T) {
 }
 
 func fmtLen(s string) string { return strconv.Itoa(len(s)) }
+
+// B7: when every provider fails, clients must see a retryable error, not a
+// fake assistant reply they would treat as a real answer.
+func TestChatCompletions_ExhaustedChainReturns503(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	for _, stream := range []bool{false, true} {
+		s := newTestServer(upstream.URL, 0)
+		body := `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":` + strconv.FormatBool(stream) + `}`
+		rec := httptest.NewRecorder()
+		s.handleChatCompletions(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("stream=%v: status = %d, want 503; body %s", stream, rec.Code, rec.Body)
+		}
+		if ra, err := strconv.Atoi(rec.Header().Get("Retry-After")); err != nil || ra < 1 {
+			t.Errorf("stream=%v: Retry-After = %q, want an integer >= 1", stream, rec.Header().Get("Retry-After"))
+		}
+		if !strings.Contains(rec.Body.String(), `"all_providers_exhausted"`) || strings.Contains(rec.Body.String(), "choices") {
+			t.Errorf("stream=%v: body = %s", stream, rec.Body)
+		}
+	}
+}
+
+func TestRetryAfterSeconds(t *testing.T) {
+	cases := []struct {
+		in   time.Time
+		want int
+	}{
+		{time.Time{}, 5},
+		{time.Now().Add(-time.Minute), 1},
+		{time.Now().Add(90*time.Second + 500*time.Millisecond), 91},
+	}
+	for _, c := range cases {
+		if got := retryAfterSeconds(c.in); got != c.want {
+			t.Errorf("retryAfterSeconds(%v) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
