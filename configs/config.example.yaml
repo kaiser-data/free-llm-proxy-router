@@ -87,7 +87,7 @@ proxy:
 fallback:
   retry_on_429: true
   retry_on_5xx: true
-  max_attempts: 5
+  max_attempts: 50
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
 
