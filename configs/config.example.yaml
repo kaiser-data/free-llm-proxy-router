@@ -181,7 +181,7 @@ providers:
     name: "Mistral AI"
     base_url: "https://api.mistral.ai/v1"
     api_key_env: "MISTRAL_API_KEY"
-    enabled: false
+    enabled: true
     priority: 4
     timeout: "30s"
     rate_limit_notes: "Workspace-level limits. Phone verification. free-llm.com (Oct 2026): 1 req/s, 500K tokens/min, 1B tokens/month; older docs said 2 RPM. Always read Retry-After header."
@@ -190,7 +190,7 @@ providers:
     name: "Cerebras"
     base_url: "https://api.cerebras.ai/v1"
     api_key_env: "CEREBRAS_API_KEY"
-    enabled: false
+    enabled: true
     priority: 5
     timeout: "15s"
     # free-llm.com (Aug 2026): the no-card free tier ended. New accounts get a $5 trial credit
@@ -203,7 +203,7 @@ providers:
     name: "GitHub Models"
     base_url: "https://models.inference.ai.azure.com"
     api_key_env: "GITHUB_TOKEN"
-    enabled: false
+    enabled: true
     priority: 6
     timeout: "30s"
     rate_limit_notes: "Free plan: 15 low/medium + 8 high req/min; 150/500 req/day. Pro: 20/10 req/min; 300/1000 req/day."
@@ -215,7 +215,7 @@ providers:
     name: "NVIDIA NIM"
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key_env: "NVIDIA_API_KEY"
-    enabled: false
+    enabled: true
     priority: 8
     timeout: "30s"
     rate_limit_notes: "40 RPM. Free credits recharge monthly. Hundreds of models."
@@ -224,7 +224,7 @@ providers:
     name: "Cohere"
     base_url: "https://api.cohere.ai/v1"
     api_key_env: "COHERE_API_KEY"
-    enabled: false
+    enabled: true
     priority: 9
     timeout: "30s"
     extra_headers:
@@ -235,7 +235,7 @@ providers:
     name: "Hugging Face Inference"
     base_url: "https://router.huggingface.co/v1"
     api_key_env: "HF_API_KEY"
-    enabled: false
+    enabled: true
     priority: 10
     timeout: "120s"
     rate_limit_notes: "300 calls/hour/token. 503+loading = cold start; wait then retry SAME provider."
@@ -252,7 +252,7 @@ providers:
     name: "Z.AI (GLM)"
     base_url: "https://api.z.ai/api/paas/v4"
     api_key_env: "ZAI_API_KEY"
-    enabled: false
+    enabled: true
     priority: 11
     timeout: "30s"
     tier_type: "free"
@@ -263,7 +263,7 @@ providers:
     name: "ModelScope"
     base_url: "https://api-inference.modelscope.cn/v1"
     api_key_env: "MODELSCOPE_API_KEY"
-    enabled: false
+    enabled: true
     priority: 12
     timeout: "30s"
     tier_type: "free"
@@ -276,7 +276,7 @@ providers:
     name: "Hetzner Inference API"
     base_url: "https://inference.hetzner.com/api/v1"
     api_key_env: "HETZNER_INFERENCE_API_KEY"
-    enabled: false
+    enabled: true
     priority: 13
     timeout: "30s"
     tier_type: "free"
@@ -289,7 +289,7 @@ providers:
     name: "LLM7.io"
     base_url: "https://api.llm7.io/v1"
     api_key_env: "LLM7_API_KEY"
-    enabled: false
+    enabled: true
     priority: 14
     timeout: "30s"
     tier_type: "free"
@@ -304,7 +304,7 @@ providers:
     # the router appends /chat/completions to this value.
     base_url: "https://text.pollinations.ai"
     api_key_env: "POLLINATIONS_API_KEY"
-    enabled: false
+    enabled: true
     priority: 15
     timeout: "30s"
     tier_type: "free"
@@ -314,7 +314,7 @@ providers:
     name: "Kilo AI Gateway"
     base_url: "https://api.kilo.ai/api/gateway"
     api_key_env: "KILO_API_KEY"
-    enabled: false
+    enabled: true
     priority: 16
     timeout: "30s"
     tier_type: "free"
@@ -325,7 +325,7 @@ providers:
     name: "Routeway"
     base_url: "https://api.routeway.ai/v1"
     api_key_env: "ROUTEWAY_API_KEY"
-    enabled: false
+    enabled: true
     priority: 17
     timeout: "30s"
     tier_type: "free"
@@ -337,7 +337,7 @@ providers:
     name: "Requesty"
     base_url: "https://router.requesty.ai/v1"
     api_key_env: "REQUESTY_API_KEY"
-    enabled: false
+    enabled: true
     priority: 18
     timeout: "30s"
     tier_type: "free"
@@ -348,7 +348,7 @@ providers:
     name: "Onomeo"
     base_url: "https://onomeo.com/v1"
     api_key_env: "ONOMEO_API_KEY"
-    enabled: false
+    enabled: true
     priority: 19
     timeout: "30s"
     tier_type: "free"
@@ -359,7 +359,7 @@ providers:
     name: "OVH AI Endpoints"
     base_url: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1"
     api_key_env: "OVH_AI_ENDPOINTS_ACCESS_TOKEN"
-    enabled: false
+    enabled: true
     priority: 20
     timeout: "30s"
     tier_type: "free"
@@ -371,7 +371,7 @@ providers:
     name: "SiliconFlow"
     base_url: "https://api.siliconflow.com/v1"
     api_key_env: "SILICONFLOW_API_KEY"
-    enabled: false
+    enabled: true
     priority: 21
     timeout: "30s"
     tier_type: "free"
@@ -382,7 +382,7 @@ providers:
     name: "Nous Portal"
     base_url: "https://inference-api.nousresearch.com/v1"
     api_key_env: "NOUS_API_KEY"
-    enabled: false
+    enabled: true
     priority: 22
     timeout: "30s"
     tier_type: "free"
@@ -393,7 +393,7 @@ providers:
     name: "Api.Airforce"
     base_url: "https://api.airforce/v1"
     api_key_env: "AIRFORCE_API_KEY"
-    enabled: false
+    enabled: true
     priority: 23
     timeout: "30s"
     tier_type: "free"
@@ -412,7 +412,7 @@ providers:
     # confirm it for your account.
     base_url: "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1"
     api_key_env: "CLOUDFLARE_API_KEY"
-    enabled: false
+    enabled: true
     priority: 30
     timeout: "30s"
     tier_type: "credit"
@@ -423,7 +423,7 @@ providers:
     name: "Ollama Cloud"
     base_url: "https://ollama.com/v1"
     api_key_env: "OLLAMA_API_KEY"
-    enabled: false
+    enabled: true
     priority: 31
     timeout: "60s"
     tier_type: "credit"
@@ -434,7 +434,7 @@ providers:
     name: "Aion Labs"
     base_url: "https://api.aionlabs.ai/v1"
     api_key_env: "AION_API_KEY"
-    enabled: false
+    enabled: true
     priority: 32
     timeout: "30s"
     tier_type: "credit"
@@ -444,7 +444,7 @@ providers:
     name: "Token Harbor"
     base_url: "https://tokenharbor.ai/v1"
     api_key_env: "TOKENHARBOR_API_KEY"
-    enabled: false
+    enabled: true
     priority: 33
     timeout: "30s"
     tier_type: "credit"
@@ -455,7 +455,7 @@ providers:
     name: "IteraCompute"
     base_url: "https://api.iteracompute.com/v1"
     api_key_env: "ITERACOMPUTE_API_KEY"
-    enabled: false
+    enabled: true
     priority: 34
     timeout: "30s"
     tier_type: "credit"
@@ -465,7 +465,7 @@ providers:
     name: "BazaarLink"
     base_url: "https://api.bazaarlink.ai/v1"
     api_key_env: "BAZAARLINK_API_KEY"
-    enabled: false
+    enabled: true
     priority: 35
     timeout: "30s"
     tier_type: "credit"
@@ -476,7 +476,7 @@ providers:
     name: "Vercel AI Gateway"
     base_url: "https://ai-gateway.vercel.sh/v1"
     api_key_env: "AI_GATEWAY_API_KEY"
-    enabled: false
+    enabled: true
     priority: 36
     timeout: "30s"
     tier_type: "credit"
@@ -493,7 +493,7 @@ providers:
     name: "LM Studio"
     base_url: "http://localhost:1234/v1"
     api_key: "lm-studio"
-    enabled: false
+    enabled: true
     priority: 91
     timeout: "120s"
     discovery:
@@ -503,7 +503,7 @@ providers:
     name: "llama.cpp server"
     base_url: "http://localhost:8081/v1"   # llama-server --port 8081
     api_key: "llama-cpp"
-    enabled: false
+    enabled: true
     priority: 92
     timeout: "120s"
     discovery:
@@ -513,7 +513,7 @@ providers:
     name: "Jan.ai"
     base_url: "http://localhost:1337/v1"
     api_key: "jan"
-    enabled: false
+    enabled: true
     priority: 93
     timeout: "120s"
     discovery:
@@ -523,7 +523,7 @@ providers:
     name: "GPT4All"
     base_url: "http://localhost:4891/v1"
     api_key: "gpt4all"
-    enabled: false
+    enabled: true
     priority: 94
     timeout: "120s"
     discovery:
@@ -533,7 +533,7 @@ providers:
     name: "KoboldCpp"
     base_url: "http://localhost:5001/v1"
     api_key: "koboldcpp"
-    enabled: false
+    enabled: true
     priority: 95
     timeout: "120s"
     discovery:
@@ -543,7 +543,7 @@ providers:
     name: "llamafile"
     base_url: "http://localhost:8082/v1"   # ./model.llamafile --server --port 8082
     api_key: "llamafile"
-    enabled: false
+    enabled: true
     priority: 96
     timeout: "120s"
     discovery:
@@ -553,7 +553,7 @@ providers:
     name: "Text Generation WebUI"
     base_url: "http://localhost:5000/v1"   # start with --api
     api_key: "tgwui"
-    enabled: false
+    enabled: true
     priority: 97
     timeout: "120s"
     discovery:
@@ -563,7 +563,7 @@ providers:
     name: "Local Ollama"
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    enabled: false
+    enabled: true
     priority: 99
     timeout: "120s"
     discovery:
@@ -580,7 +580,7 @@ providers:
   #    name: "Fireworks AI"
   #    base_url: "https://api.fireworks.ai/inference/v1"
   #    api_key_env: "FIREWORKS_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 50
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -589,7 +589,7 @@ providers:
   #    name: "Nebius (Token Factory)"
   #    base_url: "https://api.tokenfactory.nebius.com/v1"
   #    api_key_env: "NEBIUS_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 51
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -598,7 +598,7 @@ providers:
   #    name: "Novita AI"
   #    base_url: "https://api.novita.ai/v3/openai"
   #    api_key_env: "NOVITA_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 52
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -607,7 +607,7 @@ providers:
   #    name: "Scaleway Generative APIs"
   #    base_url: "https://api.scaleway.ai/v1"
   #    api_key_env: "SCALEWAY_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 53
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -618,7 +618,7 @@ providers:
   #    # /compatible-mode/v1 is Alibaba's OpenAI-compatible path (confirm for your account).
   #    base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
   #    api_key_env: "DASHSCOPE_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 54
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -627,7 +627,7 @@ providers:
   #    name: "AI21 Labs"
   #    base_url: "https://api.ai21.com/studio/v1"
   #    api_key_env: "AI21_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 55
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -636,7 +636,7 @@ providers:
   #    name: "Upstage"
   #    base_url: "https://api.upstage.ai/v1/solar"
   #    api_key_env: "UPSTAGE_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 56
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -645,7 +645,7 @@ providers:
   #    name: "Nscale"
   #    base_url: "https://inference.api.nscale.com/v1"
   #    api_key_env: "NSCALE_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 57
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -654,7 +654,7 @@ providers:
   #    name: "Friendli AI"
   #    base_url: "https://inference.friendli.ai/v1"
   #    api_key_env: "FRIENDLI_TOKEN"
-  #    enabled: false
+  #    enabled: true
   #    priority: 58
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -663,7 +663,7 @@ providers:
   #    name: "Grokified"
   #    base_url: "https://api.grokified.com/v1"
   #    api_key_env: "GROKIFIED_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 59
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -672,7 +672,7 @@ providers:
   #    name: "Inception Labs"
   #    base_url: "https://api.inceptionlabs.ai/v1"
   #    api_key_env: "INCEPTION_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 60
   #    timeout: "30s"
   #    tier_type: "credit"
@@ -681,7 +681,7 @@ providers:
   #    name: "Dahl Inference"
   #    base_url: "https://inference.dahl.global/v1"
   #    api_key_env: "DAHL_API_KEY"
-  #    enabled: false
+  #    enabled: true
   #    priority: 61
   #    timeout: "30s"
   #    tier_type: "credit"
