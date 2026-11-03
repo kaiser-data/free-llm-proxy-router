@@ -72,7 +72,7 @@ func TestFallbackChain_404TriggersCooldown(t *testing.T) {
 		Messages: []map[string]any{{"role": "user", "content": "hi"}},
 	}
 
-	_, _ = fc.executePass(context.Background(), req)
+	_, _ = fc.executePass(context.Background(), req, nil)
 
 	if !rl.IsOnCooldown("testprovider/test-model") {
 		t.Error("expected test-model to be on cooldown after 404")
@@ -94,7 +94,7 @@ func TestFallbackChain_401TriggersCooldown(t *testing.T) {
 		Messages: []map[string]any{{"role": "user", "content": "hi"}},
 	}
 
-	_, _ = fc.executePass(context.Background(), req)
+	_, _ = fc.executePass(context.Background(), req, nil)
 
 	if !rl.IsOnCooldown("testprovider") {
 		t.Error("expected testprovider to be on cooldown after 401, got not on cooldown")
@@ -113,7 +113,7 @@ func TestFallbackChain_404MarksNeedsReverification(t *testing.T) {
 		Messages: []map[string]any{{"role": "user", "content": "hi"}},
 	}
 
-	_, _ = fc.executePass(context.Background(), req)
+	_, _ = fc.executePass(context.Background(), req, nil)
 
 	entry := cat.Find("testprovider", "test-model")
 	if entry == nil || !entry.NeedsReverification {
@@ -204,7 +204,7 @@ func TestFallbackChain_ModelErrorsCappedPerProvider(t *testing.T) {
 		ranked = append(ranked, strategy.RankedEntry{ProviderID: "nvidia-nim", ModelID: id})
 	}
 	fc.Strategy = ranked
-	_, _ = fc.executePass(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	_, _ = fc.executePass(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}}, nil)
 	if calls != maxModelsPerProvider {
 		t.Errorf("provider called %d times, want %d", calls, maxModelsPerProvider)
 	}
@@ -291,7 +291,7 @@ func TestFallbackChain_AuthErrorSkipsProvider(t *testing.T) {
 
 	fc, _, _ := newTestChain(srv.URL, "groq", "a")
 	fc.Strategy = listStrategy{{ProviderID: "groq", ModelID: "a"}, {ProviderID: "groq", ModelID: "b"}}
-	_, _ = fc.executePass(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	_, _ = fc.executePass(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}}, nil)
 	if calls != 1 {
 		t.Errorf("provider called %d times after 401, want 1", calls)
 	}
@@ -333,7 +333,7 @@ func TestFallbackChain_ModelErrorsDoNotCoolDownProvider(t *testing.T) {
 	}
 	fc.Strategy = ranked
 	for i := 0; i < 4; i++ {
-		_, _ = fc.executePass(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+		_, _ = fc.executePass(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}}, nil)
 	}
 	if rl.IsOnCooldown("gemini") {
 		t.Error("model-level 429s must not put the whole provider on cooldown")
@@ -504,5 +504,117 @@ func TestWriteSSECompletion_AfterKeepaliveDoesNotResendHeaders(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d", rec.Code)
+	}
+}
+
+func TestIsEmptyCompletion(t *testing.T) {
+	cases := []struct {
+		name  string
+		body  string
+		empty bool
+	}{
+		{"normal", `{"choices":[{"message":{"content":"hi"}}]}`, false},
+		{"empty string", `{"choices":[{"message":{"content":""}}]}`, true},
+		{"whitespace", `{"choices":[{"message":{"content":"  \n"}}]}`, true},
+		{"null content", `{"choices":[{"message":{"content":null}}]}`, true},
+		{"no choices", `{"choices":[]}`, true},
+		{"missing choices", `{"id":"x"}`, true},
+		{"not json", `<html>oops</html>`, true},
+		{"reasoning only", `{"choices":[{"message":{"content":"","reasoning_content":"thinking"}}]}`, true},
+		{"tool call", `{"choices":[{"message":{"content":null,"tool_calls":[{"id":"1"}]}}]}`, false},
+		{"function call", `{"choices":[{"message":{"content":null,"function_call":{"name":"f"}}}]}`, false},
+		{"text parts", `{"choices":[{"message":{"content":[{"type":"text","text":"yo"}]}}]}`, false},
+		{"empty text parts", `{"choices":[{"message":{"content":[{"type":"text","text":""}]}}]}`, true},
+		{"second choice has content", `{"choices":[{"message":{"content":""}},{"message":{"content":"x"}}]}`, false},
+	}
+	for _, c := range cases {
+		if got := isEmptyCompletion([]byte(c.body)); got != c.empty {
+			t.Errorf("%s: isEmptyCompletion = %v, want %v", c.name, got, c.empty)
+		}
+	}
+}
+
+// twoProviderChain wires providers "aaa" and "bbb" to separate test servers.
+func twoProviderChain(urlA, urlB string) *FallbackChain {
+	fc, _, _ := newTestChain(urlA, "aaa", "m")
+	fc.Cfg.Providers = append(fc.Cfg.Providers, config.ProviderConfig{ID: "bbb", BaseURL: urlB, Enabled: true})
+	fc.Strategy = listStrategy{{ProviderID: "aaa", ModelID: "m"}, {ProviderID: "bbb", ModelID: "m"}}
+	fastBackoff(fc)
+	return fc
+}
+
+const emptyBody = `{"model":"m","choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`
+const goodBody = `{"model":"m","choices":[{"message":{"role":"assistant","content":"real answer"}}]}`
+
+func TestExecute_EmptyResponseTriesOtherProviderFirst(t *testing.T) {
+	var callsA, callsB atomic.Int32
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsA.Add(1)
+		w.Write([]byte(emptyBody))
+	}))
+	defer srvA.Close()
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsB.Add(1)
+		w.Write([]byte(goodBody))
+	}))
+	defer srvB.Close()
+
+	resp, err := twoProviderChain(srvA.URL, srvB.URL).Execute(context.Background(), userReq(nil))
+	if err != nil || !strings.Contains(string(resp.Body), "real answer") {
+		t.Fatalf("want provider B's real answer, got resp=%v err=%v", resp, err)
+	}
+	if callsA.Load() != 1 || callsB.Load() != 1 {
+		t.Errorf("calls A=%d B=%d, want 1 and 1", callsA.Load(), callsB.Load())
+	}
+}
+
+func TestExecute_EmptyProviderRetriedOnlyAfterOthers(t *testing.T) {
+	var callsA, callsB atomic.Int32
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsA.Add(1)
+		w.Write([]byte(emptyBody))
+	}))
+	defer srvA.Close()
+	// B fails on its first call, then recovers.
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if callsB.Add(1) == 1 {
+			http.Error(w, `{"error":{"message":"overloaded"}}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Write([]byte(goodBody))
+	}))
+	defer srvB.Close()
+
+	resp, err := twoProviderChain(srvA.URL, srvB.URL).Execute(context.Background(), userReq(nil))
+	if err != nil || !strings.Contains(string(resp.Body), "real answer") {
+		t.Fatalf("want a real answer, got resp=%v err=%v", resp, err)
+	}
+	// Pass 1: A empty, B 503. Pass 2: B is tried first and answers; A is not asked again.
+	if callsA.Load() != 1 || callsB.Load() != 2 {
+		t.Errorf("calls A=%d B=%d, want A=1 (demoted, not retried before B) and B=2", callsA.Load(), callsB.Load())
+	}
+}
+
+func TestExecute_OnlyEmptyResponsesNeverReturned(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(emptyBody))
+	}))
+	defer srv.Close()
+	fc, _, _ := newTestChain(srv.URL, "gemini", "m")
+	fastBackoff(fc)
+	fc.Cfg.Fallback.MaxWait = 60 * time.Millisecond
+
+	resp, err := fc.Execute(context.Background(), userReq(nil))
+	if resp != nil || !errors.Is(err, ErrNoProviderAvailable) {
+		t.Fatalf("an empty completion must never be returned as success; got (%v, %v)", resp, err)
+	}
+}
+
+func TestDemoteRanked(t *testing.T) {
+	in := []strategy.RankedEntry{{ProviderID: "a", ModelID: "1"}, {ProviderID: "b", ModelID: "1"}, {ProviderID: "a", ModelID: "2"}}
+	out := demoteRanked(in, map[string]bool{"a/1": true})
+	got := fmt.Sprintf("%s/%s %s/%s %s/%s", out[0].ProviderID, out[0].ModelID, out[1].ProviderID, out[1].ModelID, out[2].ProviderID, out[2].ModelID)
+	if got != "b/1 a/2 a/1" {
+		t.Errorf("order = %s, want b/1 a/2 a/1", got)
 	}
 }

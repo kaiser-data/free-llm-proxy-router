@@ -59,6 +59,15 @@ type Response struct {
 	Body       []byte
 	// UsedModel is the model that actually served the request (from response body).
 	UsedModel string
+	// Empty is set on a 200 response that carries no usable completion (no
+	// choices, no content and no tool calls, or an unparseable body). Such a
+	// response is treated as a failed attempt, not as an answer.
+	Empty bool
+}
+
+// usable reports whether resp is a genuine, non-empty provider completion.
+func (r *Response) usable() bool {
+	return r != nil && r.StatusCode == http.StatusOK && !r.Empty
 }
 
 // ErrNoProviderAvailable is returned by Execute only when Fallback.MaxWait is
@@ -97,8 +106,12 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	maxWait := fc.Cfg.Fallback.MaxWait
 	deadline := time.Now().Add(maxWait)
 
+	// Provider/model pairs that returned an empty response during this request.
+	// Later passes try every other candidate first and retry these last.
+	demoted := make(map[string]bool)
+
 	for pass := 1; ; pass++ {
-		resp, err := fc.executePass(ctx, req)
+		resp, err := fc.executePass(ctx, req, demoted)
 		if err == nil {
 			return resp, nil
 		}
@@ -160,7 +173,15 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // Fallback.MaxAttempts provider calls. It returns the first successful
 // response, or an error if no provider answered during this pass. req is never
 // modified, so every pass sends the original request.
-func (fc *FallbackChain) executePass(ctx context.Context, req Request) (*Response, error) {
+//
+// A 200 response without usable content counts as a failure: the provider is
+// skipped for the rest of the pass, and its provider/model key is added to
+// demoted so that later passes try all other candidates before it again.
+// demoted may be nil.
+func (fc *FallbackChain) executePass(ctx context.Context, req Request, demoted map[string]bool) (*Response, error) {
+	if demoted == nil {
+		demoted = make(map[string]bool)
+	}
 	freeEntries := fc.Catalog.FreeEntries()
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
@@ -170,7 +191,7 @@ func (fc *FallbackChain) executePass(ctx context.Context, req Request) (*Respons
 		Model:                 req.Model,
 	}
 
-	ranked := fc.Strategy.Rank(stratReq, freeEntries, nil)
+	ranked := demoteRanked(fc.Strategy.Rank(stratReq, freeEntries, nil), demoted)
 	maxAttempts := fc.Cfg.Fallback.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 5
@@ -265,6 +286,15 @@ func (fc *FallbackChain) executePass(ctx context.Context, req Request) (*Respons
 		resp, err := fc.callProvider(ctx, callCfg, body)
 		attempt++
 
+		if err == nil && resp.StatusCode == http.StatusOK && resp.Empty {
+			// The provider answered 200 but with nothing in it. Treat it like a
+			// failure, but prefer *other providers* before asking this one again:
+			// skip it for the rest of this pass and demote it for later passes.
+			log.Printf("fallback: %s/%s returned an empty completion — trying other providers first", r.ProviderID, r.ModelID)
+			demoted[r.ProviderID+"/"+r.ModelID] = true
+			failedProviders[r.ProviderID] = true
+			continue
+		}
 		if err != nil || resp.StatusCode != http.StatusOK {
 			// HuggingFace 503+loading: wait and retry SAME provider (cold start).
 			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
@@ -363,7 +393,7 @@ func (fc *FallbackChain) executePass(ctx context.Context, req Request) (*Respons
 		log.Printf("fallback: trying openrouter/free ultimate fallback")
 		body := OpenRouterFreeRouterRequest(req.Raw)
 		resp, err := fc.callProvider(ctx, *or, body)
-		if err == nil && resp.StatusCode == http.StatusOK {
+		if err == nil && resp.usable() {
 			fc.ReliabilityTracker.Record("openrouter", true)
 			return resp, nil
 		}
@@ -417,6 +447,7 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 
 	// Extract the actual model used (OpenRouter fills this in)
 	usedModel := ""
+	empty := false
 	if resp.StatusCode == http.StatusOK {
 		var parsed struct {
 			Model string `json:"model"`
@@ -424,6 +455,7 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		if json.Unmarshal(respBody, &parsed) == nil {
 			usedModel = parsed.Model
 		}
+		empty = isEmptyCompletion(respBody)
 	}
 
 	return &Response{
@@ -431,7 +463,81 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		Header:     resp.Header,
 		Body:       respBody,
 		UsedModel:  usedModel,
+		Empty:      empty,
 	}, nil
+}
+
+// demoteRanked returns ranked with every demoted provider/model moved to the
+// end (order otherwise unchanged), so providers that already returned an empty
+// response are only retried after all other candidates.
+func demoteRanked(ranked []strategy.RankedEntry, demoted map[string]bool) []strategy.RankedEntry {
+	if len(demoted) == 0 {
+		return ranked
+	}
+	out := make([]strategy.RankedEntry, 0, len(ranked))
+	var last []strategy.RankedEntry
+	for _, r := range ranked {
+		if demoted[r.ProviderID+"/"+r.ModelID] {
+			last = append(last, r)
+		} else {
+			out = append(out, r)
+		}
+	}
+	return append(out, last...)
+}
+
+// isEmptyCompletion reports whether a 200 response body is not a usable chat
+// completion: unparseable, without choices, or where no choice carries text
+// content, tool calls or a function call. Reasoning-only output does not count
+// as an answer.
+func isEmptyCompletion(body []byte) bool {
+	var c struct {
+		Choices []struct {
+			Message struct {
+				Content      any   `json:"content"`
+				ToolCalls    []any `json:"tool_calls"`
+				FunctionCall any   `json:"function_call"`
+			} `json:"message"`
+			Text string `json:"text"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &c); err != nil {
+		return true
+	}
+	for _, ch := range c.Choices {
+		m := ch.Message
+		if len(m.ToolCalls) > 0 || m.FunctionCall != nil {
+			return false
+		}
+		if strings.TrimSpace(ch.Text) != "" || hasContent(m.Content) {
+			return false
+		}
+	}
+	return true
+}
+
+// hasContent reports whether a message "content" value (string or array of
+// parts) holds anything beyond whitespace.
+func hasContent(v any) bool {
+	switch c := v.(type) {
+	case string:
+		return strings.TrimSpace(c) != ""
+	case []any:
+		for _, part := range c {
+			m, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, isText := m["text"].(string); isText {
+				if strings.TrimSpace(t) != "" {
+					return true
+				}
+			} else if len(m) > 0 {
+				return true // non-text part (image, audio, …)
+			}
+		}
+	}
+	return false
 }
 
 func (fc *FallbackChain) findProvider(id string) *config.ProviderConfig {

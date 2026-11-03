@@ -253,7 +253,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			delete(body, f)
 		}
 		resp, err := chain.callProvider(r.Context(), *provCfg, body)
-		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 && !resp.Empty {
 			if req.Stream {
 				writeCompletionAsSSE(w, resp.Body)
 				return
@@ -263,7 +263,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 			w.Write(resp.Body)
 			return
 		}
-		// Any error or non-2xx — try next catalog entry.
+		// Any error, non-2xx or empty completion — try next catalog entry.
 	}
 	if !found {
 		http.Error(w, fmt.Sprintf(`{"error":"model %q not found in free catalog"}`, req.Model), http.StatusNotFound)
