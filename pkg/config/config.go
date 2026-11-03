@@ -94,8 +94,20 @@ type RefreshConfig struct {
 type FallbackConfig struct {
 	RetryOn429              bool `mapstructure:"retry_on_429"`
 	RetryOn5xx              bool `mapstructure:"retry_on_5xx"`
+	// MaxAttempts caps provider calls per pass over the fallback chain. It no
+	// longer ends the request: after a pass fails, the chain backs off and
+	// starts over until a provider answers.
 	MaxAttempts             int  `mapstructure:"max_attempts"`
 	CerebrasRequestSpacingMs int  `mapstructure:"cerebras_request_spacing_ms"`
+	// RetryBackoffInitial is the wait after the first failed pass; it doubles
+	// after every further failed pass up to RetryBackoffMax (with jitter).
+	RetryBackoffInitial time.Duration `mapstructure:"retry_backoff_initial"`
+	RetryBackoffMax     time.Duration `mapstructure:"retry_backoff_max"`
+	// MaxWait bounds how long one request may stay pending. 0 (default) means
+	// no limit: the request is retried until a provider answers or the client
+	// disconnects. When set and exceeded, the proxy answers with a 503 error,
+	// never with a fabricated completion.
+	MaxWait time.Duration `mapstructure:"max_wait"`
 }
 
 // mu guards the current config pointer for concurrent hot-reload.
@@ -223,6 +235,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.retry_on_5xx", true)
 	v.SetDefault("fallback.max_attempts", 5)
 	v.SetDefault("fallback.cerebras_request_spacing_ms", 100)
+	v.SetDefault("fallback.retry_backoff_initial", "1s")
+	v.SetDefault("fallback.retry_backoff_max", "30s")
+	v.SetDefault("fallback.max_wait", "0s")
 	v.SetDefault("refresh.schedule", "weekly")
 	v.SetDefault("refresh.output_merge", "conservative")
 }

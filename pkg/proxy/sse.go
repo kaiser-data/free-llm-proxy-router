@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,13 @@ import (
 //
 // If body is not a parseable chat completion it is written as plain JSON.
 func writeCompletionAsSSE(w http.ResponseWriter, body []byte) {
+	writeSSECompletion(w, body, false)
+}
+
+// writeSSECompletion is writeCompletionAsSSE for a response whose SSE headers
+// may already have been sent (started == true), e.g. after keep-alive comments
+// were written while waiting for a provider.
+func writeSSECompletion(w http.ResponseWriter, body []byte, started bool) {
 	var c struct {
 		ID                string           `json:"id"`
 		Created           int64            `json:"created"`
@@ -23,6 +31,18 @@ func writeCompletionAsSSE(w http.ResponseWriter, body []byte) {
 		Usage             map[string]any   `json:"usage,omitempty"`
 	}
 	if err := json.Unmarshal(body, &c); err != nil || len(c.Choices) == 0 {
+		if started {
+			var compact bytes.Buffer
+			if json.Compact(&compact, body) != nil {
+				compact.Reset()
+				compact.Write(bytes.TrimSpace(body))
+			}
+			fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", compact.Bytes())
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write(body)
@@ -35,12 +55,9 @@ func writeCompletionAsSSE(w http.ResponseWriter, body []byte) {
 		c.Created = time.Now().Unix()
 	}
 
-	w.Header().Del("Content-Length")
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
+	if !started {
+		beginSSE(w)
+	}
 	flusher, _ := w.(http.Flusher)
 
 	emit := func(choices []map[string]any, usage map[string]any) {
@@ -114,4 +131,17 @@ func choiceIndex(ch map[string]any, fallback int) int {
 		return int(v)
 	}
 	return fallback
+}
+
+// beginSSE sends the 200 status and event-stream headers.
+func beginSSE(w http.ResponseWriter) {
+	w.Header().Del("Content-Length")
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }

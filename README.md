@@ -142,7 +142,9 @@ Every request runs through a 5-step fallback:
 4. **Remaining ranked providers** (by strategy)
 5. **OpenRouter `openrouter/free`** — ultimate fallback router
 
-Rate-limited providers (429) are put on a cooldown automatically and skipped until the window resets — no blocking, no sleep.
+Rate-limited providers (429) are put on a cooldown automatically and skipped until the window resets.
+
+**The request stays pending until a real provider answers.** `fallback.max_attempts` caps the provider calls in one pass over the chain; if a pass finds no working provider, the proxy waits (exponential backoff `retry_backoff_initial` → `retry_backoff_max`, with jitter, cut short when a cooldown expires) and starts another pass with the original request. The client only ever receives a genuine provider completion — never a synthetic one. Streaming clients get SSE `: keep-alive` comments while waiting. To bound the wait, set `fallback.max_wait`; when it elapses the proxy returns HTTP 503 with an OpenAI-style `error` object (not a completion). A client that disconnects cancels the retries.
 
 ## Supported providers
 

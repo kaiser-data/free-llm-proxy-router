@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -87,7 +88,11 @@ func (s *Server) Start(ctx context.Context) error {
 		Addr:         fmt.Sprintf(":%d", cfg.Proxy.Port),
 		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second,
+		// A request may legitimately stay pending while no provider is
+		// available, so there is no write deadline; the client's own timeout
+		// (or disconnect) ends the wait.
+		WriteTimeout: 0,
+		BaseContext:  func(net.Listener) context.Context { return ctx },
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -330,23 +335,34 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	// Always use the fallback chain regardless of stream flag.
 	// Streaming is stripped from provider requests in buildBody so the chain
 	// always receives buffered JSON — this is required for fallback to work.
-	resp, err := chain.Execute(r.Context(), req)
+	// Execute keeps retrying until a provider gives a real answer; it only
+	// returns an error if the client went away or fallback.max_wait elapsed.
+	resp, sseStarted, err := executePending(w, r, chain, req)
 	if err != nil {
-		log.Printf("fallback chain exhausted: %v", err)
-		// Return a valid empty completion so the client sees no error message.
-		exhausted := fmt.Sprintf(`{"id":"exhausted","object":"chat.completion","created":%d,"model":"none","choices":[{"index":0,"message":{"role":"assistant","content":"I\u2019m temporarily unavailable \u2014 please try again in a moment."},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`, time.Now().Unix())
-		w.Header().Set("X-Proxy-Exhausted", "true")
-		if req.Stream {
-			writeCompletionAsSSE(w, []byte(exhausted))
+		if r.Context().Err() != nil {
+			log.Printf("request abandoned while waiting for a provider: %v", err)
+			return // client disconnected or proxy shutting down; nobody to answer
+		}
+		log.Printf("no provider answered: %v", err)
+		// Never answer with a fake completion: report the failure as an error.
+		if sseStarted {
+			// Status 200 is already on the wire; end the stream with an error event.
+			payload, _ := json.Marshal(proxyErrorBody(err))
+			fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", payload)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(exhausted))
+		writeProxyError(w, http.StatusServiceUnavailable, err)
 		return
 	}
 
 	if req.Stream && resp.StatusCode == http.StatusOK {
+		if sseStarted {
+			writeSSECompletion(w, resp.Body, true)
+			return
+		}
 		if resp.UsedModel != "" {
 			w.Header().Set("X-Used-Model", resp.UsedModel)
 		}
@@ -369,6 +385,67 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(resp.Body)
+}
+
+// sseKeepaliveInterval is how often a pending streaming request emits an SSE
+// comment so clients and intermediaries don't drop the idle connection.
+const sseKeepaliveInterval = 15 * time.Second
+
+// executePending runs the fallback chain for a request that may stay pending
+// for a long time. For streaming clients it starts the SSE response after the
+// first interval and sends comment lines (": keep-alive") until a provider
+// answers; these carry no completion data. sseStarted reports whether SSE
+// headers were already sent.
+func executePending(w http.ResponseWriter, r *http.Request, chain *FallbackChain, req Request) (resp *Response, sseStarted bool, err error) {
+	if !req.Stream {
+		resp, err = chain.Execute(r.Context(), req)
+		return resp, false, err
+	}
+	type result struct {
+		resp *Response
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, err := chain.Execute(r.Context(), req)
+		done <- result{resp, err}
+	}()
+	ticker := time.NewTicker(sseKeepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case res := <-done:
+			return res.resp, sseStarted, res.err
+		case <-ticker.C:
+			if !sseStarted {
+				beginSSE(w)
+				sseStarted = true
+			}
+			fmt.Fprint(w, ": keep-alive\n\n")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}
+}
+
+// proxyErrorBody builds an OpenAI-style error object (not a completion).
+func proxyErrorBody(err error) map[string]any {
+	return map[string]any{"error": map[string]any{
+		"message": err.Error(),
+		"type":    "service_unavailable",
+		"code":    "no_provider_available",
+	}}
+}
+
+// writeProxyError sends a real HTTP error status with an OpenAI-style error body.
+func writeProxyError(w http.ResponseWriter, status int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	if status == http.StatusServiceUnavailable {
+		w.Header().Set("Retry-After", "30")
+	}
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(proxyErrorBody(err))
 }
 
 // handleModels returns the list of available free models.

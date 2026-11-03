@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -59,9 +61,106 @@ type Response struct {
 	UsedModel string
 }
 
-// Execute runs the fallback chain for the given request.
-// Returns the first successful response or an error if all providers fail.
+// ErrNoProviderAvailable is returned by Execute only when Fallback.MaxWait is
+// set and no provider produced a real response within that time.
+var ErrNoProviderAvailable = errors.New("no provider produced a response")
+
+const (
+	defaultBackoffInitial = time.Second
+	defaultBackoffMax     = 30 * time.Second
+	// minRetryDelay keeps a pass that ends right before a cooldown expires
+	// from turning into a busy loop.
+	minRetryDelay = 100 * time.Millisecond
+)
+
+// Execute runs the fallback chain for the given request until a provider
+// returns a real response.
+//
+// A single pass over the chain (executePass) is bounded by Fallback.MaxAttempts.
+// When a pass finds no provider that answers, Execute waits (exponential
+// backoff with jitter, shortened to the next cooldown expiry) and starts a new
+// pass with the unmodified original request. It never fabricates a
+// completion: it returns either an upstream response, ctx.Err() when the
+// client went away, or — only if Fallback.MaxWait is set and exceeded —
+// ErrNoProviderAvailable.
 func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, error) {
+	backoff, backoffMax := fc.Cfg.Fallback.RetryBackoffInitial, fc.Cfg.Fallback.RetryBackoffMax
+	if backoff <= 0 {
+		backoff = defaultBackoffInitial
+	}
+	if backoffMax <= 0 {
+		backoffMax = defaultBackoffMax
+	}
+	if backoffMax < backoff {
+		backoffMax = backoff
+	}
+	maxWait := fc.Cfg.Fallback.MaxWait
+	deadline := time.Now().Add(maxWait)
+
+	for pass := 1; ; pass++ {
+		resp, err := fc.executePass(ctx, req)
+		if err == nil {
+			return resp, nil
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr // client went away or shutdown; nobody to answer
+		}
+
+		delay := fc.retryDelay(backoff)
+		if maxWait > 0 {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil, fmt.Errorf("%w within %s (%d passes): %v", ErrNoProviderAvailable, maxWait, pass, err)
+			}
+			if delay > remaining {
+				delay = remaining
+			}
+		}
+		log.Printf("fallback: pass %d found no provider (%v) — request stays pending, retrying in %s", pass, err, delay.Round(time.Millisecond))
+		if serr := sleepCtx(ctx, delay); serr != nil {
+			return nil, serr
+		}
+		if backoff *= 2; backoff > backoffMax {
+			backoff = backoffMax
+		}
+	}
+}
+
+// retryDelay turns the current backoff step into the actual wait: jittered ±20%
+// to avoid synchronised retries, and cut short when a provider/model cooldown
+// expires sooner so recovered capacity is picked up promptly.
+func (fc *FallbackChain) retryDelay(backoff time.Duration) time.Duration {
+	d := time.Duration(float64(backoff) * (0.8 + 0.4*rand.Float64()))
+	if fc.RateLimiter != nil {
+		if rec := fc.RateLimiter.EarliestRecovery(); !rec.IsZero() {
+			if until := time.Until(rec) + 50*time.Millisecond; until < d {
+				d = until
+			}
+		}
+	}
+	if d < minRetryDelay {
+		d = minRetryDelay
+	}
+	return d
+}
+
+// sleepCtx waits for d or until ctx is done, returning ctx.Err() in the latter case.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// executePass makes one pass over the fallback chain: at most
+// Fallback.MaxAttempts provider calls. It returns the first successful
+// response, or an error if no provider answered during this pass. req is never
+// modified, so every pass sends the original request.
+func (fc *FallbackChain) executePass(ctx context.Context, req Request) (*Response, error) {
 	freeEntries := fc.Catalog.FreeEntries()
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
@@ -271,7 +370,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		fc.ReliabilityTracker.Record("openrouter", false)
 	}
 
-	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempt)
+	return nil, fmt.Errorf("no provider answered in this pass (%d attempts)", attempt)
 }
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
