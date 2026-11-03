@@ -69,7 +69,13 @@ proxy:
 fallback:
   retry_on_429: true
   retry_on_5xx: true
+  # Provider calls per pass over the chain. When a pass fails the proxy backs
+  # off and starts another one — the request stays pending until a provider
+  # gives a real answer (it never returns a made-up completion).
   max_attempts: 5
+  retry_backoff_initial: 1s   # wait after the first failed pass, doubles each pass
+  retry_backoff_max: 30s      # upper bound for the wait between passes
+  max_wait: 0s                # 0 = wait indefinitely; else give up with HTTP 503
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
 

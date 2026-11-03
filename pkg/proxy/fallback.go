@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -57,11 +59,129 @@ type Response struct {
 	Body       []byte
 	// UsedModel is the model that actually served the request (from response body).
 	UsedModel string
+	// Empty is set on a 200 response that carries no usable completion (no
+	// choices, no content and no tool calls, or an unparseable body). Such a
+	// response is treated as a failed attempt, not as an answer.
+	Empty bool
 }
 
-// Execute runs the fallback chain for the given request.
-// Returns the first successful response or an error if all providers fail.
+// usable reports whether resp is a genuine, non-empty provider completion.
+func (r *Response) usable() bool {
+	return r != nil && r.StatusCode == http.StatusOK && !r.Empty
+}
+
+// ErrNoProviderAvailable is returned by Execute only when Fallback.MaxWait is
+// set and no provider produced a real response within that time.
+var ErrNoProviderAvailable = errors.New("no provider produced a response")
+
+const (
+	defaultBackoffInitial = time.Second
+	defaultBackoffMax     = 30 * time.Second
+	// minRetryDelay keeps a pass that ends right before a cooldown expires
+	// from turning into a busy loop.
+	minRetryDelay = 100 * time.Millisecond
+)
+
+// Execute runs the fallback chain for the given request until a provider
+// returns a real response.
+//
+// A single pass over the chain (executePass) is bounded by Fallback.MaxAttempts.
+// When a pass finds no provider that answers, Execute waits (exponential
+// backoff with jitter, shortened to the next cooldown expiry) and starts a new
+// pass with the unmodified original request. It never fabricates a
+// completion: it returns either an upstream response, ctx.Err() when the
+// client went away, or — only if Fallback.MaxWait is set and exceeded —
+// ErrNoProviderAvailable.
 func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, error) {
+	backoff, backoffMax := fc.Cfg.Fallback.RetryBackoffInitial, fc.Cfg.Fallback.RetryBackoffMax
+	if backoff <= 0 {
+		backoff = defaultBackoffInitial
+	}
+	if backoffMax <= 0 {
+		backoffMax = defaultBackoffMax
+	}
+	if backoffMax < backoff {
+		backoffMax = backoff
+	}
+	maxWait := fc.Cfg.Fallback.MaxWait
+	deadline := time.Now().Add(maxWait)
+
+	// Provider/model pairs that returned an empty response during this request.
+	// Later passes try every other candidate first and retry these last.
+	demoted := make(map[string]bool)
+
+	for pass := 1; ; pass++ {
+		resp, err := fc.executePass(ctx, req, demoted)
+		if err == nil {
+			return resp, nil
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr // client went away or shutdown; nobody to answer
+		}
+
+		delay := fc.retryDelay(backoff)
+		if maxWait > 0 {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil, fmt.Errorf("%w within %s (%d passes): %v", ErrNoProviderAvailable, maxWait, pass, err)
+			}
+			if delay > remaining {
+				delay = remaining
+			}
+		}
+		log.Printf("fallback: pass %d found no provider (%v) — request stays pending, retrying in %s", pass, err, delay.Round(time.Millisecond))
+		if serr := sleepCtx(ctx, delay); serr != nil {
+			return nil, serr
+		}
+		if backoff *= 2; backoff > backoffMax {
+			backoff = backoffMax
+		}
+	}
+}
+
+// retryDelay turns the current backoff step into the actual wait: jittered ±20%
+// to avoid synchronised retries, and cut short when a provider/model cooldown
+// expires sooner so recovered capacity is picked up promptly.
+func (fc *FallbackChain) retryDelay(backoff time.Duration) time.Duration {
+	d := time.Duration(float64(backoff) * (0.8 + 0.4*rand.Float64()))
+	if fc.RateLimiter != nil {
+		if rec := fc.RateLimiter.EarliestRecovery(); !rec.IsZero() {
+			if until := time.Until(rec) + 50*time.Millisecond; until < d {
+				d = until
+			}
+		}
+	}
+	if d < minRetryDelay {
+		d = minRetryDelay
+	}
+	return d
+}
+
+// sleepCtx waits for d or until ctx is done, returning ctx.Err() in the latter case.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// executePass makes one pass over the fallback chain: at most
+// Fallback.MaxAttempts provider calls. It returns the first successful
+// response, or an error if no provider answered during this pass. req is never
+// modified, so every pass sends the original request.
+//
+// A 200 response without usable content counts as a failure: the provider is
+// skipped for the rest of the pass, and its provider/model key is added to
+// demoted so that later passes try all other candidates before it again.
+// demoted may be nil.
+func (fc *FallbackChain) executePass(ctx context.Context, req Request, demoted map[string]bool) (*Response, error) {
+	if demoted == nil {
+		demoted = make(map[string]bool)
+	}
 	freeEntries := fc.Catalog.FreeEntries()
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
@@ -71,7 +191,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		Model:                 req.Model,
 	}
 
-	ranked := fc.Strategy.Rank(stratReq, freeEntries, nil)
+	ranked := demoteRanked(fc.Strategy.Rank(stratReq, freeEntries, nil), demoted)
 	maxAttempts := fc.Cfg.Fallback.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 5
@@ -166,6 +286,15 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		resp, err := fc.callProvider(ctx, callCfg, body)
 		attempt++
 
+		if err == nil && resp.StatusCode == http.StatusOK && resp.Empty {
+			// The provider answered 200 but with nothing in it. Treat it like a
+			// failure, but prefer *other providers* before asking this one again:
+			// skip it for the rest of this pass and demote it for later passes.
+			log.Printf("fallback: %s/%s returned an empty completion — trying other providers first", r.ProviderID, r.ModelID)
+			demoted[r.ProviderID+"/"+r.ModelID] = true
+			failedProviders[r.ProviderID] = true
+			continue
+		}
 		if err != nil || resp.StatusCode != http.StatusOK {
 			// HuggingFace 503+loading: wait and retry SAME provider (cold start).
 			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
@@ -264,14 +393,14 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		log.Printf("fallback: trying openrouter/free ultimate fallback")
 		body := OpenRouterFreeRouterRequest(req.Raw)
 		resp, err := fc.callProvider(ctx, *or, body)
-		if err == nil && resp.StatusCode == http.StatusOK {
+		if err == nil && resp.usable() {
 			fc.ReliabilityTracker.Record("openrouter", true)
 			return resp, nil
 		}
 		fc.ReliabilityTracker.Record("openrouter", false)
 	}
 
-	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempt)
+	return nil, fmt.Errorf("no provider answered in this pass (%d attempts)", attempt)
 }
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
@@ -318,6 +447,7 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 
 	// Extract the actual model used (OpenRouter fills this in)
 	usedModel := ""
+	empty := false
 	if resp.StatusCode == http.StatusOK {
 		var parsed struct {
 			Model string `json:"model"`
@@ -325,6 +455,7 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		if json.Unmarshal(respBody, &parsed) == nil {
 			usedModel = parsed.Model
 		}
+		empty = isEmptyCompletion(respBody)
 	}
 
 	return &Response{
@@ -332,7 +463,81 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		Header:     resp.Header,
 		Body:       respBody,
 		UsedModel:  usedModel,
+		Empty:      empty,
 	}, nil
+}
+
+// demoteRanked returns ranked with every demoted provider/model moved to the
+// end (order otherwise unchanged), so providers that already returned an empty
+// response are only retried after all other candidates.
+func demoteRanked(ranked []strategy.RankedEntry, demoted map[string]bool) []strategy.RankedEntry {
+	if len(demoted) == 0 {
+		return ranked
+	}
+	out := make([]strategy.RankedEntry, 0, len(ranked))
+	var last []strategy.RankedEntry
+	for _, r := range ranked {
+		if demoted[r.ProviderID+"/"+r.ModelID] {
+			last = append(last, r)
+		} else {
+			out = append(out, r)
+		}
+	}
+	return append(out, last...)
+}
+
+// isEmptyCompletion reports whether a 200 response body is not a usable chat
+// completion: unparseable, without choices, or where no choice carries text
+// content, tool calls or a function call. Reasoning-only output does not count
+// as an answer.
+func isEmptyCompletion(body []byte) bool {
+	var c struct {
+		Choices []struct {
+			Message struct {
+				Content      any   `json:"content"`
+				ToolCalls    []any `json:"tool_calls"`
+				FunctionCall any   `json:"function_call"`
+			} `json:"message"`
+			Text string `json:"text"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &c); err != nil {
+		return true
+	}
+	for _, ch := range c.Choices {
+		m := ch.Message
+		if len(m.ToolCalls) > 0 || m.FunctionCall != nil {
+			return false
+		}
+		if strings.TrimSpace(ch.Text) != "" || hasContent(m.Content) {
+			return false
+		}
+	}
+	return true
+}
+
+// hasContent reports whether a message "content" value (string or array of
+// parts) holds anything beyond whitespace.
+func hasContent(v any) bool {
+	switch c := v.(type) {
+	case string:
+		return strings.TrimSpace(c) != ""
+	case []any:
+		for _, part := range c {
+			m, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, isText := m["text"].(string); isText {
+				if strings.TrimSpace(t) != "" {
+					return true
+				}
+			} else if len(m) > 0 {
+				return true // non-text part (image, audio, …)
+			}
+		}
+	}
+	return false
 }
 
 func (fc *FallbackChain) findProvider(id string) *config.ProviderConfig {
