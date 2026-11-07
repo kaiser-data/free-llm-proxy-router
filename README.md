@@ -129,16 +129,16 @@ A pinned model that has left the free catalog falls back to the profile's strate
 
 ## Providers
 
-**257 free models across 8 providers**, from the weekly scan of 26 Oct 2026 ([full list](FREE_MODELS.md)). One key is enough to start, and every extra key adds capacity.
+**253 free models across 8 providers**, from the weekly scan of 2 Nov 2026 ([full list](FREE_MODELS.md)). One key is enough to start, and every extra key adds capacity.
 
 | Provider | Free models | Get a key |
 |---|---:|---|
 | NVIDIA NIM | 71 | [build.nvidia.com](https://build.nvidia.com) |
-| HuggingFace | 50 | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+| HuggingFace | 49 | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
 | Mistral | 50 | [console.mistral.ai](https://console.mistral.ai) |
 | GitHub Models | 35 | any [GitHub token](https://github.com/settings/tokens) |
 | Google AI Studio (Gemini) | 21 | [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
-| OpenRouter | 18 | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
+| OpenRouter | 15 | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
 | Groq | 10 | [console.groq.com/keys](https://console.groq.com/keys) |
 | Cerebras | 2 | [cloud.cerebras.ai](https://cloud.cerebras.ai) |
 | Ollama (local) | your models | no key |
