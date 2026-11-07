@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"log"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -19,7 +20,12 @@ func Watch(catalogPath string, onChange func(*Catalog)) (stop func(), err error)
 		return nil, err
 	}
 
-	// Watch the directory so we catch atomic renames (tmp → real).
+	// Watch the directory so we catch atomic renames (tmp → real). On a fresh
+	// install it doesn't exist yet; create it so the first scan is picked up.
+	if err := os.MkdirAll(filepath.Dir(expanded), 0o755); err != nil {
+		watcher.Close()
+		return nil, err
+	}
 	if err := watcher.Add(filepath.Dir(expanded)); err != nil {
 		watcher.Close()
 		return nil, err

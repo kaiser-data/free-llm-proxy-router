@@ -25,6 +25,7 @@ import (
 
 var (
 	cfgFile  string
+	host     string
 	port     int
 	stratName string
 )
@@ -36,6 +37,7 @@ func main() {
 		RunE:  runProxy,
 	}
 	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and ~/.free-llm-proxy-router/)")
+	root.Flags().StringVar(&host, "host", "", "override listen address (default from config: 127.0.0.1; use 0.0.0.0 to expose)")
 	root.Flags().IntVarP(&port, "port", "p", 0, "override proxy port (default from config: 8080)")
 	root.Flags().StringVarP(&stratName, "strategy", "s", "", "override strategy name")
 
@@ -51,6 +53,9 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	if host != "" {
+		cfg.Proxy.Host = host
+	}
 	if port > 0 {
 		cfg.Proxy.Port = port
 	}
@@ -58,13 +63,14 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		cfg.Proxy.Strategy = stratName
 	}
 
-	// Load model catalog
-	cat, err := catalog.Load(cfg.Catalog.Path)
+	// Load model catalog (bundled catalog.json until the first scan writes cfg.Catalog.Path)
+	catPath := config.CatalogReadPath(cfg.Catalog.Path, cfgFile)
+	cat, err := catalog.Load(catPath)
 	if err != nil {
 		return fmt.Errorf("loading catalog: %w", err)
 	}
 	freeCount := len(cat.FreeEntries())
-	log.Printf("catalog: %d free model(s) loaded from %s", freeCount, cfg.Catalog.Path)
+	log.Printf("catalog: %d free model(s) loaded from %s", freeCount, catPath)
 	if freeCount == 0 {
 		log.Printf("warning: catalog is empty — run 'free-llm-scan update' to discover free models")
 	}
@@ -89,7 +95,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check catalog staleness
-	if catalog.IsStale(cfg.Catalog.Path, time.Duration(cfg.Catalog.MaxAgeHours)*time.Hour) {
+	if catalog.IsStale(catPath, time.Duration(cfg.Catalog.MaxAgeHours)*time.Hour) {
 		log.Printf("warning: catalog is older than %dh — consider running 'free-llm-scan update'",
 			cfg.Catalog.MaxAgeHours)
 	}
@@ -108,8 +114,10 @@ func runProxy(cmd *cobra.Command, args []string) error {
 
 	// Load persisted rate-limit usage
 	usagePath := "~/.free-llm-proxy-router/usage.json"
-	if _, err := ratelimit.LoadUsage(usagePath); err != nil {
-		log.Printf("usage.json not found (starting fresh): %v", err)
+	if usage, err := ratelimit.LoadUsage(usagePath); err != nil {
+		log.Printf("usage.json unreadable (starting fresh): %v", err)
+	} else {
+		rateLimiter.Restore(usage)
 	}
 
 	// Set up reliability tracker
@@ -162,17 +170,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	// Start catalog git-sync (scanner or replica role, depending on config).
 	// scanFn is only invoked on the scanner machine; replicas leave it nil.
 	scanFn := func(scanCtx context.Context) error {
-		existing, _ := catalog.Load(cfg.Catalog.Path)
-		dispatcher := scan.NewDispatcher()
-		newCat, err := dispatcher.ScanAll(scanCtx, cfg.Providers)
-		if err != nil {
-			return err
-		}
-		if existing != nil {
-			newCat.Blocklist = existing.Blocklist
-		}
-		newCat.FilterBlocklisted()
-		return catalog.Save(newCat, cfg.Catalog.Path)
+		return rescanCatalog(scanCtx, cfg.Providers, cfg.Catalog.Path)
 	}
 	catalog.StartSync(ctx, cfg.Catalog.Path,
 		catalog.GitSyncConfig(cfg.Catalog.GitSync), scanFn)
@@ -188,17 +186,57 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		defer stopWatch()
 	}
 
+	// Persist daily usage and reliability stats periodically and on shutdown,
+	// so a crash or kill -9 loses at most a few minutes of quota tracking.
+	saveState := func() {
+		if err := ratelimit.SaveUsage(rateLimiter.Snapshot(), usagePath); err != nil {
+			log.Printf("saving usage: %v", err)
+		}
+		if err := reliability.Save(reliabilityTracker, relPath); err != nil {
+			log.Printf("saving reliability: %v", err)
+		}
+	}
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				saveState()
+			}
+		}
+	}()
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		log.Printf("proxy: shutting down...")
-		// Save reliability stats on shutdown
-		if err := reliability.Save(reliabilityTracker, relPath); err != nil {
-			log.Printf("saving reliability: %v", err)
-		}
+		saveState()
 		cancel()
 	}()
 
 	return srv.Start(ctx)
+}
+
+// rescanCatalog runs a full scan and saves it to path. A provider whose scan
+// fails or returns nothing keeps its previous entries: the scanner loop pushes
+// this file to every replica, so one flaky provider must not wipe its models
+// fleet-wide.
+func rescanCatalog(ctx context.Context, providers []config.ProviderConfig, path string) error {
+	existing, _ := catalog.Load(path)
+	newCat, err := scan.NewDispatcher().ScanAll(ctx, providers)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		newCat.Blocklist = existing.Blocklist
+	}
+	newCat.FilterBlocklisted()
+	if kept := newCat.KeepUnscanned(existing); len(kept) > 0 {
+		log.Printf("scan: no results from %v — kept their previous entries", kept)
+	}
+	return catalog.Save(newCat, path)
 }

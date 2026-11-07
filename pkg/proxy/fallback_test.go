@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,24 +99,23 @@ func TestFallbackChain_401TriggersCooldown(t *testing.T) {
 	}
 }
 
-func TestFallbackChain_404MarksNeedsReverification(t *testing.T) {
+// Requests share one catalog; a failing upstream must not write to it while
+// other requests read it (run with -race).
+func TestFallbackChain_ConcurrentFailuresDoNotRaceOnCatalog(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"error":{"message":"model not found"}}`, http.StatusNotFound)
+		http.Error(w, `{"error":{"message":"slow down"}}`, http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
 
 	fc, _, cat := newTestChain(srv.URL, "testprovider", "test-model")
-	req := Request{
-		Model:    "test-model",
-		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	req := Request{Model: "test-model", Messages: []map[string]any{{"role": "user", "content": "hi"}}}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = fc.Execute(context.Background(), req) }()
+		go func() { defer wg.Done(); _ = cat.FreeEntries() }()
 	}
-
-	_, _ = fc.Execute(context.Background(), req)
-
-	entry := cat.Find("testprovider", "test-model")
-	if entry == nil || !entry.NeedsReverification {
-		t.Error("expected test-model to be flagged NeedsReverification after 404")
-	}
+	wg.Wait()
 }
 
 func TestBuildBodyServiceTierOnlyWhenConfigured(t *testing.T) {
@@ -334,5 +334,159 @@ func TestFallbackChain_ModelErrorsDoNotCoolDownProvider(t *testing.T) {
 	}
 	if rl.IsOnCooldown("gemini") {
 		t.Error("model-level 429s must not put the whole provider on cooldown")
+	}
+}
+
+func TestFallbackChain_EmptyTruncatedTriesNextModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["model"] == "reasoner" {
+			w.Write([]byte(`{"model":"reasoner","choices":[{"message":{"content":""},"finish_reason":"length"}]}`))
+			return
+		}
+		w.Write([]byte(`{"model":"chat-model","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "groq", "reasoner")
+	fc.Strategy = listStrategy{
+		{ProviderID: "groq", ModelID: "reasoner"},
+		{ProviderID: "groq", ModelID: "chat-model"},
+	}
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "chat-model" {
+		t.Fatalf("expected chat-model after empty truncated reply, got resp=%v err=%v", resp, err)
+	}
+}
+
+func TestFallbackChain_EmptyTruncatedReturnedWhenNothingElse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"model":"reasoner","choices":[{"message":{"content":""},"finish_reason":"length"}]}`))
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "groq", "reasoner")
+	fc.Strategy = listStrategy{{ProviderID: "groq", ModelID: "reasoner"}}
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "reasoner" {
+		t.Fatalf("expected the truncated reply rather than exhaustion, got resp=%v err=%v", resp, err)
+	}
+	if !resp.Truncated {
+		t.Error("a last-resort truncated reply must be flagged so it is not cached")
+	}
+}
+
+func TestIsEmptyTruncated(t *testing.T) {
+	cases := map[string]bool{
+		`{"choices":[{"message":{"content":""},"finish_reason":"length"}]}`:                     true,
+		`{"choices":[{"message":{"content":null},"finish_reason":"length"}]}`:                   true,
+		`{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}`:              false,
+		`{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}`:                       false,
+		`{"choices":[{"message":{"content":null,"tool_calls":[{}]},"finish_reason":"length"}]}`: false,
+		`not json`: false,
+	}
+	for body, want := range cases {
+		if got := isEmptyTruncated([]byte(body)); got != want {
+			t.Errorf("isEmptyTruncated(%s) = %v, want %v", body, got, want)
+		}
+	}
+}
+
+func TestFallbackChain_OpenRouterFollowsStrategyOrder(t *testing.T) {
+	orHits := 0
+	or := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		orHits++
+		w.Write([]byte(`{"model":"or-model","choices":[{"message":{"content":"from openrouter"}}]}`))
+	}))
+	defer or.Close()
+	groq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"model":"fast","choices":[{"message":{"content":"from groq"}}]}`))
+	}))
+	defer groq.Close()
+
+	fc, _, _ := newTestChain(groq.URL, "groq", "fast")
+	fc.Cfg.Providers = append(fc.Cfg.Providers, config.ProviderConfig{ID: "openrouter", BaseURL: or.URL, Enabled: true})
+	ranked := listStrategy{
+		{ProviderID: "groq", ModelID: "fast"},
+		{ProviderID: "openrouter", ModelID: "or-model"},
+	}
+	fc.Strategy = ranked
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "fast" {
+		t.Fatalf("expected groq (ranked first) to answer, got resp=%v err=%v", resp, err)
+	}
+	if orHits != 0 {
+		t.Errorf("openrouter called %d times although groq was ranked first and answered", orHits)
+	}
+
+	// Ranked first, OpenRouter answers before Groq is tried.
+	fc.Strategy = listStrategy{ranked[1], ranked[0]}
+	resp, err = fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "or-model" {
+		t.Fatalf("expected openrouter (ranked first) to answer, got resp=%v err=%v", resp, err)
+	}
+}
+
+// Daily usage is persisted from the provider trackers, so a successful
+// request has to be counted there or usage.json stays empty.
+func TestFallbackChain_SuccessIsCountedInDailyUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	fc, rl, _ := newTestChain(srv.URL, "testprovider", "test-model")
+	for i := 0; i < 2; i++ {
+		if _, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := rl.Snapshot().Providers["testprovider"].ModelDayCounts["test-model"]; got != 2 {
+		t.Errorf("daily count = %d, want 2", got)
+	}
+}
+
+// One Gemini model over its local quota must not hide the other Gemini models.
+func TestFallbackChain_GeminiModelOverQuotaTriesNextGeminiModel(t *testing.T) {
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		gotModel, _ = body["model"].(string)
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "gemini", "full")
+	fc.Strategy = listStrategy{{ProviderID: "gemini", ModelID: "full"}, {ProviderID: "gemini", ModelID: "spare"}}
+	gt := ratelimit.NewGeminiTracker()
+	gt.SetLimits("full", ratelimit.GeminiModelLimits{RPM: 1})
+	gt.RecordRequest("full", 0)
+	fc.GeminiTracker = gt
+
+	if _, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}}); err != nil {
+		t.Fatalf("expected the spare Gemini model to answer: %v", err)
+	}
+	if gotModel != "spare" {
+		t.Errorf("upstream got model %q, want spare", gotModel)
+	}
+}
+
+// A HuggingFace cold-start wait must end when the client goes away.
+func TestFallbackChain_HFLoadingWaitHonoursContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"Model is currently loading","estimated_time":30}`))
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "huggingface", "m")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	fc.Execute(ctx, Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("Execute took %s after the context ended; the wait ignores ctx", took.Round(time.Millisecond))
 	}
 }

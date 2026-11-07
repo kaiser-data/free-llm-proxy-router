@@ -104,12 +104,9 @@ func (t *ProviderTracker) RecordRequest(modelID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Create windows if they don't exist yet (with a generous limit so they auto-init)
+	// Add(0) resets an expired window and increments without a limit check.
 	t.getOrCreate(t.perModel, modelID, time.Minute).Add(0)
-	t.perModel[modelID].Count++
-
 	t.getOrCreate(t.perModelDay, modelID, 24*time.Hour).Add(0)
-	t.perModelDay[modelID].Count++
 }
 
 // RecordRequestSec increments the per-second window (Cerebras).
@@ -117,7 +114,6 @@ func (t *ProviderTracker) RecordRequestSec(modelID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.getOrCreate(t.perModelSec, modelID, time.Second).Add(0)
-	t.perModelSec[modelID].Count++
 }
 
 // PreemptiveSlowdown sets a wait-until time to prevent imminent rate-limiting

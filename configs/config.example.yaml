@@ -4,6 +4,7 @@
 # Live limits tracker: https://github.com/cheahjs/free-llm-api-resources
 
 proxy:
+  host: "127.0.0.1"    # Listen address. Use "0.0.0.0" to expose on your network (set auth_token too)
   port: 8080
   auth_token: ""       # Set to require a Bearer token on incoming requests
   cache_ttl: 300       # Response cache TTL in seconds (0 to disable)

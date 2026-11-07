@@ -49,11 +49,44 @@ Pick this when you want free inference for scripts, agents, homelabs or CI witho
 
 ### 1. Install
 
-**Prebuilt binary** (Linux, macOS, Windows; amd64 and arm64): grab an archive from [Releases](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest).
+Every package ships the binaries together with `configs/` (provider definitions and a free-model catalog), so after an install you only need to add an API key. Run `free-llm-scan update` later to refresh the catalog.
+
+**Homebrew** (macOS, Linux):
+
+```bash
+brew install kaiser-data/tap/free-llm-proxy-router
+```
+
+**Docker** (linux/amd64, linux/arm64):
+
+```bash
+docker run --rm -p 127.0.0.1:8080:8080 -e GROQ_API_KEY=gsk_... ghcr.io/kaiser-data/free-llm-proxy-router:latest
+```
+
+The proxy spends your provider quotas, so it listens on `127.0.0.1` by default. To reach it from other machines, run it with `--host 0.0.0.0` (or set `proxy.host`) **and** set `proxy.auth_token`; clients then send it as their API key.
+
+**Debian/Ubuntu, Fedora, Alpine**: download the `.deb`, `.rpm` or `.apk` from [Releases](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest).
+
+```bash
+VERSION=0.1.3
+curl -LO https://github.com/kaiser-data/free-llm-proxy-router/releases/download/v$VERSION/free-llm-proxy-router_${VERSION}_amd64.deb
+sudo dpkg -i free-llm-proxy-router_${VERSION}_amd64.deb   # or: sudo rpm -i …rpm / sudo apk add --allow-untrusted …apk
+```
+
+**Go**:
+
+```bash
+go install github.com/kaiser-data/free-llm-proxy-router/cmd/free-llm-proxy@latest
+go install github.com/kaiser-data/free-llm-proxy-router/cmd/free-llm-scan@latest
+```
+
+`go install` gives you only the binaries. Without the bundled `configs/` the proxy starts with no providers, so either run it from a source checkout or pass `-c path/to/config.yaml`.
+
+**Prebuilt archive** (Linux, macOS, Windows; amd64 and arm64): grab one from [Releases](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest) and keep `configs/` next to the binaries.
 
 ```bash
 # Example: macOS on Apple Silicon
-VERSION=0.1.0
+VERSION=0.1.3
 curl -LO https://github.com/kaiser-data/free-llm-proxy-router/releases/download/v$VERSION/free-llm-proxy-router_${VERSION}_darwin_arm64.tar.gz
 tar xzf free-llm-proxy-router_${VERSION}_darwin_arm64.tar.gz
 ./free-llm-proxy --help
@@ -76,6 +109,8 @@ make build
 cp .env.example .env
 # Edit .env and fill in your keys
 ```
+
+For an installed binary (Homebrew, package, archive), put the keys in `~/.free-llm-proxy-router/.env`, which is read from any directory. With Docker, pass them with `-e`.
 
 At minimum you need one key. Easiest to get (no credit card):
 
@@ -175,7 +210,9 @@ Key settings in `config.yaml`:
 ```yaml
 proxy:
   strategy: "adaptive"   # Default routing strategy
+  host: "127.0.0.1"      # "0.0.0.0" to expose it; set auth_token as well
   port: 8080
+  auth_token: ""         # Clients must send this as their API key when set
 
 catalog:
   max_age_hours: 24      # Re-scan after this many hours

@@ -57,6 +57,9 @@ type Response struct {
 	Body       []byte
 	// UsedModel is the model that actually served the request (from response body).
 	UsedModel string
+	// Truncated marks an empty finish_reason=length reply returned only because
+	// nothing better answered; it must not be cached.
+	Truncated bool
 }
 
 // Execute runs the fallback chain for the given request.
@@ -77,19 +80,29 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		maxAttempts = 5
 	}
 
-	// Step 1: Try OpenRouter with models[] array (native fallback)
-	if or := fc.findProvider("openrouter"); or != nil {
-		openRouterModels := fc.collectProviderModels("openrouter", ranked)
-		if len(openRouterModels) > 0 {
-			body := BuildOpenRouterRequest(req.Raw, openRouterModels)
-			resp, err := fc.callProvider(ctx, *or, body)
-			if err == nil && resp.StatusCode == http.StatusOK {
-				fc.ReliabilityTracker.Record("openrouter", true)
-				return resp, nil
-			}
-			log.Printf("fallback: openrouter models[] failed — continuing%s", upstreamErrSnippet(resp, err))
-			fc.ReliabilityTracker.Record("openrouter", false)
+	// OpenRouter is called once, with all its ranked models in a models[]
+	// array (native fallback), at the position of its best-ranked entry, so a
+	// strategy that ranks Groq or Cerebras first gets them first.
+	openRouterTried := false
+	tryOpenRouter := func() *Response {
+		openRouterTried = true
+		or := fc.findProvider("openrouter")
+		if or == nil {
+			return nil
 		}
+		openRouterModels := fc.collectProviderModels("openrouter", ranked)
+		if len(openRouterModels) == 0 {
+			return nil
+		}
+		body := BuildOpenRouterRequest(req.Raw, openRouterModels)
+		resp, err := fc.callProvider(ctx, *or, body)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			fc.ReliabilityTracker.Record("openrouter", true)
+			return resp
+		}
+		log.Printf("fallback: openrouter models[] failed — continuing%s", upstreamErrSnippet(resp, err))
+		fc.ReliabilityTracker.Record("openrouter", false)
+		return nil
 	}
 
 	// Step 2–4: Try one model per provider in ranked order.
@@ -101,12 +114,20 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 	attempt := 0
 	failedProviders := make(map[string]bool)
 	providerTries := make(map[string]int)
+	var lastTruncated *Response // empty finish_reason=length reply, used only if nothing better answers
 	for _, r := range ranked {
 		if attempt >= maxAttempts {
 			break
 		}
-		// Skip OpenRouter entries — already tried above via models[] array.
 		if r.ProviderID == "openrouter" {
+			if !openRouterTried {
+				if resp := tryOpenRouter(); resp != nil {
+					return resp, nil
+				}
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+			}
 			continue
 		}
 		// Skip providers that already returned an error this request.
@@ -141,15 +162,17 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			}
 			spacingMs := fc.Cfg.Fallback.CerebrasRequestSpacingMs
 			if spacingMs > 0 {
-				time.Sleep(time.Duration(spacingMs) * time.Millisecond)
+				if err := sleepCtx(ctx, time.Duration(spacingMs)*time.Millisecond); err != nil {
+					return nil, err
+				}
 			}
 		}
 
 		// Gemini 4-dimensional rate check.
 		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
 			if !fc.GeminiTracker.CanRequest(r.ModelID, stratReq.EstimatedPromptTokens) {
-				log.Printf("fallback: gemini %s rate limited — skipping", r.ModelID)
-				failedProviders[r.ProviderID] = true
+				// Quotas are per model: skip this one, other Gemini models may have room.
+				log.Printf("fallback: gemini %s rate limited — skipping model", r.ModelID)
 				continue
 			}
 		}
@@ -171,10 +194,13 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
 				if waitMs := parseHFLoadingWait(resp.Body); waitMs > 0 {
 					log.Printf("fallback: huggingface model loading, waiting %dms", waitMs)
-					time.Sleep(time.Duration(waitMs) * time.Millisecond)
+					if err := sleepCtx(ctx, time.Duration(waitMs)*time.Millisecond); err != nil {
+						return nil, err
+					}
 					resp, err = fc.callProvider(ctx, *providerCfg, body)
 					if err == nil && resp.StatusCode == http.StatusOK {
 						fc.ReliabilityTracker.Record(r.ProviderID, true)
+						fc.RateLimiter.Provider(r.ProviderID).RecordRequest(r.ModelID)
 						return resp, nil
 					}
 				}
@@ -192,7 +218,6 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			if resp != nil {
 				switch resp.StatusCode {
 				case 429:
-					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 					info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
 					waitDur := info.WaitDuration()
 					if isZeroQuota(resp.Body) {
@@ -214,7 +239,6 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(10*time.Minute))
 					log.Printf("fallback: %s auth error %d — cooldown 10min", r.ProviderID, resp.StatusCode)
 				case 404:
-					fc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)
 					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, time.Now().Add(missingModelCooldown))
 					log.Printf("fallback: %s model %s not found — model cooldown %s", r.ProviderID, r.ModelID, missingModelCooldown)
 				}
@@ -253,8 +277,22 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 			_ = fc.GeminiTracker
 		}
 		fc.ReliabilityTracker.Record(r.ProviderID, true)
+		// Counted per model per day; this is what usage.json persists.
+		fc.RateLimiter.Provider(r.ProviderID).RecordRequest(r.ModelID)
 		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
 			fc.GeminiTracker.RecordRequest(r.ModelID, stratReq.EstimatedPromptTokens)
+		}
+		if isEmptyTruncated(resp.Body) {
+			// Reasoning models (gpt-oss) can spend a small max_tokens budget on
+			// hidden reasoning and return no content. Try another model, but keep
+			// this reply in case nothing better comes back.
+			log.Printf("fallback: %s/%s returned empty content (finish_reason=length) — trying next model", r.ProviderID, r.ModelID)
+			lastTruncated = resp
+			providerTries[r.ProviderID]++
+			if providerTries[r.ProviderID] >= maxModelsPerProvider {
+				failedProviders[r.ProviderID] = true
+			}
+			continue
 		}
 		return resp, nil
 	}
@@ -271,6 +309,10 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		fc.ReliabilityTracker.Record("openrouter", false)
 	}
 
+	if lastTruncated != nil {
+		lastTruncated.Truncated = true
+		return lastTruncated, nil
+	}
 	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempt)
 }
 
@@ -373,18 +415,9 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 	if fc.Strategy != nil {
 		if overrides, ok := fc.Cfg.Proxy.StrategyOverrides[fc.Strategy.Name()]; ok {
 			if capRaw, ok := overrides["max_tokens_cap"]; ok {
-				var cap int
-				switch v := capRaw.(type) {
-				case int:
-					cap = v
-				case float64:
-					cap = int(v)
-				}
+				cap, _ := toInt(capRaw)
 				if cap > 0 {
-					current := 0
-					if mt, ok := body["max_tokens"].(float64); ok {
-						current = int(mt)
-					}
+					current, _ := toInt(body["max_tokens"])
 					if current == 0 || current > cap {
 						body["max_tokens"] = cap
 					}
@@ -463,4 +496,50 @@ func estimateTokens(msgs []map[string]any) int {
 		}
 	}
 	return total
+}
+
+// toInt converts a JSON (float64) or YAML (int) number to int. Request bodies
+// mix both once agent-profile defaults/overrides from the config are applied.
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	}
+	return 0, false
+}
+
+// isEmptyTruncated reports whether a chat completion has no usable output
+// because it hit max_tokens: empty content, no tool calls, finish_reason "length".
+func isEmptyTruncated(body []byte) bool {
+	var parsed struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Content   *string `json:"content"`
+				ToolCalls []any   `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(body, &parsed) != nil || len(parsed.Choices) == 0 {
+		return false
+	}
+	c := parsed.Choices[0]
+	empty := c.Message.Content == nil || strings.TrimSpace(*c.Message.Content) == ""
+	return c.FinishReason == "length" && empty && len(c.Message.ToolCalls) == 0
+}
+
+// sleepCtx waits for d or until ctx ends, whichever comes first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }

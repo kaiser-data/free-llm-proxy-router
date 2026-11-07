@@ -24,6 +24,9 @@ type Config struct {
 
 // ProxyConfig holds proxy server settings.
 type ProxyConfig struct {
+	// Host is the listen address. Default 127.0.0.1: the proxy spends your
+	// provider quotas, so exposing it to the network is opt-in.
+	Host      string `mapstructure:"host"`
 	Port      int    `mapstructure:"port"`
 	AuthToken string `mapstructure:"auth_token"`
 	CacheTTL  int    `mapstructure:"cache_ttl"`
@@ -132,9 +135,18 @@ func Load(path string) (*Config, error) {
 	v.AutomaticEnv()
 
 	if err := v.ReadInConfig(); err != nil {
-		// Config file is optional — use defaults if not found.
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("reading config: %w", err)
+		}
+		// No user config: fall back to the example config bundled next to the
+		// binary (release archive, Homebrew, .deb/.rpm, Docker), so a fresh
+		// install has its providers defined and only needs an API key.
+		if bundled := FindDataFile("config.example.yaml", ""); fileExists(bundled) {
+			v.SetConfigFile(bundled)
+			if err := v.ReadInConfig(); err != nil {
+				return nil, fmt.Errorf("reading bundled config %s: %w", bundled, err)
+			}
+			log.Printf("config: no config.yaml found — using bundled %s", bundled)
 		}
 	}
 
@@ -212,6 +224,7 @@ func Watch(path string, onChange func(*Config)) (stop func(), err error) {
 
 // setDefaults installs sensible defaults into a viper instance.
 func setDefaults(v *viper.Viper) {
+	v.SetDefault("proxy.host", "127.0.0.1")
 	v.SetDefault("proxy.port", 8080)
 	v.SetDefault("proxy.cache_ttl", 300)
 	v.SetDefault("proxy.log_level", "info")

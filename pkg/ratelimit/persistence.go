@@ -25,6 +25,63 @@ type ProviderUsage struct {
 	WindowEndMinute int64 `json:"window_end_minute"`
 	// WindowEndDay: end of the current day window (Unix seconds)
 	WindowEndDay int64 `json:"window_end_day"`
+	// ModelDayEnds: model_id → end of that model's day window (Unix seconds).
+	// Day windows start at each model's first request, so they differ per model.
+	ModelDayEnds map[string]int64 `json:"model_day_ends,omitempty"`
+}
+
+// Snapshot captures the per-model daily request counts of every provider.
+// Minute and second windows are not worth persisting: they have expired by
+// the time the proxy restarts.
+func (g *GlobalTracker) Snapshot() *UsageSnapshot {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	u := &UsageSnapshot{Providers: make(map[string]ProviderUsage)}
+	now := time.Now()
+	for id, t := range g.trackers {
+		t.mu.Lock()
+		pu := ProviderUsage{ModelDayCounts: map[string]int{}, ModelDayEnds: map[string]int64{}}
+		for model, w := range t.perModelDay {
+			if w.Count == 0 || now.After(w.WindowEnd) {
+				continue
+			}
+			pu.ModelDayCounts[model] = w.Count
+			pu.ModelDayEnds[model] = w.WindowEnd.Unix()
+			if end := w.WindowEnd.Unix(); end > pu.WindowEndDay {
+				pu.WindowEndDay = end
+			}
+		}
+		t.mu.Unlock()
+		if len(pu.ModelDayCounts) > 0 {
+			u.Providers[id] = pu
+		}
+	}
+	return u
+}
+
+// Restore loads daily counts from a snapshot, skipping windows that have
+// already ended, so daily quotas keep counting across restarts.
+func (g *GlobalTracker) Restore(u *UsageSnapshot) {
+	if u == nil {
+		return
+	}
+	now := time.Now()
+	for id, pu := range u.Providers {
+		t := g.Provider(id)
+		t.mu.Lock()
+		for model, count := range pu.ModelDayCounts {
+			end := pu.ModelDayEnds[model]
+			if end == 0 {
+				end = pu.WindowEndDay
+			}
+			windowEnd := time.Unix(end, 0)
+			if count <= 0 || !windowEnd.After(now) {
+				continue
+			}
+			t.perModelDay[model] = &Window{Count: count, WindowEnd: windowEnd, Size: 24 * time.Hour}
+		}
+		t.mu.Unlock()
+	}
 }
 
 // LoadUsage reads a UsageSnapshot from the given path.

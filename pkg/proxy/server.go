@@ -3,10 +3,14 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -84,14 +88,17 @@ func (s *Server) Start(ctx context.Context) error {
 	handler = authMiddleware(cfg.Proxy.AuthToken, handler)
 
 	s.httpServer = &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Proxy.Port),
+		Addr:         net.JoinHostPort(cfg.Proxy.Host, strconv.Itoa(cfg.Proxy.Port)),
 		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("free-llm-proxy listening on :%d (strategy: %s)", cfg.Proxy.Port, cfg.Proxy.Strategy)
+	log.Printf("free-llm-proxy listening on %s (strategy: %s)", s.httpServer.Addr, cfg.Proxy.Strategy)
+	if cfg.Proxy.AuthToken == "" && !isLoopbackHost(cfg.Proxy.Host) {
+		log.Printf("warning: listening on %q without proxy.auth_token — anyone who can reach this port can spend your provider quotas", cfg.Proxy.Host)
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -106,23 +113,43 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
+// isLoopbackHost reports whether a listen host only accepts local connections.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// maxRequestBodyBytes caps chat request bodies. Generous enough for long
+// contexts and a few base64 images, small enough that one client can't make
+// the proxy buffer an unbounded body in memory.
+const maxRequestBodyBytes = 16 << 20
+
 // handleChatCompletions is the main OpenAI-compat chat endpoint.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method_not_allowed", "method not allowed")
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 	if err != nil {
-		http.Error(w, `{"error":"failed to read request body"}`, http.StatusBadRequest)
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large",
+				fmt.Sprintf("request body exceeds %d MB", maxRequestBodyBytes>>20))
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_body", "failed to read request body")
 		return
 	}
 	r.Body.Close()
 
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_json", "request body is not valid JSON")
 		return
 	}
 
@@ -140,8 +167,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if stream, ok := raw["stream"].(bool); ok {
 		req.Stream = stream
 	}
-	if mt, ok := raw["max_tokens"].(float64); ok {
-		req.MaxTokens = int(mt)
+	if mt, ok := toInt(raw["max_tokens"]); ok {
+		req.MaxTokens = mt
 	}
 
 	cfg := s.cfg.Load()
@@ -160,8 +187,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			raw[k] = v
 		}
 		// Re-read max_tokens in case defaults/overrides changed it.
-		if mt, ok := raw["max_tokens"].(float64); ok {
-			req.MaxTokens = int(mt)
+		if mt, ok := toInt(raw["max_tokens"]); ok {
+			req.MaxTokens = mt
 		}
 		// Redirect routing: specific model takes precedence over strategy.
 		// A pinned model that has left the free catalog falls back to the
@@ -249,6 +276,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		}
 		resp, err := chain.callProvider(r.Context(), *provCfg, body)
 		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			s.rateLimiter.Provider(e.ProviderID).RecordRequest(e.ModelID)
 			if req.Stream {
 				writeCompletionAsSSE(w, resp.Body)
 				return
@@ -261,7 +289,8 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		// Any error or non-2xx — try next catalog entry.
 	}
 	if !found {
-		http.Error(w, fmt.Sprintf(`{"error":"model %q not found in free catalog"}`, req.Model), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "invalid_request_error", "model_not_found",
+			fmt.Sprintf("model %q not found in free catalog", req.Model))
 		return
 	}
 	// Model found but all direct attempts failed — fall back to strategy chain.
@@ -333,16 +362,12 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	resp, err := chain.Execute(r.Context(), req)
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)
-		// Return a valid empty completion so the client sees no error message.
-		exhausted := fmt.Sprintf(`{"id":"exhausted","object":"chat.completion","created":%d,"model":"none","choices":[{"index":0,"message":{"role":"assistant","content":"I\u2019m temporarily unavailable \u2014 please try again in a moment."},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`, time.Now().Unix())
+		// A retryable error, not a fake completion: SDKs retry 503s and honour
+		// Retry-After, whereas a 200 would be taken as a real answer.
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(s.rateLimiter.EarliestRecovery())))
 		w.Header().Set("X-Proxy-Exhausted", "true")
-		if req.Stream {
-			writeCompletionAsSSE(w, []byte(exhausted))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(exhausted))
+		writeError(w, http.StatusServiceUnavailable, "server_error", "all_providers_exhausted",
+			"All free providers are rate-limited or failing. Retry after the Retry-After interval.")
 		return
 	}
 
@@ -354,15 +379,11 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		return
 	}
 
-	if !req.Stream && resp.StatusCode == http.StatusOK {
+	if !req.Stream && resp.StatusCode == http.StatusOK && !resp.Truncated {
 		s.cache.Set(raw, resp.Body)
 	}
 
-	for k, vals := range resp.Header {
-		for _, v := range vals {
-			w.Header().Add(k, v)
-		}
-	}
+	copyUpstreamHeaders(w.Header(), resp.Header)
 	if resp.UsedModel != "" {
 		w.Header().Set("X-Used-Model", resp.UsedModel)
 	}
@@ -371,33 +392,90 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	w.Write(resp.Body)
 }
 
-// handleModels returns the list of available free models.
+// upstreamOnlyHeaders describe the upstream connection or the upstream body as
+// it was on the wire. The proxy re-frames the body (and may rewrite it, e.g.
+// StripGeminiThoughts), so forwarding them would corrupt the response.
+var upstreamOnlyHeaders = map[string]bool{
+	"Content-Length":    true,
+	"Content-Encoding":  true,
+	"Transfer-Encoding": true,
+	"Connection":        true,
+	"Keep-Alive":        true,
+	"Set-Cookie":        true,
+}
+
+// copyUpstreamHeaders forwards upstream response headers (rate-limit info,
+// request IDs) except framing, hop-by-hop and cookie headers.
+func copyUpstreamHeaders(dst, src http.Header) {
+	for k, vals := range src {
+		if upstreamOnlyHeaders[http.CanonicalHeaderKey(k)] {
+			continue
+		}
+		for _, v := range vals {
+			dst.Add(k, v)
+		}
+	}
+}
+
+// handleModels lists what a client can put in "model": "auto", the routing
+// strategies, the configured agent profiles, then every free catalog model
+// (deduplicated by ID; owned_by is the first provider serving it). UIs like
+// Open WebUI and Continue only offer IDs that appear here.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	cat := s.catalog.Load()
+	cfg := s.cfg.Load()
 	type modelEntry struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
 		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
 	}
-	var models []modelEntry
-	for _, e := range cat.FreeEntries() {
-		models = append(models, modelEntry{
-			ID:     e.ModelID,
-			Object: "model",
-		})
+	models := []modelEntry{}
+	seen := map[string]bool{}
+	add := func(id, owner string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		models = append(models, modelEntry{ID: id, Object: "model", OwnedBy: owner})
 	}
-	resp := map[string]any{
+
+	add("auto", "free-llm-proxy-router")
+	if s.strategyReg != nil {
+		names := s.strategyReg.Names()
+		sort.Strings(names)
+		for _, n := range names {
+			add(n, "free-llm-proxy-router")
+		}
+	}
+	if cfg != nil {
+		agents := make([]string, 0, len(cfg.Proxy.Agents))
+		for n := range cfg.Proxy.Agents {
+			agents = append(agents, n)
+		}
+		sort.Strings(agents)
+		for _, n := range agents {
+			add(n, "free-llm-proxy-router")
+		}
+	}
+	if cat != nil {
+		for _, e := range cat.FreeEntries() {
+			add(e.ModelID, e.ProviderID)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
 		"object": "list",
 		"data":   models,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	})
 }
 
 // handleCompletions is a stub for text-completion requests.
 // Most modern models only support chat; this returns a helpful error.
 func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, `{"error":"use /v1/chat/completions — legacy completions not supported"}`, http.StatusNotImplemented)
+	writeError(w, http.StatusNotImplemented, "invalid_request_error", "unsupported_endpoint",
+		"legacy completions are not supported; use /v1/chat/completions")
 }
 
 // findProviderCfg returns the enabled provider with the given ID, or nil.
