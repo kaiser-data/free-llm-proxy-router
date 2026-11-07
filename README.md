@@ -272,12 +272,18 @@ configs/            bundled config and the free-model catalog
 ## Development
 
 ```bash
-go test -race ./...    # 78 tests
+go test -race ./...    # 94 tests
 go vet ./...
 make build
 ```
 
-**Next:** a single admission path for every upstream call (atomic quota reservations, per-key cooldowns, a request deadline) · real SSE pass-through · fixing the GitHub Models scanner.
+**Next:** real SSE pass-through · fixing the GitHub Models scanner.
+
+## Contributors
+
+Thank you to everyone who has helped make this better:
+
+- [@BenediktChlopik](https://github.com/BenediktChlopik): empty-completion detection, so a `200` with no content is never passed off as an answer ([#16](https://github.com/kaiser-data/free-llm-proxy-router/pull/16), [#17](https://github.com/kaiser-data/free-llm-proxy-router/pull/17)), and new free providers ([#15](https://github.com/kaiser-data/free-llm-proxy-router/pull/15))
 
 ## Acknowledgments
 
