@@ -130,24 +130,6 @@
     },
     {
       "provider_id": "openrouter",
-      "model_id": "google/lyria-3-pro-preview",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 1048576,
-      "discovered_at": "2026-11-02T14:31:23.387132357Z",
-      "last_verified_at": "2026-11-02T14:31:23.387132407Z"
-    },
-    {
-      "provider_id": "openrouter",
-      "model_id": "google/lyria-3-clip-preview",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 1048576,
-      "discovered_at": "2026-11-02T14:31:23.387132487Z",
-      "last_verified_at": "2026-11-02T14:31:23.387132537Z"
-    },
-    {
-      "provider_id": "openrouter",
       "model_id": "openrouter/free",
       "is_free": true,
       "tier_type": "free",
@@ -1327,48 +1309,12 @@
     },
     {
       "provider_id": "groq",
-      "model_id": "canopylabs/orpheus-v1-english",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 4000,
-      "discovered_at": "2026-03-05T06:17:50.940265609+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.940265681+01:00"
-    },
-    {
-      "provider_id": "groq",
-      "model_id": "meta-llama/llama-prompt-guard-2-22m",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 512,
-      "discovered_at": "2026-03-05T06:17:50.940280748+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.940280817+01:00"
-    },
-    {
-      "provider_id": "groq",
       "model_id": "allam-2-7b",
       "is_free": true,
       "tier_type": "free",
       "context_window": 4096,
       "discovered_at": "2026-03-05T06:17:50.94028111+01:00",
       "last_verified_at": "2026-03-05T06:17:50.940281181+01:00"
-    },
-    {
-      "provider_id": "groq",
-      "model_id": "meta-llama/llama-guard-4-12b",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.940281302+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.940281372+01:00"
-    },
-    {
-      "provider_id": "groq",
-      "model_id": "openai/gpt-oss-safeguard-20b",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:50.940281484+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.940281553+01:00"
     },
     {
       "provider_id": "groq",
@@ -1387,15 +1333,6 @@
       "context_window": 131072,
       "discovered_at": "2026-03-05T06:17:50.940281867+01:00",
       "last_verified_at": "2026-03-05T06:17:50.940281938+01:00"
-    },
-    {
-      "provider_id": "groq",
-      "model_id": "meta-llama/llama-prompt-guard-2-86m",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 512,
-      "discovered_at": "2026-03-05T06:17:50.940282044+01:00",
-      "last_verified_at": "2026-03-05T06:17:50.940282182+01:00"
     },
     {
       "provider_id": "gemini",
@@ -1585,24 +1522,6 @@
       "context_window": 1048576,
       "discovered_at": "2026-03-05T06:17:51.077630624+01:00",
       "last_verified_at": "2026-03-05T06:17:51.077630974+01:00"
-    },
-    {
-      "provider_id": "gemini",
-      "model_id": "gemini-robotics-er-1.5-preview",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 1048576,
-      "discovered_at": "2026-03-05T06:17:51.077640265+01:00",
-      "last_verified_at": "2026-03-05T06:17:51.077640622+01:00"
-    },
-    {
-      "provider_id": "gemini",
-      "model_id": "gemini-2.5-computer-use-preview-10-2025",
-      "is_free": true,
-      "tier_type": "free",
-      "context_window": 131072,
-      "discovered_at": "2026-03-05T06:17:51.077643174+01:00",
-      "last_verified_at": "2026-03-05T06:17:51.077643531+01:00"
     },
     {
       "provider_id": "mistral",
@@ -1995,14 +1914,6 @@
       "tier_type": "free",
       "discovered_at": "2026-03-05T06:17:51.293445895+01:00",
       "last_verified_at": "2026-03-05T06:17:51.29344594+01:00"
-    },
-    {
-      "provider_id": "mistral",
-      "model_id": "voxtral-mini-transcribe-2507",
-      "is_free": true,
-      "tier_type": "free",
-      "discovered_at": "2026-03-05T06:17:51.293446266+01:00",
-      "last_verified_at": "2026-03-05T06:17:51.293446311+01:00"
     },
     {
       "provider_id": "mistral",
