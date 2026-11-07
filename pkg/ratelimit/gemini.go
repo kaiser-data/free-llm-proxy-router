@@ -159,3 +159,103 @@ func defaultGeminiLimits() map[string]GeminiModelLimits {
 		"gemini-1.5-pro":            {RPM: 2, TPM: 32_000, RPD: 50},
 	}
 }
+
+// Reserve atomically checks all quota dimensions and, if there is room, counts
+// the request at once, so concurrent callers cannot all pass the check before
+// any of them is counted. Call release if the request did not reach the model
+// (transport error, 429, …) to hand the slot back; release is idempotent.
+func (t *GeminiTracker) Reserve(modelID string, estimatedTokens int) (release func(), ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.maybeResetDay()
+	limits, known := t.modelLimits[modelID]
+	if known {
+		if limits.RPM > 0 && t.getOrCreate(t.rpmCounts, modelID, time.Minute).Count >= limits.RPM {
+			return func() {}, false
+		}
+		if limits.TPM > 0 && estimatedTokens > 0 &&
+			t.getOrCreate(t.tpmCounts, modelID, time.Minute).Count+estimatedTokens > limits.TPM {
+			return func() {}, false
+		}
+		if limits.RPD > 0 && t.getOrCreate(t.rpdCounts, modelID, 24*time.Hour).Count >= limits.RPD {
+			return func() {}, false
+		}
+	}
+
+	rpm := t.getOrCreate(t.rpmCounts, modelID, time.Minute)
+	rpd := t.getOrCreate(t.rpdCounts, modelID, 24*time.Hour)
+	rpm.Count++
+	rpd.Count++
+	var tpm *Window
+	var tpmEnd time.Time
+	if estimatedTokens > 0 {
+		tpm = t.getOrCreate(t.tpmCounts, modelID, time.Minute)
+		tpm.Count += estimatedTokens
+		tpmEnd = tpm.WindowEnd
+	}
+	rpmEnd, rpdEnd, day := rpm.WindowEnd, rpd.WindowEnd, t.dayStart
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			// Only undo counts in the same windows; a window that has rolled
+			// over since no longer holds this request.
+			if rpm.WindowEnd.Equal(rpmEnd) && rpm.Count > 0 {
+				rpm.Count--
+			}
+			if tpm != nil && tpm.WindowEnd.Equal(tpmEnd) {
+				tpm.Count -= estimatedTokens
+				if tpm.Count < 0 {
+					tpm.Count = 0
+				}
+			}
+			if t.dayStart.Equal(day) && t.rpdCounts[modelID] == rpd && rpd.WindowEnd.Equal(rpdEnd) && rpd.Count > 0 {
+				rpd.Count--
+			}
+		})
+	}, true
+}
+
+// GeminiUsage is the persisted part of a GeminiTracker: requests per model in
+// the current Pacific day. Minute windows have expired by restart time.
+type GeminiUsage struct {
+	DayStart       int64          `json:"day_start"` // Unix seconds of the Pacific midnight these counts belong to
+	ModelDayCounts map[string]int `json:"model_day_counts"`
+}
+
+// Snapshot returns today's per-model request counts.
+func (t *GeminiTracker) Snapshot() *GeminiUsage {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.maybeResetDay()
+	u := &GeminiUsage{DayStart: t.dayStart.Unix(), ModelDayCounts: map[string]int{}}
+	for m, w := range t.rpdCounts {
+		if w.Count > 0 {
+			u.ModelDayCounts[m] = w.Count
+		}
+	}
+	return u
+}
+
+// Restore loads counts saved earlier the same Pacific day; counts from an
+// earlier day are dropped, since the quota has reset.
+func (t *GeminiTracker) Restore(u *GeminiUsage) {
+	if u == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.maybeResetDay()
+	if u.DayStart != t.dayStart.Unix() {
+		return
+	}
+	end := t.dayStart.Add(24 * time.Hour)
+	for m, c := range u.ModelDayCounts {
+		if c > 0 {
+			t.rpdCounts[m] = &Window{Count: c, WindowEnd: end, Size: 24 * time.Hour}
+		}
+	}
+}

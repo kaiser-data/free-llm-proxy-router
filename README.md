@@ -59,13 +59,14 @@ This proxy does that once, locally, for every tool you use.
 
    | Upstream says | The proxy does |
    |---|---|
-   | `429` rate limited | cools down that model until the provider's reset time, rotates to your next key if you have several |
+   | `429` rate limited | cools down that model on that key until the provider's reset time, and retries it at once with your next key if you have several |
+   | `400` bad request | skips that provider for this request and cools down that model for an hour (`413`/`422`: skip only) |
    | `404` model not found | cools down that model for an hour |
    | `401`/`403` bad key | cools down the provider for ten minutes |
    | timeout or connection error | moves on and lowers that provider's reliability score |
-   | empty reply cut off by `max_tokens` | tries another model and keeps the empty one only as a last resort |
+   | `200` with no content | tries another model; an empty reply cut off by `max_tokens` is kept only as a last resort |
 4. **The first good answer** goes back to your tool. If you asked for `stream: true`, it arrives as standard SSE chunks.
-5. **If every free model fails**, you get `503` with a `Retry-After` header, never a fake answer.
+5. **If every free model fails**, or `fallback.request_timeout` (90 s) passes, you get `503` with a `Retry-After` header, never a fake answer.
 
 ## Why not a full AI gateway?
 
@@ -142,7 +143,7 @@ A pinned model that has left the free catalog falls back to the profile's strate
 | Cerebras | 2 | [cloud.cerebras.ai](https://cloud.cerebras.ai) |
 | Ollama (local) | your models | no key |
 
-Several keys per provider are pooled automatically: add `GROQ_API_KEY_2`, `GROQ_API_KEY_3`… and the proxy rotates on 429. Free tiers change often, so check each provider's own terms.
+Several keys per provider are pooled automatically: add `GROQ_API_KEY_2`, `GROQ_API_KEY_3`… and on a 429 the proxy retries the same model with the next key. Free tiers change often, so check each provider's own terms.
 
 ## Install
 
@@ -271,12 +272,18 @@ configs/            bundled config and the free-model catalog
 ## Development
 
 ```bash
-go test -race ./...    # 78 tests
+go test -race ./...    # 94 tests
 go vet ./...
 make build
 ```
 
-**Next:** a single admission path for every upstream call (atomic quota reservations, per-key cooldowns, a request deadline) · real SSE pass-through · fixing the GitHub Models scanner.
+**Next:** real SSE pass-through · fixing the GitHub Models scanner.
+
+## Contributors
+
+Thank you to everyone who has helped make this better:
+
+- [@BenediktChlopik](https://github.com/BenediktChlopik): empty-completion detection, so a `200` with no content is never passed off as an answer ([#16](https://github.com/kaiser-data/free-llm-proxy-router/pull/16), [#17](https://github.com/kaiser-data/free-llm-proxy-router/pull/17)), and new free providers ([#15](https://github.com/kaiser-data/free-llm-proxy-router/pull/15))
 
 ## Acknowledgments
 

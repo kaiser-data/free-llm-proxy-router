@@ -232,7 +232,10 @@ func TestStripGeminiThoughts(t *testing.T) {
 	}
 }
 
-func TestFallbackChain_400TriesNextModelOfSameProvider(t *testing.T) {
+// A model-specific 400 skips the provider for this request (a malformed
+// request would fail on every model), but cools the model down so the next
+// request reaches the provider's next model.
+func TestFallbackChain_400CoolsDownModelForLaterRequests(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -244,14 +247,21 @@ func TestFallbackChain_400TriesNextModelOfSameProvider(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	fc, _, _ := newTestChain(srv.URL, "gemini", "interactions-only")
+	fc, rl, _ := newTestChain(srv.URL, "gemini", "interactions-only")
 	fc.Strategy = listStrategy{
 		{ProviderID: "gemini", ModelID: "interactions-only"},
 		{ProviderID: "gemini", ModelID: "chat-model"},
 	}
-	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	req := Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}}
+	if resp, err := fc.Execute(context.Background(), req); err == nil {
+		t.Fatalf("400 should skip the provider for this request, got %s", resp.UsedModel)
+	}
+	if !rl.IsOnCooldown("gemini/interactions-only") {
+		t.Fatal("model that answered 400 was not cooled down")
+	}
+	resp, err := fc.Execute(context.Background(), req)
 	if err != nil || resp.UsedModel != "chat-model" {
-		t.Fatalf("expected chat-model to answer after a model-specific 400, got resp=%v err=%v", resp, err)
+		t.Fatalf("next request should reach chat-model, got resp=%v err=%v", resp, err)
 	}
 }
 

@@ -99,6 +99,9 @@ type FallbackConfig struct {
 	RetryOn5xx              bool `mapstructure:"retry_on_5xx"`
 	MaxAttempts             int  `mapstructure:"max_attempts"`
 	CerebrasRequestSpacingMs int  `mapstructure:"cerebras_request_spacing_ms"`
+	// RequestTimeout bounds one client request across every provider it
+	// tries. When it passes, the proxy answers 503 + Retry-After. 0 = no limit.
+	RequestTimeout time.Duration `mapstructure:"request_timeout"`
 }
 
 // mu guards the current config pointer for concurrent hot-reload.
@@ -236,6 +239,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fallback.retry_on_5xx", true)
 	v.SetDefault("fallback.max_attempts", 5)
 	v.SetDefault("fallback.cerebras_request_spacing_ms", 100)
+	v.SetDefault("fallback.request_timeout", "90s")
 	v.SetDefault("refresh.schedule", "weekly")
 	v.SetDefault("refresh.output_merge", "conservative")
 }

@@ -118,6 +118,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		log.Printf("usage.json unreadable (starting fresh): %v", err)
 	} else {
 		rateLimiter.Restore(usage)
+		geminiTracker.Restore(usage.Gemini)
 	}
 
 	// Set up reliability tracker
@@ -189,7 +190,9 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	// Persist daily usage and reliability stats periodically and on shutdown,
 	// so a crash or kill -9 loses at most a few minutes of quota tracking.
 	saveState := func() {
-		if err := ratelimit.SaveUsage(rateLimiter.Snapshot(), usagePath); err != nil {
+		usage := rateLimiter.Snapshot()
+		usage.Gemini = geminiTracker.Snapshot()
+		if err := ratelimit.SaveUsage(usage, usagePath); err != nil {
 			log.Printf("saving usage: %v", err)
 		}
 		if err := reliability.Save(reliabilityTracker, relPath); err != nil {

@@ -73,6 +73,9 @@ fallback:
   max_attempts: 5
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
+  # Upper bound for one request across all providers it tries. When it passes
+  # the proxy returns 503 + Retry-After instead of waiting on. 0 = no limit.
+  request_timeout: 90s
 
 refresh:
   model: "groq/openai/gpt-oss-120b"

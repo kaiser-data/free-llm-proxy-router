@@ -174,6 +174,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Load()
 	cat := s.catalog.Load()
 
+	// One deadline for the whole request: the direct route and the strategy
+	// chain it may fall back to share it.
+	if d := cfg.Fallback.RequestTimeout; d > 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), d)
+		defer cancel()
+		r = r.WithContext(ctx)
+	}
+
 	// Resolve agent profile: if model field matches a named profile, apply defaults/overrides.
 	if profile, ok := cfg.Proxy.Agents[req.Model]; ok {
 		// Apply defaults — only when client did not set the key.
@@ -259,34 +267,31 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 	}
 
 	found := false
+	est := estimateTokens(req.Messages)
 	for _, e := range cat.Entries {
 		if !matchEntry(e, req.Model, targetProvider, targetModel) {
 			continue
 		}
 		found = true
-		provCfg := findProviderCfg(cfg, e.ProviderID)
-		if provCfg == nil {
-			continue
+		// Same path as the strategy chain: cooldowns, key slots, quotas,
+		// buildBody (max_tokens_cap, service_tier) and accounting.
+		res := chain.attempt(r.Context(), e.ProviderID, e.ModelID, chain.buildBody(e.ProviderID, raw, e.ModelID), est)
+		if res.err != nil {
+			break // request deadline or client gone; the chain below answers 503
 		}
-		body := copyMap(raw)
-		body["model"] = e.ModelID
-		delete(body, "stream")
-		for _, f := range anthropicOnlyFields {
-			delete(body, f)
-		}
-		resp, err := chain.callProvider(r.Context(), *provCfg, body)
-		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			s.rateLimiter.Provider(e.ProviderID).RecordRequest(e.ModelID)
+		if res.outcome == outSuccess {
+			resp := res.resp
 			if req.Stream {
 				writeCompletionAsSSE(w, resp.Body)
 				return
 			}
+			copyUpstreamHeaders(w.Header(), resp.Header)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(resp.StatusCode)
 			w.Write(resp.Body)
 			return
 		}
-		// Any error or non-2xx — try next catalog entry.
+		// Any other outcome — try the next catalog entry.
 	}
 	if !found {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "model_not_found",

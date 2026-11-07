@@ -62,9 +62,20 @@ type Response struct {
 	Truncated bool
 }
 
+// withRequestTimeout applies fallback.request_timeout to ctx.
+func (fc *FallbackChain) withRequestTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if d := fc.Cfg.Fallback.RequestTimeout; d > 0 {
+		return context.WithTimeout(ctx, d)
+	}
+	return context.WithCancel(ctx)
+}
+
 // Execute runs the fallback chain for the given request.
 // Returns the first successful response or an error if all providers fail.
 func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, error) {
+	ctx, cancel := fc.withRequestTimeout(ctx)
+	defer cancel()
+
 	freeEntries := fc.Catalog.FreeEntries()
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
@@ -73,6 +84,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		Stream:                req.Stream,
 		Model:                 req.Model,
 	}
+	est := stratReq.EstimatedPromptTokens
 
 	ranked := fc.Strategy.Rank(stratReq, freeEntries, nil)
 	maxAttempts := fc.Cfg.Fallback.MaxAttempts
@@ -80,240 +92,324 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		maxAttempts = 5
 	}
 
+	// Try one model per provider in ranked order.
+	//
+	// Key invariant: once a provider fails at provider level, ALL remaining
+	// entries for it are skipped, and model-level failures are capped at
+	// maxModelsPerProvider. This keeps a large provider (NVIDIA NIM, 70+
+	// models) from using up maxAttempts before Groq, Cerebras or Gemini.
+	//
 	// OpenRouter is called once, with all its ranked models in a models[]
 	// array (native fallback), at the position of its best-ranked entry, so a
 	// strategy that ranks Groq or Cerebras first gets them first.
+	attempts := 0
 	openRouterTried := false
-	tryOpenRouter := func() *Response {
-		openRouterTried = true
-		or := fc.findProvider("openrouter")
-		if or == nil {
-			return nil
-		}
-		openRouterModels := fc.collectProviderModels("openrouter", ranked)
-		if len(openRouterModels) == 0 {
-			return nil
-		}
-		body := BuildOpenRouterRequest(req.Raw, openRouterModels)
-		resp, err := fc.callProvider(ctx, *or, body)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			fc.ReliabilityTracker.Record("openrouter", true)
-			return resp
-		}
-		log.Printf("fallback: openrouter models[] failed — continuing%s", upstreamErrSnippet(resp, err))
-		fc.ReliabilityTracker.Record("openrouter", false)
-		return nil
-	}
-
-	// Step 2–4: Try one model per provider in ranked order.
-	//
-	// Key invariant: once a provider returns any error, ALL remaining entries
-	// for that provider are skipped immediately. This prevents a large provider
-	// (e.g. NVIDIA NIM with 172 models) from exhausting maxAttempts before
-	// faster, more reliable providers (Groq, Cerebras, Gemini) are even tried.
-	attempt := 0
 	failedProviders := make(map[string]bool)
 	providerTries := make(map[string]int)
 	var lastTruncated *Response // empty finish_reason=length reply, used only if nothing better answers
 	for _, r := range ranked {
-		if attempt >= maxAttempts {
+		if attempts >= maxAttempts {
 			break
 		}
-		if r.ProviderID == "openrouter" {
-			if !openRouterTried {
-				if resp := tryOpenRouter(); resp != nil {
-					return resp, nil
-				}
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-			}
-			continue
-		}
-		// Skip providers that already returned an error this request.
 		if failedProviders[r.ProviderID] {
 			continue
 		}
-
-		providerCfg := fc.findProvider(r.ProviderID)
-		if providerCfg == nil {
-			continue
+		modelID := r.ModelID
+		body := (map[string]any)(nil)
+		if r.ProviderID == "openrouter" {
+			if openRouterTried {
+				continue
+			}
+			openRouterTried = true
+			orModels := fc.availableModels("openrouter", ranked)
+			if len(orModels) == 0 {
+				continue
+			}
+			modelID = orModels[0]
+			body = fc.buildBody("openrouter", req.Raw, modelID)
+			body["models"] = orModels
+		} else {
+			body = fc.buildBody(r.ProviderID, req.Raw, modelID)
 		}
 
-		// Skip any provider currently on rate-limit cooldown (auth errors).
-		if fc.RateLimiter.IsOnCooldown(r.ProviderID) {
-			log.Printf("fallback: %s on cooldown — skipping provider", r.ProviderID)
+		res := fc.attempt(ctx, r.ProviderID, modelID, body, est)
+		attempts += res.calls
+		if res.err != nil {
+			return nil, res.err // request deadline or client gone
+		}
+		switch res.outcome {
+		case outSuccess:
+			return res.resp, nil
+		case outSkipModel:
+			continue
+		case outSkipProvider, outProviderFail:
 			failedProviders[r.ProviderID] = true
 			continue
-		}
-		// Skip this specific model if it is rate-limited, but keep trying other models.
-		if fc.RateLimiter.IsOnCooldown(r.ProviderID + "/" + r.ModelID) {
-			log.Printf("fallback: %s/%s rate-limited — skipping model", r.ProviderID, r.ModelID)
-			continue
-		}
-
-		// Cerebras pre-emptive check (RPS-level, finer than cooldown).
-		if r.ProviderID == "cerebras" {
-			tracker := fc.RateLimiter.Provider("cerebras")
-			if !tracker.CanRequest(r.ModelID, 0, 0) {
-				log.Printf("fallback: cerebras pre-emptive skip (rate limited)")
-				failedProviders[r.ProviderID] = true
-				continue
-			}
-			spacingMs := fc.Cfg.Fallback.CerebrasRequestSpacingMs
-			if spacingMs > 0 {
-				if err := sleepCtx(ctx, time.Duration(spacingMs)*time.Millisecond); err != nil {
-					return nil, err
-				}
+		case outEmpty:
+			if isEmptyTruncated(res.resp.Body) {
+				lastTruncated = res.resp
 			}
 		}
-
-		// Gemini 4-dimensional rate check.
-		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
-			if !fc.GeminiTracker.CanRequest(r.ModelID, stratReq.EstimatedPromptTokens) {
-				// Quotas are per model: skip this one, other Gemini models may have room.
-				log.Printf("fallback: gemini %s rate limited — skipping model", r.ModelID)
-				continue
-			}
+		// outModelFail / outEmpty: the provider is fine, try its next model.
+		providerTries[r.ProviderID]++
+		if r.ProviderID == "openrouter" || providerTries[r.ProviderID] >= maxModelsPerProvider {
+			failedProviders[r.ProviderID] = true
 		}
-
-		body := fc.buildBody(r.ProviderID, req.Raw, r.ModelID)
-		// Apply active key slot when multiple API keys are configured.
-		callCfg := *providerCfg
-		if keys := providerCfg.AllKeys(); len(keys) > 1 {
-			if idx := fc.RateLimiter.CurrentKeyIndex(r.ProviderID); idx < len(keys) {
-				callCfg.APIKey = keys[idx]
-				callCfg.APIKeyEnv = ""
-			}
-		}
-		resp, err := fc.callProvider(ctx, callCfg, body)
-		attempt++
-
-		if err != nil || resp.StatusCode != http.StatusOK {
-			// HuggingFace 503+loading: wait and retry SAME provider (cold start).
-			if r.ProviderID == "huggingface" && resp != nil && resp.StatusCode == 503 {
-				if waitMs := parseHFLoadingWait(resp.Body); waitMs > 0 {
-					log.Printf("fallback: huggingface model loading, waiting %dms", waitMs)
-					if err := sleepCtx(ctx, time.Duration(waitMs)*time.Millisecond); err != nil {
-						return nil, err
-					}
-					resp, err = fc.callProvider(ctx, *providerCfg, body)
-					if err == nil && resp.StatusCode == http.StatusOK {
-						fc.ReliabilityTracker.Record(r.ProviderID, true)
-						fc.RateLimiter.Provider(r.ProviderID).RecordRequest(r.ModelID)
-						return resp, nil
-					}
-				}
-			}
-			if ctx.Err() != nil {
-				// Client went away; not the provider's fault.
-				return nil, ctx.Err()
-			}
-			// Apply per-status cooldown logic.
-			// Only auth errors and transport failures (resp == nil) mean the
-			// provider itself is unusable. Any other status is treated as
-			// model-specific: free tiers often fail one model (quota, retired,
-			// overloaded) while the provider's other models still answer.
-			modelLevel := resp != nil
-			if resp != nil {
-				switch resp.StatusCode {
-				case 429:
-					info := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)
-					waitDur := info.WaitDuration()
-					if isZeroQuota(resp.Body) {
-						// Quota "limit: 0" means the model is not on this key's free tier.
-						waitDur = zeroQuotaCooldown
-					}
-					until := time.Now().Add(waitDur)
-					// Cooldown on the specific model, not the whole provider.
-					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, until)
-					// Rotate to the next API key slot if multiple keys are configured.
-					if providerCfg != nil && providerCfg.NumKeys() > 1 {
-						newIdx := fc.RateLimiter.RotateKey(r.ProviderID, providerCfg.NumKeys())
-						log.Printf("fallback: %s/%s rate limited — rotated to key slot %d", r.ProviderID, r.ModelID, newIdx+1)
-					} else {
-						log.Printf("fallback: %s/%s rate limited — model cooldown %s", r.ProviderID, r.ModelID, waitDur.Round(time.Second))
-					}
-				case 401, 403:
-					modelLevel = false
-					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(10*time.Minute))
-					log.Printf("fallback: %s auth error %d — cooldown 10min", r.ProviderID, resp.StatusCode)
-				case 404:
-					fc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, time.Now().Add(missingModelCooldown))
-					log.Printf("fallback: %s model %s not found — model cooldown %s", r.ProviderID, r.ModelID, missingModelCooldown)
-				}
-			}
-			statusCode := 0
-			if resp != nil {
-				statusCode = resp.StatusCode
-			}
-			providerTries[r.ProviderID]++
-			if modelLevel && providerTries[r.ProviderID] < maxModelsPerProvider {
-				// The provider itself is fine; try its next ranked model.
-				log.Printf("fallback: %s/%s status %d — trying next model%s", r.ProviderID, r.ModelID, statusCode, upstreamErrSnippet(resp, err))
-				continue
-			}
-			log.Printf("fallback: %s/%s status %d — skipping provider%s", r.ProviderID, r.ModelID, statusCode, upstreamErrSnippet(resp, err))
-			// Model-level failures say nothing about the provider's health, so
-			// only auth and transport errors count against its reliability.
-			if !modelLevel {
-				fc.ReliabilityTracker.Record(r.ProviderID, false)
-				if fc.ReliabilityTracker.ShouldCooldown(r.ProviderID) {
-					fc.RateLimiter.SetCooldown(r.ProviderID, time.Now().Add(30*time.Second))
-					log.Printf("fallback: %s reliability below 50%% — short cooldown", r.ProviderID)
-				}
-			}
-			failedProviders[r.ProviderID] = true // don't try other models from this provider
-			continue
-		}
-
-		// Success path.
-		if r.ProviderID == "cerebras" {
-			info := ratelimit.ExtractRateLimitInfo("cerebras", resp.Header, resp.Body)
-			if info.RemainingRequests >= 0 && info.RemainingRequests < 2 {
-				tracker := fc.RateLimiter.Provider("cerebras")
-				tracker.PreemptiveSlowdown(info.WaitDuration())
-			}
-			_ = fc.GeminiTracker
-		}
-		fc.ReliabilityTracker.Record(r.ProviderID, true)
-		// Counted per model per day; this is what usage.json persists.
-		fc.RateLimiter.Provider(r.ProviderID).RecordRequest(r.ModelID)
-		if r.ProviderID == "gemini" && fc.GeminiTracker != nil {
-			fc.GeminiTracker.RecordRequest(r.ModelID, stratReq.EstimatedPromptTokens)
-		}
-		if isEmptyTruncated(resp.Body) {
-			// Reasoning models (gpt-oss) can spend a small max_tokens budget on
-			// hidden reasoning and return no content. Try another model, but keep
-			// this reply in case nothing better comes back.
-			log.Printf("fallback: %s/%s returned empty content (finish_reason=length) — trying next model", r.ProviderID, r.ModelID)
-			lastTruncated = resp
-			providerTries[r.ProviderID]++
-			if providerTries[r.ProviderID] >= maxModelsPerProvider {
-				failedProviders[r.ProviderID] = true
-			}
-			continue
-		}
-		return resp, nil
 	}
 
-	// Step 5: Ultimate fallback — OpenRouter free router
-	if or := fc.findProvider("openrouter"); or != nil {
+	// Ultimate fallback: OpenRouter's free router picks any free model. It
+	// runs even after maxAttempts, as the one designed last resort.
+	if fc.findProvider("openrouter") != nil && !failedProviders["openrouter"] {
 		log.Printf("fallback: trying openrouter/free ultimate fallback")
-		body := OpenRouterFreeRouterRequest(req.Raw)
-		resp, err := fc.callProvider(ctx, *or, body)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			fc.ReliabilityTracker.Record("openrouter", true)
-			return resp, nil
+		res := fc.attempt(ctx, "openrouter", "openrouter/free", OpenRouterFreeRouterRequest(fc.buildBody("openrouter", req.Raw, "openrouter/free")), est)
+		attempts += res.calls
+		if res.err != nil {
+			return nil, res.err
 		}
-		fc.ReliabilityTracker.Record("openrouter", false)
+		if res.outcome == outSuccess {
+			return res.resp, nil
+		}
 	}
 
 	if lastTruncated != nil {
 		lastTruncated.Truncated = true
 		return lastTruncated, nil
 	}
-	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempt)
+	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempts)
+}
+
+// availableModels returns a provider's ranked models that are not on cooldown.
+func (fc *FallbackChain) availableModels(providerID string, ranked []strategy.RankedEntry) []string {
+	var out []string
+	for _, m := range fc.collectProviderModels(providerID, ranked) {
+		if !fc.RateLimiter.IsOnCooldown(providerID + "/" + m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// outcome says what one attempt on a provider/model means for the chain.
+type outcome int
+
+const (
+	outSkipModel    outcome = iota // not called: this model is unavailable (cooldown, local quota)
+	outSkipProvider                // not called: the whole provider is unavailable
+	outSuccess                     // a usable completion
+	outEmpty                       // 200 without content: try another model
+	outModelFail                   // this model failed; the provider's other models may answer
+	outProviderFail                // the provider rejects this request or is unusable: skip it
+)
+
+type attemptResult struct {
+	resp    *Response
+	outcome outcome
+	calls   int   // upstream calls made (counted against max_attempts)
+	err     error // set only when ctx ended; the chain must stop
+}
+
+// cooldownKey is the rate-limit cooldown key for one model on one key slot.
+// With a single key it is "provider/model", so a model-wide cooldown (404)
+// and a 429 share the key.
+func cooldownKey(providerID, modelID string, slot, numKeys int) string {
+	if numKeys <= 1 {
+		return providerID + "/" + modelID
+	}
+	return fmt.Sprintf("%s/%s#%d", providerID, modelID, slot+1)
+}
+
+// attempt is the single path every upstream chat call goes through — the
+// strategy chain, OpenRouter's models[] call and the direct-model route:
+// admit (cooldowns, local quotas, spacing) → reserve → call → record outcome.
+//
+// A 429 cools down only the key slot that hit it, so the same model is tried
+// again right away on the next free key slot.
+func (fc *FallbackChain) attempt(ctx context.Context, providerID, modelID string, body map[string]any, estTokens int) attemptResult {
+	providerCfg := fc.findProvider(providerID)
+	if providerCfg == nil {
+		return attemptResult{outcome: outSkipProvider}
+	}
+	if fc.RateLimiter.IsOnCooldown(providerID) {
+		log.Printf("fallback: %s on cooldown — skipping provider", providerID)
+		return attemptResult{outcome: outSkipProvider}
+	}
+	if fc.RateLimiter.IsOnCooldown(providerID + "/" + modelID) {
+		log.Printf("fallback: %s/%s on cooldown — skipping model", providerID, modelID)
+		return attemptResult{outcome: outSkipModel}
+	}
+
+	keys := providerCfg.AllKeys()
+	numSlots := len(keys)
+	if numSlots == 0 {
+		numSlots = 1 // keyless provider (local Ollama) or no key configured
+	}
+	calls := 0
+	var last attemptResult
+	triedSlot := false
+	for i := 0; i < numSlots; i++ {
+		slot := i // fill keys in order; a slot on cooldown is skipped without a call
+		if fc.RateLimiter.IsOnCooldown(cooldownKey(providerID, modelID, slot, len(keys))) {
+			continue
+		}
+		triedSlot = true
+		callCfg := *providerCfg
+		if len(keys) > 0 {
+			// Always send the chosen key, so a config with only KEY_2 set works.
+			callCfg.APIKey = keys[slot]
+			callCfg.APIKeyEnv = ""
+		}
+		res := fc.callOnce(ctx, callCfg, providerID, modelID, body, estTokens)
+		calls += res.calls
+		res.calls = calls
+		if res.outcome != outModelFail || res.resp == nil || res.resp.StatusCode != http.StatusTooManyRequests {
+			return res
+		}
+		// 429: cool down this key slot only and try the next one.
+		fc.cooldown429(providerID, modelID, slot, len(keys), res.resp)
+		if len(keys) > 1 {
+			log.Printf("fallback: %s/%s rate limited on key slot %d — trying next key", providerID, modelID, slot+1)
+		}
+		last = res
+	}
+	if !triedSlot {
+		log.Printf("fallback: %s/%s rate limited on every key — skipping model", providerID, modelID)
+		return attemptResult{outcome: outSkipModel}
+	}
+	return last
+}
+
+// cooldown429 puts one key slot of a model on cooldown after a 429.
+func (fc *FallbackChain) cooldown429(providerID, modelID string, slot, numKeys int, resp *Response) {
+	info := ratelimit.ExtractRateLimitInfo(providerID, resp.Header, resp.Body)
+	waitDur := info.WaitDuration()
+	if isZeroQuota(resp.Body) {
+		// Quota "limit: 0" means the model is not on this key's free tier.
+		waitDur = zeroQuotaCooldown
+	}
+	fc.RateLimiter.SetCooldown(cooldownKey(providerID, modelID, slot, numKeys), time.Now().Add(waitDur))
+	log.Printf("fallback: %s/%s rate limited — cooldown %s", providerID, modelID, waitDur.Round(time.Second))
+}
+
+// callOnce makes one upstream call with a fixed key and classifies it.
+func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderConfig, providerID, modelID string, body map[string]any, estTokens int) attemptResult {
+	// Cerebras pre-emptive check (RPS-level, finer than cooldown) and spacing
+	// shared by all concurrent requests.
+	if providerID == "cerebras" {
+		tracker := fc.RateLimiter.Provider("cerebras")
+		if !tracker.CanRequest(modelID, 0, 0) {
+			log.Printf("fallback: cerebras pre-emptive skip (rate limited)")
+			return attemptResult{outcome: outSkipProvider}
+		}
+		if ms := fc.Cfg.Fallback.CerebrasRequestSpacingMs; ms > 0 {
+			if err := sleepCtx(ctx, tracker.NextSlot(time.Duration(ms)*time.Millisecond)); err != nil {
+				return attemptResult{err: err}
+			}
+		}
+	}
+
+	// Gemini: check and count in one step, so concurrent requests cannot
+	// overshoot the per-model quota. The slot is handed back unless the
+	// model actually answered.
+	keepReservation := false
+	if providerID == "gemini" && fc.GeminiTracker != nil {
+		release, ok := fc.GeminiTracker.Reserve(modelID, estTokens)
+		if !ok {
+			log.Printf("fallback: gemini %s over local quota — skipping model", modelID)
+			return attemptResult{outcome: outSkipModel}
+		}
+		defer func() {
+			if !keepReservation {
+				release()
+			}
+		}()
+	}
+
+	resp, err := fc.callProvider(ctx, callCfg, body)
+	calls := 1
+	// HuggingFace 503+loading: wait and retry the same model (cold start).
+	if err == nil && providerID == "huggingface" && resp.StatusCode == http.StatusServiceUnavailable {
+		if waitMs := parseHFLoadingWait(resp.Body); waitMs > 0 {
+			log.Printf("fallback: huggingface model loading, waiting %dms", waitMs)
+			if serr := sleepCtx(ctx, time.Duration(waitMs)*time.Millisecond); serr != nil {
+				return attemptResult{calls: calls, err: serr}
+			}
+			resp, err = fc.callProvider(ctx, callCfg, body)
+			calls++
+		}
+	}
+	if ctx.Err() != nil {
+		// Deadline or client went away; not the provider's fault.
+		return attemptResult{calls: calls, err: ctx.Err()}
+	}
+
+	if err == nil && resp.StatusCode == http.StatusOK {
+		keepReservation = true
+		// Counted per model per day; this is what usage.json persists.
+		recordModel := modelID
+		if providerID == "openrouter" && resp.UsedModel != "" && modelID != "openrouter/free" {
+			recordModel = resp.UsedModel
+		}
+		fc.RateLimiter.Provider(providerID).RecordRequest(recordModel)
+		if providerID == "cerebras" {
+			info := ratelimit.ExtractRateLimitInfo("cerebras", resp.Header, resp.Body)
+			if info.RemainingRequests >= 0 && info.RemainingRequests < 2 {
+				fc.RateLimiter.Provider("cerebras").PreemptiveSlowdown(info.WaitDuration())
+			}
+		}
+		if isEmptyCompletion(resp.Body) {
+			// Reasoning models (gpt-oss) can spend a small max_tokens budget on
+			// hidden reasoning, and some free endpoints return 200 with nothing
+			// in it. Neither is an answer: try another model.
+			log.Printf("fallback: %s/%s returned an empty completion — trying next model", providerID, modelID)
+			return attemptResult{resp: resp, outcome: outEmpty, calls: calls}
+		}
+		fc.ReliabilityTracker.Record(providerID, true)
+		return attemptResult{resp: resp, outcome: outSuccess, calls: calls}
+	}
+
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	switch {
+	case resp == nil, status == 401, status == 403:
+		// Only transport and auth failures mean the provider itself is
+		// unusable, so only they count against its reliability.
+		if status != 0 {
+			fc.RateLimiter.SetCooldown(providerID, time.Now().Add(10*time.Minute))
+			log.Printf("fallback: %s auth error %d — cooldown 10min", providerID, status)
+		} else {
+			log.Printf("fallback: %s/%s transport error — skipping provider%s", providerID, modelID, upstreamErrSnippet(resp, err))
+		}
+		fc.ReliabilityTracker.Record(providerID, false)
+		if fc.ReliabilityTracker.ShouldCooldown(providerID) {
+			fc.RateLimiter.SetCooldown(providerID, time.Now().Add(30*time.Second))
+			log.Printf("fallback: %s reliability below 50%% — short cooldown", providerID)
+		}
+		return attemptResult{resp: resp, outcome: outProviderFail, calls: calls}
+	case status == 400, status == 413, status == 422:
+		// The provider rejects this request's shape or size; its other models
+		// most likely will too, so skip the provider for this request. Not a
+		// health problem: no reliability penalty.
+		//
+		// A 400 can also be model-specific (Gemini: "This model only supports
+		// Interactions API"), so the model sits out for a while and later
+		// requests reach the provider's next model. 413/422 depend on the
+		// request itself, so they set no cooldown.
+		if status == http.StatusBadRequest {
+			fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(badRequestCooldown))
+		}
+		log.Printf("fallback: %s/%s status %d — provider rejects this request, skipping provider%s", providerID, modelID, status, upstreamErrSnippet(resp, err))
+		return attemptResult{resp: resp, outcome: outProviderFail, calls: calls}
+	case status == 404:
+		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(missingModelCooldown))
+		log.Printf("fallback: %s model %s not found — model cooldown %s", providerID, modelID, missingModelCooldown)
+	case status != http.StatusTooManyRequests:
+		// Free tiers often fail one model (quota, retired, overloaded) while
+		// the provider's other models still answer.
+		log.Printf("fallback: %s/%s status %d — trying next model%s", providerID, modelID, status, upstreamErrSnippet(resp, err))
+	}
+	return attemptResult{resp: resp, outcome: outModelFail, calls: calls}
 }
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
@@ -444,6 +540,8 @@ const (
 	zeroQuotaCooldown = 24 * time.Hour
 	// missingModelCooldown applies when a provider returns 404 for a model.
 	missingModelCooldown = time.Hour
+	// badRequestCooldown applies to a model that answered 400.
+	badRequestCooldown = time.Hour
 )
 
 // isZeroQuota reports whether a 429 body says the quota for this model is zero
@@ -542,4 +640,58 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+// isEmptyCompletion reports whether a 200 body is not a usable chat
+// completion: unparseable, without choices, or where no choice carries text
+// content, tool calls or a function call. Reasoning-only output does not count.
+// Adapted from PR #16 by BenediktChlopik.
+func isEmptyCompletion(body []byte) bool {
+	var c struct {
+		Choices []struct {
+			Message struct {
+				Content      any   `json:"content"`
+				ToolCalls    []any `json:"tool_calls"`
+				FunctionCall any   `json:"function_call"`
+			} `json:"message"`
+			Text string `json:"text"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &c); err != nil {
+		return true
+	}
+	for _, ch := range c.Choices {
+		m := ch.Message
+		if len(m.ToolCalls) > 0 || m.FunctionCall != nil {
+			return false
+		}
+		if strings.TrimSpace(ch.Text) != "" || hasContent(m.Content) {
+			return false
+		}
+	}
+	return true
+}
+
+// hasContent reports whether a message "content" value (a string or an array
+// of parts) holds anything beyond whitespace.
+func hasContent(v any) bool {
+	switch c := v.(type) {
+	case string:
+		return strings.TrimSpace(c) != ""
+	case []any:
+		for _, part := range c {
+			m, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, isText := m["text"].(string); isText {
+				if strings.TrimSpace(t) != "" {
+					return true
+				}
+			} else if len(m) > 0 {
+				return true // non-text part (image, audio, ...)
+			}
+		}
+	}
+	return false
 }
