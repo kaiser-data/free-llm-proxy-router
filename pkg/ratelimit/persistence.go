@@ -13,6 +13,8 @@ import (
 type UsageSnapshot struct {
 	SavedAt   time.Time                     `json:"saved_at"`
 	Providers map[string]ProviderUsage       `json:"providers"`
+	// Gemini holds the Gemini tracker's daily counts (Pacific-day quotas).
+	Gemini *GeminiUsage `json:"gemini,omitempty"`
 }
 
 // ProviderUsage holds the saved window counts for a provider.
