@@ -138,6 +138,34 @@ func TestBuildBodyServiceTierOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
+// Gemini's OpenAI-compatible endpoint 400s when a body carries both
+// max_tokens and max_completion_tokens; buildBody must collapse the two
+// spellings into max_tokens only.
+func TestBuildBodyCollapsesMaxCompletionTokens(t *testing.T) {
+	cfg := &config.Config{Providers: []config.ProviderConfig{{ID: "gemini", Enabled: true}}}
+	fc := &FallbackChain{Cfg: cfg}
+
+	// Both present: max_tokens wins, max_completion_tokens is dropped.
+	raw := map[string]any{"model": "auto", "max_tokens": 500, "max_completion_tokens": 800}
+	body := fc.buildBody("gemini", raw, "gemini-3.5-flash")
+	if _, ok := body["max_completion_tokens"]; ok {
+		t.Fatalf("max_completion_tokens must be stripped when max_tokens is set: %v", body)
+	}
+	if got, _ := toInt(body["max_tokens"]); got != 500 {
+		t.Fatalf("max_tokens = %d, want 500", got)
+	}
+
+	// Only max_completion_tokens: renamed to max_tokens so caps and quotas see it.
+	raw = map[string]any{"model": "auto", "max_completion_tokens": 800}
+	body = fc.buildBody("gemini", raw, "gemini-3.5-flash")
+	if _, ok := body["max_completion_tokens"]; ok {
+		t.Fatalf("max_completion_tokens must be normalized to max_tokens: %v", body)
+	}
+	if got, _ := toInt(body["max_tokens"]); got != 800 {
+		t.Fatalf("max_tokens = %d, want 800", got)
+	}
+}
+
 func TestIsZeroQuota(t *testing.T) {
 	gemini := []byte(`[{"error":{"code":429,"message":"Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-nano-banana-2.1"}}]`)
 	if !isZeroQuota(gemini) {

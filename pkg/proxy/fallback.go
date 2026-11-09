@@ -506,6 +506,17 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 		delete(body, f)
 	}
 
+	// Collapse the two OpenAI max-token spellings into one. Clients on newer
+	// OpenAI SDKs send "max_completion_tokens", sometimes alongside
+	// "max_tokens" (or an agent-profile default adds the other); Gemini's
+	// OpenAI-compatible endpoint rejects a body carrying both with a 400.
+	if v, has := body["max_completion_tokens"]; has {
+		if _, hasTokens := body["max_tokens"]; !hasTokens {
+			body["max_tokens"] = v
+		}
+		delete(body, "max_completion_tokens")
+	}
+
 	// Apply max_tokens_cap from strategy_overrides if the strategy has one configured
 	// and the client hasn't already requested fewer tokens.
 	if fc.Strategy != nil {
