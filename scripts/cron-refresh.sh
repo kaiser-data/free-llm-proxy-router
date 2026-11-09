@@ -15,9 +15,9 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 log "Starting catalog refresh"
 
 # Build scan binary if missing or stale
-if [ ! -f "$SCAN_BIN" ] || [ "$REPO_DIR/cmd/scan/main.go" -nt "$SCAN_BIN" ]; then
+if [ ! -f "$SCAN_BIN" ] || [ "$REPO_DIR/cmd/free-llm-scan/main.go" -nt "$SCAN_BIN" ]; then
   log "Building free-llm-scan..."
-  go build -o "$SCAN_BIN" "$REPO_DIR/cmd/scan"
+  go build -o "$SCAN_BIN" "$REPO_DIR/cmd/free-llm-scan"
 fi
 
 # 1. Scan all providers

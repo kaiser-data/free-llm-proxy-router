@@ -22,6 +22,7 @@
 #   rotates keys on 429.
 
 proxy:
+  host: "127.0.0.1"    # Listen address. Use "0.0.0.0" to expose on your network (set auth_token too)
   port: 8080
   auth_token: ""       # Set to require a Bearer token on incoming requests
   cache_ttl: 300       # Response cache TTL in seconds (0 to disable)
@@ -90,6 +91,9 @@ fallback:
   max_attempts: 50
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
+  # Upper bound for one request across all providers it tries. When it passes
+  # the proxy returns 503 + Retry-After instead of waiting on. 0 = no limit.
+  request_timeout: 90s
 
 refresh:
   model: "groq/openai/gpt-oss-120b"

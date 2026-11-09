@@ -1,7 +1,10 @@
 // Package catalog manages the local free-model catalog.
 package catalog
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // CatalogEntry is a single model entry discovered at runtime.
 type CatalogEntry struct {
@@ -90,11 +93,13 @@ func (c *Catalog) MarkNeedsReverification(providerID, modelID string) {
 	}
 }
 
-// FreeEntries returns only entries marked as free.
+// FreeEntries returns the free entries that can answer a chat request.
+// Non-chat models are skipped here too, so a catalog written before a filter
+// existed never routes a chat request to an embedder or a safety classifier.
 func (c *Catalog) FreeEntries() []CatalogEntry {
 	var out []CatalogEntry
 	for _, e := range c.Entries {
-		if e.IsFree {
+		if e.IsFree && IsChatModel(e.ModelID) {
 			out = append(out, e)
 		}
 	}
@@ -126,4 +131,26 @@ func (c *Catalog) KeepUnscanned(prev *Catalog) []string {
 		c.Entries = append(c.Entries, e)
 	}
 	return kept
+}
+
+// nonChatPatterns match model IDs that cannot answer a chat request: embeddings,
+// rerankers, speech, image generation and safety classifiers (which return a score).
+var nonChatPatterns = []string{
+	"embed", "rerank", "image", "vision-only",
+	"tts", "stt", "whisper", "orpheus", "transcribe",
+	"guard",
+	// Gemini media and agent models listed alongside chat models
+	"nano-banana", "lyria", "robotics", "computer-use", "deep-research",
+	"antigravity", // Interactions API only, no chat completions
+}
+
+// IsChatModel reports whether a model ID looks like it answers chat requests.
+func IsChatModel(modelID string) bool {
+	lower := strings.ToLower(modelID)
+	for _, p := range nonChatPatterns {
+		if strings.Contains(lower, p) {
+			return false
+		}
+	}
+	return true
 }

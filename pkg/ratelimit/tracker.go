@@ -55,6 +55,24 @@ type ProviderTracker struct {
 
 	// PreemptiveWaitUntil is set when Cerebras reports low remaining requests.
 	preemptiveWaitUntil time.Time
+
+	// nextSlot is the earliest time the next spaced request may start.
+	nextSlot time.Time
+}
+
+// NextSlot claims the next send slot for a provider whose requests must be
+// spaced by at least spacing, across all concurrent requests. It returns how
+// long the caller must wait before sending.
+func (t *ProviderTracker) NextSlot(spacing time.Duration) time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	slot := now
+	if t.nextSlot.After(now) {
+		slot = t.nextSlot
+	}
+	t.nextSlot = slot.Add(spacing)
+	return slot.Sub(now)
 }
 
 // NewProviderTracker creates an empty ProviderTracker.
@@ -104,12 +122,9 @@ func (t *ProviderTracker) RecordRequest(modelID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Create windows if they don't exist yet (with a generous limit so they auto-init)
+	// Add(0) resets an expired window and increments without a limit check.
 	t.getOrCreate(t.perModel, modelID, time.Minute).Add(0)
-	t.perModel[modelID].Count++
-
 	t.getOrCreate(t.perModelDay, modelID, 24*time.Hour).Add(0)
-	t.perModelDay[modelID].Count++
 }
 
 // RecordRequestSec increments the per-second window (Cerebras).
@@ -117,7 +132,6 @@ func (t *ProviderTracker) RecordRequestSec(modelID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.getOrCreate(t.perModelSec, modelID, time.Second).Add(0)
-	t.perModelSec[modelID].Count++
 }
 
 // PreemptiveSlowdown sets a wait-until time to prevent imminent rate-limiting
@@ -149,18 +163,16 @@ func (t *ProviderTracker) getOrCreate(m map[string]*Window, key string, size tim
 
 // GlobalTracker holds per-provider trackers, keyed by provider ID.
 type GlobalTracker struct {
-	mu         sync.RWMutex
-	trackers   map[string]*ProviderTracker
-	cooldowns  map[string]time.Time // provider_id → earliest time to retry
-	keyIndices map[string]int       // provider_id → active key index for rotation
+	mu        sync.RWMutex
+	trackers  map[string]*ProviderTracker
+	cooldowns map[string]time.Time // provider_id, provider/model or provider/model#slot → earliest time to retry
 }
 
 // NewGlobalTracker creates an empty GlobalTracker.
 func NewGlobalTracker() *GlobalTracker {
 	return &GlobalTracker{
-		trackers:   make(map[string]*ProviderTracker),
-		cooldowns:  make(map[string]time.Time),
-		keyIndices: make(map[string]int),
+		trackers:  make(map[string]*ProviderTracker),
+		cooldowns: make(map[string]time.Time),
 	}
 }
 
@@ -217,24 +229,4 @@ func (g *GlobalTracker) EarliestRecovery() time.Time {
 		}
 	}
 	return earliest
-}
-
-// CurrentKeyIndex returns the active key index (0-based) for the provider.
-func (g *GlobalTracker) CurrentKeyIndex(providerID string) int {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.keyIndices[providerID]
-}
-
-// RotateKey advances to the next key slot for the provider and returns the new index.
-// numKeys must equal ProviderConfig.NumKeys() for the provider.
-func (g *GlobalTracker) RotateKey(providerID string, numKeys int) int {
-	if numKeys <= 1 {
-		return 0
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	next := (g.keyIndices[providerID] + 1) % numKeys
-	g.keyIndices[providerID] = next
-	return next
 }

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -54,7 +55,8 @@ func (s *GeminiScanner) ScanFreeModels(ctx context.Context, cfg config.ProviderC
 		discoveryURL = cfg.Discovery.ModelsEndpoint
 	}
 
-	// Gemini uses x-goog-api-key passed as a query param, not Authorization: Bearer.
+	// The key goes in the x-goog-api-key header, never the URL: Go's
+	// *url.Error includes the full URL, and scan errors are logged.
 	// Use ResolvedAPIKey so dotenv-loaded values are picked up.
 	apiKey := cfg.ResolvedAPIKey()
 
@@ -62,24 +64,17 @@ func (s *GeminiScanner) ScanFreeModels(ctx context.Context, cfg config.ProviderC
 	pageToken := ""
 
 	for {
-		url := discoveryURL
-		params := "?"
-		if apiKey != "" {
-			params += "key=" + apiKey
-		}
+		reqURL := discoveryURL
 		if pageToken != "" {
-			if params != "?" {
-				params += "&"
-			}
-			params += "pageToken=" + pageToken
-		}
-		if params != "?" {
-			url += params
+			reqURL += "?pageToken=" + url.QueryEscape(pageToken)
 		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("building gemini request: %w", err)
+		}
+		if apiKey != "" {
+			req.Header.Set("x-goog-api-key", apiKey)
 		}
 
 		resp, err := s.Client.Do(req)
