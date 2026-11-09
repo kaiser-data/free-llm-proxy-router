@@ -20,7 +20,7 @@
 > **Try it in one minute.** You need one free key from [Groq](https://console.groq.com/keys) (no credit card). No Go toolchain, no config file. On Linux or macOS:
 >
 > ```bash
-> VERSION=0.1.3
+> VERSION=0.1.4
 > curl -fsSL https://github.com/kaiser-data/free-llm-proxy-router/releases/download/v$VERSION/free-llm-proxy-router_${VERSION}_$(uname -s | tr A-Z a-z)_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/armv6l/armv6/;s/armv7l/armv7/').tar.gz | tar xz
 > GROQ_API_KEY=gsk_... ./free-llm-proxy
 > ```
@@ -204,7 +204,7 @@ Every package ships three binaries plus `configs/` (the provider definitions and
 <summary><b>Package install, step by step</b></summary>
 
 ```bash
-VERSION=0.1.3
+VERSION=0.1.4
 # Debian/Ubuntu
 curl -LO https://github.com/kaiser-data/free-llm-proxy-router/releases/download/v$VERSION/free-llm-proxy-router_${VERSION}_amd64.deb
 sudo dpkg -i free-llm-proxy-router_${VERSION}_amd64.deb      # or: sudo rpm -i …rpm / sudo apk add --allow-untrusted …apk
