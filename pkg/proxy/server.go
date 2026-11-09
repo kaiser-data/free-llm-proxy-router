@@ -169,6 +169,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if mt, ok := toInt(raw["max_tokens"]); ok {
 		req.MaxTokens = mt
+	} else if mt, ok := toInt(raw["max_completion_tokens"]); ok {
+		req.MaxTokens = mt
 	}
 
 	cfg := s.cfg.Load()
@@ -196,6 +198,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		// Re-read max_tokens in case defaults/overrides changed it.
 		if mt, ok := toInt(raw["max_tokens"]); ok {
+			req.MaxTokens = mt
+		} else if mt, ok := toInt(raw["max_completion_tokens"]); ok {
 			req.MaxTokens = mt
 		}
 		// Redirect routing: specific model takes precedence over strategy.
