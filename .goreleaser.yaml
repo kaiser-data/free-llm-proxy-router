@@ -12,21 +12,31 @@ builds:
     binary: free-llm-proxy
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
-    goarch: [amd64, arm64]
+    goarch: [amd64, arm64, arm, riscv64]
+    goarm: ["6", "7"] # armv6: Pi Zero/Pi 1; armv7: 32-bit Raspberry Pi OS, LicheePi
+    ignore: &small-boards-linux-only
+      - { goos: darwin, goarch: arm }
+      - { goos: darwin, goarch: riscv64 }
+      - { goos: windows, goarch: arm }
+      - { goos: windows, goarch: riscv64 }
     ldflags: ["-s -w"]
   - id: free-llm-scan
     main: ./cmd/free-llm-scan
     binary: free-llm-scan
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
-    goarch: [amd64, arm64]
+    goarch: [amd64, arm64, arm, riscv64]
+    goarm: ["6", "7"] # armv6: Pi Zero/Pi 1; armv7: 32-bit Raspberry Pi OS, LicheePi
+    ignore: *small-boards-linux-only
     ldflags: ["-s -w"]
   - id: free-llm-bench
     main: ./cmd/free-llm-bench
     binary: free-llm-bench
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
-    goarch: [amd64, arm64]
+    goarch: [amd64, arm64, arm, riscv64]
+    goarm: ["6", "7"] # armv6: Pi Zero/Pi 1; armv7: 32-bit Raspberry Pi OS, LicheePi
+    ignore: *small-boards-linux-only
     ldflags: ["-s -w"]
 
 archives:
@@ -34,7 +44,7 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     files:
       - README.md
       - LICENSE
@@ -118,7 +128,7 @@ nfpms:
     maintainer: kaiser-data <61822885+kaiser-data@users.noreply.github.com>
     license: MIT
     formats: [deb, rpm, apk]
-    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     bindir: /usr/lib/free-llm-proxy-router
     contents:
       - src: configs/
