@@ -4,8 +4,9 @@
 # Live limits tracker: https://github.com/cheahjs/free-llm-api-resources
 #
 # Providers from "zai" onward were added from the free-llm.com list (data:
-# github.com/nejib1/Free-LLM, synced 2026-10-22). Everything added ships disabled: put the
-# key in .env (see .env.example), then set enabled: true.
+# github.com/nejib1/Free-LLM, synced 2026-10-22). Only the "safe", key-gated ones ship
+# enabled (they stay idle until their key is in .env). "Mixed", credit, keyless and local
+# providers ship disabled: review them, then set enabled: true.
 #
 # How the router reads provider fields (checked against pkg/config and pkg/scan):
 #   priority      informational only. Routing order comes from the strategy, not this number.
@@ -18,8 +19,9 @@
 #   free. Providers tagged "mixed" below also sell paid models: run `free-llm-scan update`
 #   and prune the catalog before enabling them.
 #   A provider whose api_key_env has no key is skipped at routing time, so enabling one by
-#   mistake is harmless. Several accounts: add KEY_2 ... KEY_9 to .env and the router
-#   rotates keys on 429.
+#   mistake is harmless: enabled: true with api_key_env acts as "enabled when the key is
+#   set". Several accounts: add KEY_2 ... KEY_9 to .env and the router uses the next key
+#   on a 429.
 
 proxy:
   host: "127.0.0.1"    # Listen address. Use "0.0.0.0" to expose on your network (set auth_token too)
@@ -88,7 +90,7 @@ proxy:
 fallback:
   retry_on_429: true
   retry_on_5xx: true
-  max_attempts: 50
+  max_attempts: 5
   # Cerebras-specific: add spacing between requests to avoid RPS spikes
   cerebras_request_spacing_ms: 100
   # Upper bound for one request across all providers it tries. When it passes
@@ -185,7 +187,7 @@ providers:
     name: "Mistral AI"
     base_url: "https://api.mistral.ai/v1"
     api_key_env: "MISTRAL_API_KEY"
-    enabled: true
+    enabled: false
     priority: 4
     timeout: "30s"
     rate_limit_notes: "Workspace-level limits. Phone verification. free-llm.com (Oct 2026): 1 req/s, 500K tokens/min, 1B tokens/month; older docs said 2 RPM. Always read Retry-After header."
@@ -194,7 +196,7 @@ providers:
     name: "Cerebras"
     base_url: "https://api.cerebras.ai/v1"
     api_key_env: "CEREBRAS_API_KEY"
-    enabled: true
+    enabled: false
     priority: 5
     timeout: "15s"
     # free-llm.com (Aug 2026): the no-card free tier ended. New accounts get a $5 trial credit
@@ -207,7 +209,7 @@ providers:
     name: "GitHub Models"
     base_url: "https://models.inference.ai.azure.com"
     api_key_env: "GITHUB_TOKEN"
-    enabled: true
+    enabled: false
     priority: 6
     timeout: "30s"
     rate_limit_notes: "Free plan: 15 low/medium + 8 high req/min; 150/500 req/day. Pro: 20/10 req/min; 300/1000 req/day."
@@ -219,7 +221,7 @@ providers:
     name: "NVIDIA NIM"
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key_env: "NVIDIA_API_KEY"
-    enabled: true
+    enabled: false
     priority: 8
     timeout: "30s"
     rate_limit_notes: "40 RPM. Free credits recharge monthly. Hundreds of models."
@@ -228,7 +230,7 @@ providers:
     name: "Cohere"
     base_url: "https://api.cohere.ai/v1"
     api_key_env: "COHERE_API_KEY"
-    enabled: true
+    enabled: false
     priority: 9
     timeout: "30s"
     extra_headers:
@@ -239,7 +241,7 @@ providers:
     name: "Hugging Face Inference"
     base_url: "https://router.huggingface.co/v1"
     api_key_env: "HF_API_KEY"
-    enabled: true
+    enabled: false
     priority: 10
     timeout: "120s"
     rate_limit_notes: "300 calls/hour/token. 503+loading = cold start; wait then retry SAME provider."
@@ -256,7 +258,7 @@ providers:
     name: "Z.AI (GLM)"
     base_url: "https://api.z.ai/api/paas/v4"
     api_key_env: "ZAI_API_KEY"
-    enabled: true
+    enabled: false
     priority: 11
     timeout: "30s"
     tier_type: "free"
@@ -308,7 +310,7 @@ providers:
     # the router appends /chat/completions to this value.
     base_url: "https://text.pollinations.ai"
     api_key_env: "POLLINATIONS_API_KEY"
-    enabled: true
+    enabled: false
     priority: 15
     timeout: "30s"
     tier_type: "free"
@@ -318,7 +320,7 @@ providers:
     name: "Kilo AI Gateway"
     base_url: "https://api.kilo.ai/api/gateway"
     api_key_env: "KILO_API_KEY"
-    enabled: true
+    enabled: false
     priority: 16
     timeout: "30s"
     tier_type: "free"
@@ -329,7 +331,7 @@ providers:
     name: "Routeway"
     base_url: "https://api.routeway.ai/v1"
     api_key_env: "ROUTEWAY_API_KEY"
-    enabled: true
+    enabled: false
     priority: 17
     timeout: "30s"
     tier_type: "free"
@@ -341,7 +343,7 @@ providers:
     name: "Requesty"
     base_url: "https://router.requesty.ai/v1"
     api_key_env: "REQUESTY_API_KEY"
-    enabled: true
+    enabled: false
     priority: 18
     timeout: "30s"
     tier_type: "free"
@@ -352,7 +354,7 @@ providers:
     name: "Onomeo"
     base_url: "https://onomeo.com/v1"
     api_key_env: "ONOMEO_API_KEY"
-    enabled: true
+    enabled: false
     priority: 19
     timeout: "30s"
     tier_type: "free"
@@ -363,7 +365,7 @@ providers:
     name: "OVH AI Endpoints"
     base_url: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1"
     api_key_env: "OVH_AI_ENDPOINTS_ACCESS_TOKEN"
-    enabled: true
+    enabled: false
     priority: 20
     timeout: "30s"
     tier_type: "free"
@@ -375,7 +377,7 @@ providers:
     name: "SiliconFlow"
     base_url: "https://api.siliconflow.com/v1"
     api_key_env: "SILICONFLOW_API_KEY"
-    enabled: true
+    enabled: false
     priority: 21
     timeout: "30s"
     tier_type: "free"
@@ -386,7 +388,7 @@ providers:
     name: "Nous Portal"
     base_url: "https://inference-api.nousresearch.com/v1"
     api_key_env: "NOUS_API_KEY"
-    enabled: true
+    enabled: false
     priority: 22
     timeout: "30s"
     tier_type: "free"
@@ -410,13 +412,13 @@ providers:
 
   - id: cloudflare-workers-ai
     name: "Cloudflare Workers AI"
-    # ${CLOUDFLARE_ACCOUNT_ID} is read from the environment / .env when the config loads.
-    # Until it is set the provider counts as unavailable. free-llm.com lists the native
+    # Replace YOUR_ACCOUNT_ID with your Cloudflare account ID (dashboard sidebar).
+    # The config loader does not expand environment variables. free-llm.com lists the native
     # /ai/run/ endpoint; /ai/v1 is the OpenAI-compatible form from Cloudflare's docs, so
     # confirm it for your account.
-    base_url: "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+    base_url: "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1"
     api_key_env: "CLOUDFLARE_API_KEY"
-    enabled: true
+    enabled: false
     priority: 30
     timeout: "30s"
     tier_type: "credit"
@@ -427,7 +429,7 @@ providers:
     name: "Ollama Cloud"
     base_url: "https://ollama.com/v1"
     api_key_env: "OLLAMA_API_KEY"
-    enabled: true
+    enabled: false
     priority: 31
     timeout: "60s"
     tier_type: "credit"
@@ -438,7 +440,7 @@ providers:
     name: "Aion Labs"
     base_url: "https://api.aionlabs.ai/v1"
     api_key_env: "AION_API_KEY"
-    enabled: true
+    enabled: false
     priority: 32
     timeout: "30s"
     tier_type: "credit"
@@ -448,7 +450,7 @@ providers:
     name: "Token Harbor"
     base_url: "https://tokenharbor.ai/v1"
     api_key_env: "TOKENHARBOR_API_KEY"
-    enabled: true
+    enabled: false
     priority: 33
     timeout: "30s"
     tier_type: "credit"
@@ -459,7 +461,7 @@ providers:
     name: "IteraCompute"
     base_url: "https://api.iteracompute.com/v1"
     api_key_env: "ITERACOMPUTE_API_KEY"
-    enabled: true
+    enabled: false
     priority: 34
     timeout: "30s"
     tier_type: "credit"
@@ -469,7 +471,7 @@ providers:
     name: "BazaarLink"
     base_url: "https://api.bazaarlink.ai/v1"
     api_key_env: "BAZAARLINK_API_KEY"
-    enabled: true
+    enabled: false
     priority: 35
     timeout: "30s"
     tier_type: "credit"
@@ -480,7 +482,7 @@ providers:
     name: "Vercel AI Gateway"
     base_url: "https://ai-gateway.vercel.sh/v1"
     api_key_env: "AI_GATEWAY_API_KEY"
-    enabled: true
+    enabled: false
     priority: 36
     timeout: "30s"
     tier_type: "credit"
@@ -497,7 +499,7 @@ providers:
     name: "LM Studio"
     base_url: "http://localhost:1234/v1"
     api_key: "lm-studio"
-    enabled: true
+    enabled: false
     priority: 91
     timeout: "120s"
     discovery:
@@ -507,7 +509,7 @@ providers:
     name: "llama.cpp server"
     base_url: "http://localhost:8081/v1"   # llama-server --port 8081
     api_key: "llama-cpp"
-    enabled: true
+    enabled: false
     priority: 92
     timeout: "120s"
     discovery:
@@ -517,7 +519,7 @@ providers:
     name: "Jan.ai"
     base_url: "http://localhost:1337/v1"
     api_key: "jan"
-    enabled: true
+    enabled: false
     priority: 93
     timeout: "120s"
     discovery:
@@ -527,7 +529,7 @@ providers:
     name: "GPT4All"
     base_url: "http://localhost:4891/v1"
     api_key: "gpt4all"
-    enabled: true
+    enabled: false
     priority: 94
     timeout: "120s"
     discovery:
@@ -537,7 +539,7 @@ providers:
     name: "KoboldCpp"
     base_url: "http://localhost:5001/v1"
     api_key: "koboldcpp"
-    enabled: true
+    enabled: false
     priority: 95
     timeout: "120s"
     discovery:
@@ -547,7 +549,7 @@ providers:
     name: "llamafile"
     base_url: "http://localhost:8082/v1"   # ./model.llamafile --server --port 8082
     api_key: "llamafile"
-    enabled: true
+    enabled: false
     priority: 96
     timeout: "120s"
     discovery:
@@ -557,7 +559,7 @@ providers:
     name: "Text Generation WebUI"
     base_url: "http://localhost:5000/v1"   # start with --api
     api_key: "tgwui"
-    enabled: true
+    enabled: false
     priority: 97
     timeout: "120s"
     discovery:
@@ -567,7 +569,7 @@ providers:
     name: "Local Ollama"
     base_url: "http://localhost:11434/v1"
     api_key: "ollama"
-    enabled: true
+    enabled: false
     priority: 99
     timeout: "120s"
     discovery:
