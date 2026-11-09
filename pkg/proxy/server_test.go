@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -172,5 +173,34 @@ func TestDirectModel_SuccessIsCountedInDailyUsage(t *testing.T) {
 	}
 	if got := s.rateLimiter.Snapshot().Providers["gemini"].ModelDayCounts["gemma"]; got != 1 {
 		t.Errorf("daily count = %d, want 1", got)
+	}
+}
+
+// A client's max_completion_tokens is its explicit budget: an agent profile's
+// max_tokens default must not replace it, and the upstream must see only one
+// of the two spellings (Gemini 400s on both).
+func TestChatCompletions_MaxCompletionTokensBeatsProfileDefault(t *testing.T) {
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		io.WriteString(w, `{"model":"gemma","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	s := newTestServer(upstream.URL, 0)
+	s.cfg.Load().Proxy.Agents = map[string]config.AgentProfile{
+		"my-agent": {Strategy: "adaptive", Defaults: map[string]any{"max_tokens": 4096}},
+	}
+	body := `{"model":"my-agent","max_completion_tokens":800,"messages":[{"role":"user","content":"hi"}]}`
+	rec := httptest.NewRecorder()
+	s.handleChatCompletions(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if _, ok := got["max_completion_tokens"]; ok {
+		t.Errorf("upstream got max_completion_tokens: %v", got)
+	}
+	if mt, _ := toInt(got["max_tokens"]); mt != 800 {
+		t.Errorf("upstream max_tokens = %v, want client's 800", got["max_tokens"])
 	}
 }

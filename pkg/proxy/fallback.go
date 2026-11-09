@@ -506,16 +506,7 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 		delete(body, f)
 	}
 
-	// Collapse the two OpenAI max-token spellings into one. Clients on newer
-	// OpenAI SDKs send "max_completion_tokens", sometimes alongside
-	// "max_tokens" (or an agent-profile default adds the other); Gemini's
-	// OpenAI-compatible endpoint rejects a body carrying both with a 400.
-	if v, has := body["max_completion_tokens"]; has {
-		if _, hasTokens := body["max_tokens"]; !hasTokens {
-			body["max_tokens"] = v
-		}
-		delete(body, "max_completion_tokens")
-	}
+	normalizeMaxTokens(body)
 
 	// Apply max_tokens_cap from strategy_overrides if the strategy has one configured
 	// and the client hasn't already requested fewer tokens.
@@ -605,6 +596,21 @@ func estimateTokens(msgs []map[string]any) int {
 		}
 	}
 	return total
+}
+
+// normalizeMaxTokens collapses the two OpenAI max-token spellings into
+// "max_tokens". Clients on newer OpenAI SDKs send "max_completion_tokens",
+// sometimes alongside "max_tokens"; Gemini's OpenAI-compatible endpoint
+// rejects a body carrying both with a 400. When both are set, max_tokens wins.
+func normalizeMaxTokens(m map[string]any) {
+	v, has := m["max_completion_tokens"]
+	if !has {
+		return
+	}
+	if _, hasTokens := m["max_tokens"]; !hasTokens {
+		m["max_tokens"] = v
+	}
+	delete(m, "max_completion_tokens")
 }
 
 // toInt converts a JSON (float64) or YAML (int) number to int. Request bodies

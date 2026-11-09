@@ -167,9 +167,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if stream, ok := raw["stream"].(bool); ok {
 		req.Stream = stream
 	}
+	// Normalize the newer OpenAI spelling before agent-profile defaults run,
+	// so a profile's max_tokens default cannot override the client's
+	// explicit max_completion_tokens budget.
+	normalizeMaxTokens(raw)
 	if mt, ok := toInt(raw["max_tokens"]); ok {
-		req.MaxTokens = mt
-	} else if mt, ok := toInt(raw["max_completion_tokens"]); ok {
 		req.MaxTokens = mt
 	}
 
@@ -197,9 +199,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			raw[k] = v
 		}
 		// Re-read max_tokens in case defaults/overrides changed it.
+		normalizeMaxTokens(raw)
 		if mt, ok := toInt(raw["max_tokens"]); ok {
-			req.MaxTokens = mt
-		} else if mt, ok := toInt(raw["max_completion_tokens"]); ok {
 			req.MaxTokens = mt
 		}
 		// Redirect routing: specific model takes precedence over strategy.
