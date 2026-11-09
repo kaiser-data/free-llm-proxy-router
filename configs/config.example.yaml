@@ -2,6 +2,26 @@
 # IMPORTANT: Free tier limits change without notice.
 # Run: free-llm-scan refresh-llm  to update with current limits.
 # Live limits tracker: https://github.com/cheahjs/free-llm-api-resources
+#
+# Providers from "zai" onward were added from the free-llm.com list (data:
+# github.com/nejib1/Free-LLM, synced 2026-10-22). Only the "safe", key-gated ones ship
+# enabled (they stay idle until their key is in .env). "Mixed", credit, keyless and local
+# providers ship disabled: review them, then set enabled: true.
+#
+# How the router reads provider fields (checked against pkg/config and pkg/scan):
+#   priority      informational only. Routing order comes from the strategy, not this number.
+#   tier_type     "free" (rate-limited) or "credit" (token / $ / unit allowance). The
+#                 `economical` strategy ranks credit tiers last. Default: free.
+#   all_free      documentation only: every model the provider lists is free.
+#   free_markers, probe_for_free: parsed but not used by the generic scanner.
+#   Only openrouter, groq, gemini, huggingface and github-models have a dedicated scanner.
+#   Every other provider uses the generic /models scan, which marks ALL listed models as
+#   free. Providers tagged "mixed" below also sell paid models: run `free-llm-scan update`
+#   and prune the catalog before enabling them.
+#   A provider whose api_key_env has no key is skipped at routing time, so enabling one by
+#   mistake is harmless: enabled: true with api_key_env acts as "enabled when the key is
+#   set". Several accounts: add KEY_2 ... KEY_9 to .env and the router uses the next key
+#   on a 429.
 
 proxy:
   host: "127.0.0.1"    # Listen address. Use "0.0.0.0" to expose on your network (set auth_token too)
@@ -170,7 +190,7 @@ providers:
     enabled: false
     priority: 4
     timeout: "30s"
-    rate_limit_notes: "Workspace-level limits. Only 2 RPM free tier. Always read Retry-After header."
+    rate_limit_notes: "Workspace-level limits. Phone verification. free-llm.com (Oct 2026): 1 req/s, 500K tokens/min, 1B tokens/month; older docs said 2 RPM. Always read Retry-After header."
 
   - id: cerebras
     name: "Cerebras"
@@ -179,8 +199,12 @@ providers:
     enabled: false
     priority: 5
     timeout: "15s"
+    # free-llm.com (Aug 2026): the no-card free tier ended. New accounts get a $5 trial credit
+    # (expires after 30 days) and must add a verified payment method.
     rate_limit_notes: "RPS limits (not RPM). x-ratelimit-reset-tokens is fractional float seconds. Space requests 100ms."
 
+  # free-llm.com (Oct 2026) reports GitHub Models was retired by GitHub on 2026-07-30.
+  # Leave disabled unless GitHub still serves your token; confirm with `free-llm-scan update`.
   - id: github-models
     name: "GitHub Models"
     base_url: "https://models.inference.ai.azure.com"
@@ -211,7 +235,7 @@ providers:
     timeout: "30s"
     extra_headers:
       Cohere-Version: "2022-12-06"
-    rate_limit_notes: "1000 req/MONTH (not per day). Monthly reset."
+    rate_limit_notes: "1000 req/MONTH (not per day), 20 req/min. Trial key, non-commercial. Monthly reset."
 
   - id: huggingface
     name: "Hugging Face Inference"
@@ -225,6 +249,322 @@ providers:
       skip_models_endpoint: true
       hub_api_filters: "pipeline_tag=text-generation&inference=warm&gated=false&limit=50"
 
+  # ===========================================================================
+  # Added from free-llm.com: recharging free tiers, request/time-window limits.
+  # Scan: "safe" = every listed model is free; "mixed" = also lists paid models.
+  # ===========================================================================
+
+  - id: zai
+    name: "Z.AI (GLM)"
+    base_url: "https://api.z.ai/api/paas/v4"
+    api_key_env: "ZAI_API_KEY"
+    enabled: false
+    priority: 11
+    timeout: "30s"
+    tier_type: "free"
+    # Scan: mixed. Free models are the *-Flash ones (GLM-4.5-Flash, GLM-4.7-Flash, GLM-4.6V-Flash).
+    rate_limit_notes: "Registration. Flash models: ~1 req/s, ~1,000 req/day. Free tier subject to change."
+
+  - id: modelscope
+    name: "ModelScope"
+    base_url: "https://api-inference.modelscope.cn/v1"
+    api_key_env: "MODELSCOPE_API_KEY"
+    enabled: true
+    priority: 12
+    timeout: "30s"
+    tier_type: "free"
+    discovery:
+      models_endpoint: "/models"
+      all_free: true
+    rate_limit_notes: "Phone verification. 500 req/day per model, 2,000 req/day total. No billing."
+
+  - id: hetzner-inference
+    name: "Hetzner Inference API"
+    base_url: "https://inference.hetzner.com/api/v1"
+    api_key_env: "HETZNER_INFERENCE_API_KEY"
+    enabled: true
+    priority: 13
+    timeout: "30s"
+    tier_type: "free"
+    discovery:
+      models_endpoint: "/models"
+      all_free: true
+    rate_limit_notes: "Experimental, free while there is no billing system. 10 req, 4M input / 100K output tokens per 60s per key. May become paid."
+
+  - id: llm7
+    name: "LLM7.io"
+    base_url: "https://api.llm7.io/v1"
+    api_key_env: "LLM7_API_KEY"
+    enabled: true
+    priority: 14
+    timeout: "30s"
+    tier_type: "free"
+    discovery:
+      models_endpoint: "/models"
+      all_free: true
+    rate_limit_notes: "Free token from dash.llm7.io: 1 req/s, 60/min, 250/hour, 100K tokens/24h (may be reduced without notice)."
+
+  - id: pollinations
+    name: "Pollinations.ai"
+    # Base URL as listed on free-llm.com. Confirm the OpenAI-compatible chat path before enabling:
+    # the router appends /chat/completions to this value.
+    base_url: "https://text.pollinations.ai"
+    api_key_env: "POLLINATIONS_API_KEY"
+    enabled: false
+    priority: 15
+    timeout: "30s"
+    tier_type: "free"
+    rate_limit_notes: "API key required (anonymous access removed), no card. Usage is paid from Quest Pollen earned in the dashboard."
+
+  - id: kilo-gateway
+    name: "Kilo AI Gateway"
+    base_url: "https://api.kilo.ai/api/gateway"
+    api_key_env: "KILO_API_KEY"
+    enabled: false
+    priority: 16
+    timeout: "30s"
+    tier_type: "free"
+    # Scan: mixed. Only the default free models are free; anonymous use is allowed.
+    rate_limit_notes: "200 req/hour per IP on free models."
+
+  - id: routeway
+    name: "Routeway"
+    base_url: "https://api.routeway.ai/v1"
+    api_key_env: "ROUTEWAY_API_KEY"
+    enabled: false
+    priority: 17
+    timeout: "30s"
+    tier_type: "free"
+    # Scan: mixed. Only model IDs ending in :free are free, and the generic scanner does not
+    # filter on that suffix. Prune non-:free entries from the catalog.
+    rate_limit_notes: "Registration. :free models: 5 RPM, 200 req/day, shared queue."
+
+  - id: requesty
+    name: "Requesty"
+    base_url: "https://router.requesty.ai/v1"
+    api_key_env: "REQUESTY_API_KEY"
+    enabled: false
+    priority: 18
+    timeout: "30s"
+    tier_type: "free"
+    # Scan: mixed (gateway with paid models).
+    rate_limit_notes: "Free models: 20 RPM; 200 req/day for new orgs (1,000/day paying orgs), shared across all free models."
+
+  - id: onomeo
+    name: "Onomeo"
+    base_url: "https://onomeo.com/v1"
+    api_key_env: "ONOMEO_API_KEY"
+    enabled: false
+    priority: 19
+    timeout: "30s"
+    tier_type: "free"
+    # Scan: mixed (only free-model calls are covered by the allowance).
+    rate_limit_notes: "Registration. 12 req/min per key; 30 free-model calls every 5 hours per account."
+
+  - id: ovh-ai
+    name: "OVH AI Endpoints"
+    base_url: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1"
+    api_key_env: "OVH_AI_ENDPOINTS_ACCESS_TOKEN"
+    enabled: false
+    priority: 20
+    timeout: "30s"
+    tier_type: "free"
+    # Scan: mixed. The free access is anonymous; a key switches you to pay-as-you-go, so
+    # enable this only if you accept that, or leave the key unset and call it unauthenticated.
+    rate_limit_notes: "Beta. Anonymous/free: 2 RPM per IP per model. With a key: 400 RPM, pay-as-you-go."
+
+  - id: siliconflow
+    name: "SiliconFlow"
+    base_url: "https://api.siliconflow.com/v1"
+    api_key_env: "SILICONFLOW_API_KEY"
+    enabled: false
+    priority: 21
+    timeout: "30s"
+    tier_type: "free"
+    # Scan: mixed. Free models need identity verification; exact limits require login.
+    rate_limit_notes: "Phone/identity verification. Fixed limits on free models (see cloud.siliconflow.cn/models)."
+
+  - id: nous-portal
+    name: "Nous Portal"
+    base_url: "https://inference-api.nousresearch.com/v1"
+    api_key_env: "NOUS_API_KEY"
+    enabled: false
+    priority: 22
+    timeout: "30s"
+    tier_type: "free"
+    # Scan: mixed. Limits are not published.
+    rate_limit_notes: "Free models only, no monthly credit. A GitHub user reported (Sep 2026) that a $0 payment-method check is needed for a key; verify."
+
+  - id: api-airforce
+    name: "Api.Airforce"
+    base_url: "https://api.airforce/v1"
+    api_key_env: "AIRFORCE_API_KEY"
+    enabled: true
+    priority: 23
+    timeout: "30s"
+    tier_type: "free"
+    rate_limit_notes: "Free plan ($0/month): 1 RPM, 1,000 req/day."
+
+  # ===========================================================================
+  # Added from free-llm.com: recharging allowances (tokens / credits / units).
+  # tier_type "credit" so the `economical` strategy ranks them after request-limited tiers.
+  # ===========================================================================
+
+  - id: cloudflare-workers-ai
+    name: "Cloudflare Workers AI"
+    # Replace YOUR_ACCOUNT_ID with your Cloudflare account ID (dashboard sidebar).
+    # The config loader does not expand environment variables. free-llm.com lists the native
+    # /ai/run/ endpoint; /ai/v1 is the OpenAI-compatible form from Cloudflare's docs, so
+    # confirm it for your account.
+    base_url: "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1"
+    api_key_env: "CLOUDFLARE_API_KEY"
+    enabled: false
+    priority: 30
+    timeout: "30s"
+    tier_type: "credit"
+    # Scan: mixed (beyond the free allowance usage is billed).
+    rate_limit_notes: "10,000 neurons/day (~300,000/month). Limits vary by model."
+
+  - id: ollama-cloud
+    name: "Ollama Cloud"
+    base_url: "https://ollama.com/v1"
+    api_key_env: "OLLAMA_API_KEY"
+    enabled: false
+    priority: 31
+    timeout: "60s"
+    tier_type: "credit"
+    # Scan: mixed. Free plan covers starter models only; the rest need added credits.
+    rate_limit_notes: "Starter usage credits. Monthly allowance (resets from sign-up date) plus a weekly limit that resets every 7 days."
+
+  - id: aion-labs
+    name: "Aion Labs"
+    base_url: "https://api.aionlabs.ai/v1"
+    api_key_env: "AION_API_KEY"
+    enabled: false
+    priority: 32
+    timeout: "30s"
+    tier_type: "credit"
+    rate_limit_notes: "Daily free credit allowance; amount not published."
+
+  - id: token-harbor
+    name: "Token Harbor"
+    base_url: "https://tokenharbor.ai/v1"
+    api_key_env: "TOKENHARBOR_API_KEY"
+    enabled: false
+    priority: 33
+    timeout: "30s"
+    tier_type: "credit"
+    # Scan: mixed.
+    rate_limit_notes: "Registration. 60 req/min and 1,800/hour per account (100/min, 3,000/hour per IP). Free allowance resets on a rolling 7-day period."
+
+  - id: iteracompute
+    name: "IteraCompute"
+    base_url: "https://api.iteracompute.com/v1"
+    api_key_env: "ITERACOMPUTE_API_KEY"
+    enabled: false
+    priority: 34
+    timeout: "30s"
+    tier_type: "credit"
+    rate_limit_notes: "Registration. 160K tokens/min (fair use, may queue). No daily cap; 30M tokens/month."
+
+  - id: bazaarlink
+    name: "BazaarLink"
+    base_url: "https://api.bazaarlink.ai/v1"
+    api_key_env: "BAZAARLINK_API_KEY"
+    enabled: false
+    priority: 35
+    timeout: "30s"
+    tier_type: "credit"
+    # Scan: mixed. Only models marked free count against the free units.
+    rate_limit_notes: "Registration. 10 RPM (20 with any credit), 2 concurrent requests. 60 weighted units/day (120 with credit), resets 00:00 UTC."
+
+  - id: vercel-ai-gateway
+    name: "Vercel AI Gateway"
+    base_url: "https://ai-gateway.vercel.sh/v1"
+    api_key_env: "AI_GATEWAY_API_KEY"
+    enabled: false
+    priority: 36
+    timeout: "30s"
+    tier_type: "credit"
+    # Scan: mixed. Routes to many paid providers and spends the monthly credit.
+    rate_limit_notes: "Registration. ~$5/month free credit (verify). Rate limited per model, below the paid tier."
+
+  # ===========================================================================
+  # Added from free-llm.com: local / self-hosted (unlimited, private). Ports are each
+  # tool's usual default, not taken from free-llm.com. 8080 is the proxy's own port, so
+  # llama.cpp and llamafile are placed on 8081 / 8082. Adjust to your setup.
+  # ===========================================================================
+
+  - id: lm-studio
+    name: "LM Studio"
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+    enabled: false
+    priority: 91
+    timeout: "120s"
+    discovery:
+      all_free: true
+
+  - id: llama-cpp
+    name: "llama.cpp server"
+    base_url: "http://localhost:8081/v1"   # llama-server --port 8081
+    api_key: "llama-cpp"
+    enabled: false
+    priority: 92
+    timeout: "120s"
+    discovery:
+      all_free: true
+
+  - id: jan
+    name: "Jan.ai"
+    base_url: "http://localhost:1337/v1"
+    api_key: "jan"
+    enabled: false
+    priority: 93
+    timeout: "120s"
+    discovery:
+      all_free: true
+
+  - id: gpt4all
+    name: "GPT4All"
+    base_url: "http://localhost:4891/v1"
+    api_key: "gpt4all"
+    enabled: false
+    priority: 94
+    timeout: "120s"
+    discovery:
+      all_free: true
+
+  - id: koboldcpp
+    name: "KoboldCpp"
+    base_url: "http://localhost:5001/v1"
+    api_key: "koboldcpp"
+    enabled: false
+    priority: 95
+    timeout: "120s"
+    discovery:
+      all_free: true
+
+  - id: llamafile
+    name: "llamafile"
+    base_url: "http://localhost:8082/v1"   # ./model.llamafile --server --port 8082
+    api_key: "llamafile"
+    enabled: false
+    priority: 96
+    timeout: "120s"
+    discovery:
+      all_free: true
+
+  - id: text-generation-webui
+    name: "Text Generation WebUI"
+    base_url: "http://localhost:5000/v1"   # start with --api
+    api_key: "tgwui"
+    enabled: false
+    priority: 97
+    timeout: "120s"
+    discovery:
+      all_free: true
+
   - id: ollama-local
     name: "Local Ollama"
     base_url: "http://localhost:11434/v1"
@@ -234,3 +574,124 @@ providers:
     timeout: "120s"
     discovery:
       all_free: true
+
+  # ===========================================================================
+  # NOT ENABLED BY DEFAULT: also listed on free-llm.com, but outside this project's scope
+  # ("recharging free tiers, no card, no one-time credits"). Uncomment to use one; they are
+  # tier_type "credit", so `economical` ranks them last. Keys: see each provider's console.
+  #
+  # One-time trial credits:
+  #
+  #  - id: fireworks              # starter credit (amount no longer stated; historically $1)
+  #    name: "Fireworks AI"
+  #    base_url: "https://api.fireworks.ai/inference/v1"
+  #    api_key_env: "FIREWORKS_API_KEY"
+  #    enabled: true
+  #    priority: 50
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: nebius                 # $1 trial, 30 days, bank card required
+  #    name: "Nebius (Token Factory)"
+  #    base_url: "https://api.tokenfactory.nebius.com/v1"
+  #    api_key_env: "NEBIUS_API_KEY"
+  #    enabled: true
+  #    priority: 51
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: novita                 # no sign-up credit; $10 per referral
+  #    name: "Novita AI"
+  #    base_url: "https://api.novita.ai/v3/openai"
+  #    api_key_env: "NOVITA_API_KEY"
+  #    enabled: true
+  #    priority: 52
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: scaleway               # 1M tokens, one-time, EU-hosted
+  #    name: "Scaleway Generative APIs"
+  #    base_url: "https://api.scaleway.ai/v1"
+  #    api_key_env: "SCALEWAY_API_KEY"
+  #    enabled: true
+  #    priority: 53
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: qwen-alibaba           # ~1M tokens per model, 90 days, Singapore region
+  #    name: "Qwen (Alibaba Cloud Model Studio)"
+  #    # free-llm.com lists the native endpoint https://dashscope-intl.aliyuncs.com/api/v1;
+  #    # /compatible-mode/v1 is Alibaba's OpenAI-compatible path (confirm for your account).
+  #    base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+  #    api_key_env: "DASHSCOPE_API_KEY"
+  #    enabled: true
+  #    priority: 54
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: ai21                   # $10, 3 months
+  #    name: "AI21 Labs"
+  #    base_url: "https://api.ai21.com/studio/v1"
+  #    api_key_env: "AI21_API_KEY"
+  #    enabled: true
+  #    priority: 55
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: upstage                # $10 announced, 3 months (not on the pricing page; verify)
+  #    name: "Upstage"
+  #    base_url: "https://api.upstage.ai/v1/solar"
+  #    api_key_env: "UPSTAGE_API_KEY"
+  #    enabled: true
+  #    priority: 56
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: nscale                 # no sign-up credit; $5 minimum card top-up
+  #    name: "Nscale"
+  #    base_url: "https://inference.api.nscale.com/v1"
+  #    api_key_env: "NSCALE_API_KEY"
+  #    enabled: true
+  #    priority: 57
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: friendli              # trial credits at onboarding (amount not published)
+  #    name: "Friendli AI"
+  #    base_url: "https://inference.friendli.ai/v1"
+  #    api_key_env: "FRIENDLI_TOKEN"
+  #    enabled: true
+  #    priority: 58
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: grokified             # $5 one-time, no card
+  #    name: "Grokified"
+  #    base_url: "https://api.grokified.com/v1"
+  #    api_key_env: "GROKIFIED_API_KEY"
+  #    enabled: true
+  #    priority: 59
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: inception            # free terms not stated on free-llm.com
+  #    name: "Inception Labs"
+  #    base_url: "https://api.inceptionlabs.ai/v1"
+  #    api_key_env: "INCEPTION_API_KEY"
+  #    enabled: true
+  #    priority: 60
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  #  - id: dahl-inference       # free terms not stated on free-llm.com
+  #    name: "Dahl Inference"
+  #    base_url: "https://inference.dahl.global/v1"
+  #    api_key_env: "DAHL_API_KEY"
+  #    enabled: true
+  #    priority: 61
+  #    timeout: "30s"
+  #    tier_type: "credit"
+  #
+  # Not OpenAI-compatible (the router only speaks /chat/completions, so these need an
+  # adapter first; listed for reference): Replicate (https://api.replicate.com/v1),
+  # Coze (https://api.coze.com/v1), Cerebrium (https://api.cortex.cerebrium.ai/v4).
