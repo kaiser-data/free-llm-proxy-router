@@ -10,18 +10,19 @@
 [![CI](https://github.com/kaiser-data/free-llm-proxy-router/actions/workflows/ci.yml/badge.svg)](https://github.com/kaiser-data/free-llm-proxy-router/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kaiser-data/free-llm-proxy-router?color=2f7a4b)](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](go.mod)
-[![tests](https://img.shields.io/badge/tests-78%20passing-2f7a4b)](.github/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-97%20passing-2f7a4b)](.github/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[**Free model list**](FREE_MODELS.md) · [Install](#install) · [Strategies](#pick-a-strategy) · [How it works](#how-it-works) · [Limits](#honest-limits)
+[**Free model list**](FREE_MODELS.md) · [Install](#install) · [PicoClaw & small boards](#run-it-beside-picoclaw-on-a-10-board) · [Strategies](#pick-a-strategy) · [How it works](#how-it-works) · [Limits](#honest-limits)
 
 </div>
 
-> **Try it in one minute.** You need Go 1.23+ and one free key from [Groq](https://console.groq.com/keys) (no credit card).
+> **Try it in one minute.** You need one free key from [Groq](https://console.groq.com/keys) (no credit card). No Go toolchain, no config file. On Linux or macOS:
 >
 > ```bash
-> git clone https://github.com/kaiser-data/free-llm-proxy-router && cd free-llm-proxy-router
-> make build && GROQ_API_KEY=gsk_... ./bin/free-llm-proxy
+> VERSION=0.1.4
+> curl -fsSL https://github.com/kaiser-data/free-llm-proxy-router/releases/download/v$VERSION/free-llm-proxy-router_${VERSION}_$(uname -s | tr A-Z a-z)_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/armv6l/armv6/;s/armv7l/armv7/').tar.gz | tar xz
+> GROQ_API_KEY=gsk_... ./free-llm-proxy
 > ```
 >
 > In a second terminal:
@@ -31,7 +32,7 @@
 >   -d '{"model":"auto","messages":[{"role":"user","content":"In one sentence: why do free LLM tiers run dry?"}]}'
 > ```
 >
-> The `X-Used-Model` header tells you which free model answered. No config file is needed: the binary uses the bundled provider list and its catalog of free models.
+> The `X-Used-Model` header tells you which free model answered. The archive brings its own provider list and a catalog of 253 free models. Windows: the `.zip` on the [releases page](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest), or Docker (see [Install](#install)).
 
 <p align="center">
   <img src="docs/img/fallback.svg" width="860" alt="A real request on 31 October 2026. A tool sends model auto to the proxy on localhost. The proxy first tries Groq kimi-k2, which returns 404 model not found, and puts that model on a one-hour cooldown. It then tries Groq gpt-oss-20b, which answers. The other providers were not needed. The client saw one clean 200 after 0.45 seconds.">
@@ -77,9 +78,9 @@ LiteLLM and [OmniRoute](https://github.com/diegosouzapw/OmniRoute) are great whe
 | Install | one static binary, about 11 MB | Node or Python runtime, Docker, often a database |
 | Scope | **free tiers only**: official, recharging, no card | paid, free and subscription logins |
 | Terms of service | official API keys only, no OAuth or session reuse | some route through consumer subscriptions |
-| Code you have to trust | about 7.4k lines of Go, readable in an afternoon | very large codebases |
+| Code you have to trust | about 7.6k lines of Go, readable in an afternoon | very large codebases |
 | Free-model catalog | discovered from the providers' model APIs, [refreshed weekly](FREE_MODELS.md) | curated lists |
-| Runs on | laptop, Raspberry Pi, NAS, $4 VPS, CI runner | servers |
+| Runs on | laptop, Raspberry Pi (Zero included), RISC-V boards, NAS, $4 VPS, CI runner | servers |
 
 ## Use it with your tools
 
@@ -92,6 +93,42 @@ export OPENAI_API_KEY=unused                      # or your proxy.auth_token
 ```
 
 In GUI tools (Continue, Cline, Open WebUI, LibreChat…), add an "OpenAI-compatible" provider with base URL `http://localhost:8080/v1`. `GET /v1/models` lists `auto`, every strategy, your agent profiles and all free models, so they show up in model pickers.
+
+## Run it beside PicoClaw on a $10 board
+
+[PicoClaw](https://github.com/sipeed/picoclaw) runs an AI agent on a Pi Zero or a Sipeed RISC-V board. It still needs a model API, and a single free tier runs dry fast. Run this proxy **on the same board** and PicoClaw gets every free tier you have, with fallback, through one local endpoint.
+
+Add it to PicoClaw's `config.json` as a custom OpenAI-compatible provider ([PicoClaw's provider docs](https://github.com/sipeed/picoclaw/blob/main/docs/guides/providers.md)):
+
+```json
+{
+  "model_list": [
+    {
+      "model_name": "free",
+      "provider": "openai",
+      "model": "auto",
+      "api_base": "http://localhost:8080/v1",
+      "api_keys": ["unused"]
+    }
+  ],
+  "agents": { "defaults": { "model_name": "free" } }
+}
+```
+
+Use `"model": "coding"`, `"speed"` or any other [strategy](#pick-a-strategy) in place of `auto`.
+
+| | Measured (Nov 2026) |
+|---|---|
+| Binary | 9–12 MB, static, no runtime (`CGO_ENABLED=0`) |
+| Memory | 16 MB resident when idle (macOS arm64, catalog of 253 models loaded) |
+| Builds for | `linux/arm` v6 (Pi Zero, Pi 1), v7 (32-bit Pi OS, LicheePi), `linux/riscv64` (LicheeRV Nano), `linux/arm64`, `amd64`; also `mipsle` and `loong64` from source |
+
+Prebuilt armv6, armv7 and riscv64 archives and packages arrive with the next release. Until then, cross-compile from any machine with Go and copy the result over:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=6 go build -ldflags="-s -w" -o free-llm-proxy ./cmd/free-llm-proxy
+scp -r free-llm-proxy configs/ pi@raspberrypi.local:~/free-llm-proxy-router/   # keep configs/ next to the binary
+```
 
 ## Pick a strategy
 
@@ -149,7 +186,6 @@ Several keys per provider are pooled automatically: add `GROQ_API_KEY_2`, `GROQ_
 
 | | Command |
 |---|---|
-| **Homebrew** (macOS, Linux) | `brew install kaiser-data/tap/free-llm-proxy-router` |
 | **Docker** (amd64, arm64) | `docker run --rm -p 127.0.0.1:8080:8080 -e GROQ_API_KEY=gsk_... ghcr.io/kaiser-data/free-llm-proxy-router:latest` |
 | **Debian, Fedora, Alpine** | `.deb`, `.rpm` and `.apk` on the [releases page](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest) |
 | **Archive** (Linux, macOS, Windows) | `.tar.gz` / `.zip` on the [releases page](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest); keep `configs/` next to the binaries |
@@ -168,7 +204,7 @@ Every package ships three binaries plus `configs/` (the provider definitions and
 <summary><b>Package install, step by step</b></summary>
 
 ```bash
-VERSION=0.1.3
+VERSION=0.1.4
 # Debian/Ubuntu
 curl -LO https://github.com/kaiser-data/free-llm-proxy-router/releases/download/v$VERSION/free-llm-proxy-router_${VERSION}_amd64.deb
 sudo dpkg -i free-llm-proxy-router_${VERSION}_amd64.deb      # or: sudo rpm -i …rpm / sudo apk add --allow-untrusted …apk
@@ -272,7 +308,7 @@ configs/            bundled config and the free-model catalog
 ## Development
 
 ```bash
-go test -race ./...    # 94 tests
+go test -race ./...    # 97 tests
 go vet ./...
 make build
 ```
