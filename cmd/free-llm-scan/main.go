@@ -82,6 +82,10 @@ func updateCmd() *cobra.Command {
 				}
 			}
 
+			if err := checkScanTargets(providers); err != nil {
+				return err
+			}
+
 			dispatcher := scan.NewDispatcher()
 			cat, err := dispatcher.ScanAll(ctx, providers)
 			if err != nil {
@@ -120,6 +124,25 @@ func updateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&allProviders, "all-providers", false,
 		"also scan providers disabled in the config (some catalogs need no API key)")
 	return cmd
+}
+
+// checkScanTargets refuses a scan that cannot find anything, instead of
+// writing an empty catalog and reporting success (issue #1). No providers at
+// all means no config was found; providers that are all disabled can still be
+// scanned with --all-providers.
+func checkScanTargets(providers []config.ProviderConfig) error {
+	if len(providers) == 0 {
+		return fmt.Errorf("no providers configured: no config.yaml was found in ., " +
+			"~/.free-llm-proxy-router or configs/, and no bundled config.example.yaml next to the binary. " +
+			"Run `bash scripts/setup.sh`, or pass `-c path/to/config.yaml`")
+	}
+	for _, p := range providers {
+		if p.Enabled {
+			return nil
+		}
+	}
+	return fmt.Errorf("all %d providers are disabled in the config: enable some, "+
+		"or run `free-llm-scan update --all-providers` (discovery is read-only)", len(providers))
 }
 
 // probeCmd probes models that need reverification.
