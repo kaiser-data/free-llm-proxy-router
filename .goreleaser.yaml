@@ -106,7 +106,8 @@ brews:
     repository:
       owner: kaiser-data
       name: homebrew-tap
-      token: '{{ index .Env "HOMEBREW_TAP_TOKEN" }}'
+      # goreleaser accepts only a bare {{ .Env.NAME }} here (no functions).
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_TOKEN") "" }}true{{ end }}'
     directory: Formula
     homepage: https://github.com/kaiser-data/free-llm-proxy-router
