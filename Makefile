@@ -2,7 +2,7 @@
 
 GOBIN ?= $(shell go env GOPATH)/bin
 GOCMD = $(shell which go || echo /home/marty/go-sdk/go/bin/go)
-LDFLAGS = -ldflags="-s -w"
+LDFLAGS = -trimpath -ldflags="-s -w"
 BINDIR = bin
 
 all: build

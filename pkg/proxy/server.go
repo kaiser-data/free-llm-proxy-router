@@ -35,6 +35,18 @@ type Server struct {
 	httpServer      *http.Server
 }
 
+// upstreamClient is shared by every upstream call so connections are reused.
+// http.DefaultTransport keeps only 2 idle connections per host, so concurrent
+// requests to one provider kept re-doing the TLS handshake — slow on the small
+// ARM boards this proxy targets.
+var upstreamClient = newUpstreamClient()
+
+func newUpstreamClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = 16
+	return &http.Client{Timeout: 120 * time.Second, Transport: t}
+}
+
 // NewServer creates a new proxy Server.
 func NewServer(
 	cfg *config.Config,
@@ -53,7 +65,7 @@ func NewServer(
 	s.cfg.Store(cfg)
 	s.catalog.Store(cat)
 	s.cache = NewResponseCache(cfg.Proxy.CacheTTL)
-	s.streamProxy = &StreamProxy{HTTPClient: &http.Client{Timeout: 120 * time.Second}}
+	s.streamProxy = &StreamProxy{HTTPClient: upstreamClient}
 	return s
 }
 
@@ -268,7 +280,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		RateLimiter:        s.rateLimiter,
 		GeminiTracker:      s.geminiTracker,
 		ReliabilityTracker: s.reliabilityTracker,
-		HTTPClient:         &http.Client{Timeout: 120 * time.Second},
+		HTTPClient:         upstreamClient,
 	}
 
 	found := false
@@ -363,7 +375,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		RateLimiter:        s.rateLimiter,
 		GeminiTracker:      s.geminiTracker,
 		ReliabilityTracker: s.reliabilityTracker,
-		HTTPClient:         &http.Client{Timeout: 120 * time.Second},
+		HTTPClient:         upstreamClient,
 	}
 
 	// Always use the fallback chain regardless of stream flag.
