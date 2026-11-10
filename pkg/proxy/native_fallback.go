@@ -41,11 +41,39 @@ func OpenRouterFreeRouterRequest(req map[string]any) map[string]any {
 	return body
 }
 
-// copyMap shallow-copies a map[string]any.
+// copyMap shallow-copies a map[string]any. Nested maps and slices (notably
+// "messages") are shared with the source — pair with deepCopySlice when a
+// caller needs to own the nested values.
 func copyMap(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {
 		out[k] = v
+	}
+	return out
+}
+
+// deepCopyValue returns a recursively-copied value for the JSON-shaped data
+// a request body holds (maps, slices, and immutable scalars).
+func deepCopyValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = deepCopyValue(val)
+		}
+		return out
+	case []any:
+		return deepCopySlice(t)
+	default:
+		return t
+	}
+}
+
+// deepCopySlice returns a recursively-copied []any.
+func deepCopySlice(s []any) []any {
+	out := make([]any, len(s))
+	for i, v := range s {
+		out[i] = deepCopyValue(v)
 	}
 	return out
 }
