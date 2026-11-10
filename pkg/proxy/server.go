@@ -32,6 +32,9 @@ type Server struct {
 	reliabilityTracker *reliability.Tracker
 	cache           *ResponseCache
 	httpServer      *http.Server
+	// signatures caches Gemini tool-call thought signatures across requests;
+	// see gemini_signatures.go.
+	signatures      *thoughtSignatureCache
 }
 
 // upstreamClient is shared by every upstream call so connections are reused.
@@ -63,6 +66,7 @@ func NewServer(
 		rateLimiter:        rateLimiter,
 		geminiTracker:      geminiTracker,
 		reliabilityTracker: reliabilityTracker,
+		signatures:         newThoughtSignatureCache(),
 	}
 	s.cfg.Store(cfg)
 	s.catalog.Store(cat)
@@ -326,6 +330,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         upstreamClient,
 		Stream:             req.Stream,
+		Signatures:         s.signatures,
 	}
 
 	found := false
@@ -426,6 +431,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         upstreamClient,
 		Stream:             req.Stream,
+		Signatures:         s.signatures,
 	}
 
 	// Streaming requests go upstream as SSE; the chain still falls back on
