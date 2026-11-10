@@ -158,6 +158,15 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshalling config: %w", err)
 	}
 
+	// PROXY_AUTH_TOKEN overrides proxy.auth_token, so the token can live in
+	// the environment or .env instead of a committable config file (docker
+	// compose env_file already injects .env into the container as real env
+	// vars). Viper's AutomaticEnv cannot reach nested mapstructure keys, so
+	// the override is explicit.
+	if v := lookupEnv("PROXY_AUTH_TOKEN"); v != "" {
+		cfg.Proxy.AuthToken = v
+	}
+
 	mu.Lock()
 	current = &cfg
 	mu.Unlock()
