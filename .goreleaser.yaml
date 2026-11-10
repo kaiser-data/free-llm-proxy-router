@@ -106,8 +106,8 @@ brews:
     repository:
       owner: kaiser-data
       name: homebrew-tap
-      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
-    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_TOKEN" "") "" }}true{{ end }}'
+      token: '{{ index .Env "HOMEBREW_TAP_TOKEN" }}'
+    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_TOKEN") "" }}true{{ end }}'
     directory: Formula
     homepage: https://github.com/kaiser-data/free-llm-proxy-router
     description: One OpenAI-compatible endpoint over every free LLM API tier
