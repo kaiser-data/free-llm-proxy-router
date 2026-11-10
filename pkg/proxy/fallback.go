@@ -49,6 +49,9 @@ type FallbackChain struct {
 	// back. Gemini is always buffered (its thoughts are stripped from the
 	// full body).
 	Stream bool
+	// Signatures caches Gemini thought signatures across requests; see
+	// gemini_signatures.go. Shared from the Server, never per-request.
+	Signatures *thoughtSignatureCache
 }
 
 // Request is the parsed incoming chat-completions request.
@@ -661,6 +664,11 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 
 	if cfg.ID == "gemini" && resp.StatusCode == http.StatusOK {
 		respBody = StripGeminiThoughts(respBody)
+		// Remember tool-call thought signatures so later turns of the same
+		// session can replay them even if the client strips extra_content.
+		if n := captureGeminiThoughtSignatures(respBody, fc.Signatures); n > 0 {
+			log.Printf("gemini: captured %d thought signature(s) from response", n)
+		}
 	}
 
 	out := &Response{
@@ -747,6 +755,16 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 	// Groq rejects service_tier "auto" for free-tier orgs with a 400.
 	if pc := fc.findProvider(providerID); pc != nil && pc.NativeFeatures.ServiceTier != "" {
 		body["service_tier"] = pc.NativeFeatures.ServiceTier
+	}
+
+	// Gemini 3.x rejects replayed tool-call history that lacks thought
+	// signatures (opencode and other OpenAI clients strip them). Re-inject
+	// what earlier Gemini responses carried; see gemini_signatures.go.
+	if providerID == "gemini" {
+		fromCache, sentinel := injectGeminiThoughtSignatures(body, fc.Signatures)
+		if fromCache+sentinel > 0 {
+			log.Printf("gemini thought signatures: %d from cache, %d sentinel", fromCache, sentinel)
+		}
 	}
 	return body
 }

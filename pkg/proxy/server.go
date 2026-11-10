@@ -24,14 +24,17 @@ import (
 
 // Server is the OpenAI-compatible proxy server.
 type Server struct {
-	conf            atomic.Pointer[configState]
-	catalog         atomic.Pointer[catalogSnapshot]
-	strategyReg     *strategy.Registry
-	rateLimiter     *ratelimit.GlobalTracker
-	geminiTracker   *ratelimit.GeminiTracker
+	conf               atomic.Pointer[configState]
+	catalog            atomic.Pointer[catalogSnapshot]
+	strategyReg        *strategy.Registry
+	rateLimiter        *ratelimit.GlobalTracker
+	geminiTracker      *ratelimit.GeminiTracker
 	reliabilityTracker *reliability.Tracker
-	cache           *ResponseCache
-	httpServer      *http.Server
+	cache              *ResponseCache
+	httpServer         *http.Server
+	// signatures caches Gemini tool-call thought signatures across requests;
+	// see gemini_signatures.go.
+	signatures *thoughtSignatureCache
 }
 
 // configState pairs a config with the filters built from it. They are stored
@@ -100,6 +103,7 @@ func NewServer(
 		rateLimiter:        rateLimiter,
 		geminiTracker:      geminiTracker,
 		reliabilityTracker: reliabilityTracker,
+		signatures:         newThoughtSignatureCache(),
 	}
 	if err := s.UpdateConfig(cfg); err != nil {
 		return nil, err
@@ -381,6 +385,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, conf *
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         upstreamClient,
 		Stream:             req.Stream,
+		Signatures:         s.signatures,
 	}
 
 	found := false
@@ -484,6 +489,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, co
 		HTTPClient:         upstreamClient,
 		Filters:            conf.filters,
 		Stream:             req.Stream,
+		Signatures:         s.signatures,
 	}
 
 	// Streaming requests go upstream as SSE; the chain still falls back on
@@ -629,4 +635,3 @@ func findProviderCfg(cfg *config.Config, providerID string) *config.ProviderConf
 	}
 	return nil
 }
-
