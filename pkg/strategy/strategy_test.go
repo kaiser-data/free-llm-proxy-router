@@ -312,6 +312,53 @@ func TestRegistry13Strategies(t *testing.T) {
 	}
 }
 
+// TestStrategyLongContextQualityTieBreak verifies the quality tie-break
+// within one context tier: full variants before "lite" siblings, code-capable
+// models before generic ones, mid-sized before tiny — while context tiers
+// themselves still dominate quality.
+func TestStrategyLongContextQualityTieBreak(t *testing.T) {
+	// Capability patterns are loaded from YAML at startup; load the bundled
+	// set so the code-capability tie-break is active in this test too.
+	if err := models.LoadCapabilities("../../configs/capabilities.yaml"); err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+	entries := []catalog.CatalogEntry{
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash-lite", IsFree: true, ContextWindow: 1048576},
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash", IsFree: true, ContextWindow: 1048576},
+		{ProviderID: "openrouter", ModelID: "cohere/north-mini-code:free", IsFree: true, ContextWindow: 256000},
+		{ProviderID: "openrouter", ModelID: "recursive/flint-v1.0:free", IsFree: true, ContextWindow: 262144},
+		{ProviderID: "groq", ModelID: "qwen/qwen3.8-27b", IsFree: true, ContextWindow: 131072},
+		{ProviderID: "openrouter", ModelID: "liquid/lfm-2.5-2.6b:free", IsFree: true, ContextWindow: 65536},
+	}
+	ranked := (&StrategyLongContext{}).Rank(testReq(), entries, nil)
+	idx := map[string]int{}
+	for i, r := range ranked {
+		idx[r.ModelID] = i
+	}
+
+	if idx["gemini-3.5-flash"] > idx["gemini-3.5-flash-lite"] {
+		t.Errorf("long_context: full flash (idx %d) should rank before flash-lite (idx %d)",
+			idx["gemini-3.5-flash"], idx["gemini-3.5-flash-lite"])
+	}
+	if idx["recursive/flint-v1.0:free"] > idx["cohere/north-mini-code:free"] {
+		t.Errorf("long_context: code-capable flint (idx %d) should rank before north-mini-code (idx %d)",
+			idx["recursive/flint-v1.0:free"], idx["cohere/north-mini-code:free"])
+	}
+	if idx["qwen/qwen3.8-27b"] > idx["liquid/lfm-2.5-2.6b:free"] {
+		t.Errorf("long_context: 27B qwen (idx %d) should rank before 2.6B lfm (idx %d)",
+			idx["qwen/qwen3.8-27b"], idx["liquid/lfm-2.5-2.6b:free"])
+	}
+	// Context tiers still dominate: a 1M-context lite model outranks a
+	// 256k full model, and the tiny 65k model stays last.
+	if idx["gemini-3.5-flash-lite"] > idx["recursive/flint-v1.0:free"] {
+		t.Errorf("long_context: 1M-context flash-lite (idx %d) should rank before 262k flint (idx %d)",
+			idx["gemini-3.5-flash-lite"], idx["recursive/flint-v1.0:free"])
+	}
+	if last := ranked[len(ranked)-1].ModelID; last != "liquid/lfm-2.5-2.6b:free" {
+		t.Errorf("long_context: tiny 65k-context lfm should rank last, got %s", last)
+	}
+}
+
 // helpers
 var _ = models.TierSmall // ensure package is linked
 
