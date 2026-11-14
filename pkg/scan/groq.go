@@ -38,6 +38,7 @@ type groqModelsResponse struct {
 		OwnedBy string `json:"owned_by"`
 		// context_window may be present in some responses
 		ContextWindow int `json:"context_window"`
+		// Groq may provide capability info in metadata
 	} `json:"data"`
 }
 
