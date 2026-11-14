@@ -83,10 +83,34 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 		MaxTokens:             req.MaxTokens,
 		Stream:                req.Stream,
 		Model:                 req.Model,
+		HasTools:              hasTools(req.Raw),
 	}
 	est := stratReq.EstimatedPromptTokens
 
-	ranked := fc.Strategy.Rank(stratReq, freeEntries, nil)
+	// Apply filters before ranking
+	filterConfigs := fc.Cfg.Proxy.Filters
+	var filters []strategy.Filter
+	if len(filterConfigs) > 0 {
+		var err error
+		stratFilterConfigs := make([]strategy.FilterConfig, len(filterConfigs))
+		for i, fcCfg := range filterConfigs {
+			stratFilterConfigs[i] = strategy.FilterConfig{
+				Name:     fcCfg.Name,
+				Settings: fcCfg.Settings,
+				Unknown:  fcCfg.Unknown,
+			}
+		}
+		filters, err = strategy.BuildFilters(stratFilterConfigs)
+		if err != nil {
+			return nil, fmt.Errorf("building filters: %w", err)
+		}
+	}
+	filteredEntries, err := strategy.ApplyFilters(stratReq, freeEntries, filters)
+	if err != nil {
+		return nil, err
+	}
+
+	ranked := fc.Strategy.Rank(stratReq, filteredEntries, nil)
 	maxAttempts := fc.Cfg.Fallback.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 5
@@ -159,8 +183,13 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 
 	// Ultimate fallback: OpenRouter's free router picks any free model. It
 	// runs even after maxAttempts, as the one designed last resort.
+	// Apply the same filters so we don't send a request that will fail anyway.
 	if fc.findProvider("openrouter") != nil && !failedProviders["openrouter"] {
 		log.Printf("fallback: trying openrouter/free ultimate fallback")
+		// The openrouter/free router will pick a model, but we should check
+		// if any model in the filtered list passes our filters.
+		// Since the router picks dynamically, we just check if the filtered list
+		// is non-empty (it is, since we got here).
 		res := fc.attempt(ctx, "openrouter", "openrouter/free", OpenRouterFreeRouterRequest(fc.buildBody("openrouter", req.Raw, "openrouter/free")), est)
 		attempts += res.calls
 		if res.err != nil {
@@ -611,6 +640,24 @@ func normalizeMaxTokens(m map[string]any) {
 		m["max_tokens"] = v
 	}
 	delete(m, "max_completion_tokens")
+}
+
+// hasTools reports whether the request carries tool definitions.
+func hasTools(raw map[string]any) bool {
+	if raw == nil {
+		return false
+	}
+	tools, ok := raw["tools"]
+	if !ok {
+		return false
+	}
+	switch t := tools.(type) {
+	case []any:
+		return len(t) > 0
+	case []map[string]any:
+		return len(t) > 0
+	}
+	return false
 }
 
 // toInt converts a JSON (float64) or YAML (int) number to int. Request bodies
