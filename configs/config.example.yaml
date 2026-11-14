@@ -42,6 +42,19 @@ proxy:
   similar:
     model_family: "llama-3.1-70b"
 
+  # Filters narrow the candidate list BEFORE strategies rank it.
+  # Filters run in the order listed.
+  #
+  # context-fit:    Drops models that can't fit (prompt + max_tokens) * margin in their context window.
+  #                 margin: safety factor (default 1.2). No metadata required.
+  #
+  # tool-calling:   Drops models that don't support tool/function calling when the request has tools.
+  #                 unknown: keep|drop (default keep) — what to do when capability metadata is missing.
+  #                 Most catalog entries don't have tool-calling metadata yet, so keep is the safe default.
+  filters:
+    - context-fit: { margin: 1.2 }
+    - tool-calling: { unknown: keep }
+
   # Agent profiles: let named AI agents use different routing strategies.
   # An agent sends model: "<profile-name>" to select a profile.
   #
