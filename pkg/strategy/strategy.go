@@ -18,6 +18,8 @@ type Request struct {
 	Stream bool
 	// Model is the requested model (or "auto").
 	Model string
+	// HasTools indicates whether the request carries tool definitions.
+	HasTools bool
 }
 
 // RankedEntry pairs a catalog entry with a priority score (lower = higher priority).
