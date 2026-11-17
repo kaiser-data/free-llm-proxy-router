@@ -93,7 +93,9 @@ func (s *Server) Start(ctx context.Context) error {
 	})
 
 	var handler http.Handler = mux
-	handler = loggingMiddleware(handler)
+	if logRequests(cfg.Proxy.LogLevel) {
+		handler = loggingMiddleware(handler)
+	}
 	handler = recoveryMiddleware(handler)
 	handler = authMiddleware(cfg.Proxy.AuthToken, handler)
 
@@ -101,7 +103,7 @@ func (s *Server) Start(ctx context.Context) error {
 		Addr:         net.JoinHostPort(cfg.Proxy.Host, strconv.Itoa(cfg.Proxy.Port)),
 		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second,
+		WriteTimeout: writeTimeout(cfg.Fallback.RequestTimeout),
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -110,17 +112,48 @@ func (s *Server) Start(ctx context.Context) error {
 		log.Printf("warning: listening on %q without proxy.auth_token — anyone who can reach this port can spend your provider quotas", cfg.Proxy.Host)
 	}
 
+	// ListenAndServe returns as soon as Shutdown starts; wait for Shutdown to
+	// drain in-flight requests (a streaming agent call, say) before returning,
+	// or main exits and cuts them off.
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 		defer cancel()
-		s.httpServer.Shutdown(shutCtx)
+		if err := s.httpServer.Shutdown(shutCtx); err != nil {
+			log.Printf("proxy: shutdown: %v", err)
+		}
 	}()
 
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
+	<-drained
 	return nil
+}
+
+// shutdownGrace is how long in-flight requests get to finish on SIGTERM.
+const shutdownGrace = 30 * time.Second
+
+// writeTimeout bounds writing one response. It must outlast the request
+// deadline (a streamed answer is written until the end), so it follows
+// fallback.request_timeout; with no request deadline there is none.
+func writeTimeout(requestTimeout time.Duration) time.Duration {
+	if requestTimeout <= 0 {
+		return 0
+	}
+	return requestTimeout + 15*time.Second
+}
+
+// logRequests reports whether proxy.log_level asks for one line per request.
+// "warn" and "error" drop them, which spares an SD card on small boards.
+func logRequests(level string) bool {
+	switch strings.ToLower(level) {
+	case "warn", "warning", "error":
+		return false
+	}
+	return true
 }
 
 // isLoopbackHost reports whether a listen host only accepts local connections.

@@ -60,13 +60,14 @@ This proxy does that once, locally, for every tool you use.
    | Upstream says | The proxy does |
    |---|---|
    | `429` rate limited | cools down that model on that key until the provider's reset time, and retries it at once with your next key if you have several |
-   | `400` bad request | skips that provider for this request and cools down that model for an hour (`413`/`422`: skip only) |
+   | `400` bad request | skips that provider for this request; cools down the model for an hour only when the error names the model (decommissioned, "only supports …"), never for a request-shaped error such as context length (`413`/`422`: skip only) |
    | `404` model not found | cools down that model for an hour |
-   | `401`/`403` bad key | cools down the provider for ten minutes |
+   | `401`/`403` bad key | cools down that key for ten minutes and tries your next key; the provider sits out only when no key works |
+   | `5xx` server error | rests that model for 30 seconds and lowers the provider's reliability score |
    | timeout or connection error | moves on and lowers that provider's reliability score |
    | `200` with no content | tries another model; an empty reply cut off by `max_tokens` is kept only as a last resort |
 4. **The first good answer** goes back to your tool. With `stream: true` the provider's own SSE stream is passed through token by token: the chain still falls back on anything that fails before the first content chunk (an error status, an error event, an empty stream, a dropped connection), then commits to that provider.
-5. **If every free model fails**, or `fallback.request_timeout` (90 s) passes, you get `503` with a `Retry-After` header, never a fake answer.
+5. **If every free model fails**, or `fallback.request_timeout` (90 s) passes, you get `503` with a `Retry-After` header, never a fake answer. If every provider that was called rejected the request itself (`400`/`413`/`422`), you get that error instead, since retrying would not help.
 
 ## Why not a full AI gateway?
 
@@ -308,7 +309,7 @@ configs/            bundled config and the free-model catalog
 ## Development
 
 ```bash
-go test -race ./...    # 103 tests
+go test -race ./...    # 110 tests
 go vet ./...
 make build
 ```

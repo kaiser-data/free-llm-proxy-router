@@ -134,6 +134,20 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 	failedProviders := make(map[string]bool)
 	providerTries := make(map[string]int)
 	var lastTruncated *Response // empty finish_reason=length reply, used only if nothing better answers
+	// If every upstream call rejected the request itself (400/413/422), the
+	// client gets that rejection, not a retryable 503: retrying cannot help.
+	var lastRejection *Response
+	otherFailures := false
+	noteFailure := func(res attemptResult) {
+		if res.calls == 0 {
+			return // skipped without a call (cooldown, local quota)
+		}
+		if res.resp != nil && isRequestRejection(res.resp.StatusCode) {
+			lastRejection = res.resp
+		} else {
+			otherFailures = true
+		}
+	}
 	for _, r := range ranked {
 		if attempts >= maxAttempts {
 			break
@@ -163,6 +177,9 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 		attempts += res.calls
 		if res.err != nil {
 			return nil, res.err // request deadline or client gone
+		}
+		if res.outcome != outSuccess {
+			noteFailure(res)
 		}
 		switch res.outcome {
 		case outSuccess:
@@ -196,11 +213,15 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 		if res.outcome == outSuccess {
 			return res.resp, nil
 		}
+		noteFailure(res)
 	}
 
 	if lastTruncated != nil {
 		lastTruncated.Truncated = true
 		return lastTruncated, nil
+	}
+	if lastRejection != nil && !otherFailures {
+		return lastRejection, nil
 	}
 	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempts)
 }
@@ -275,7 +296,8 @@ func (fc *FallbackChain) attempt(ctx context.Context, providerID, modelID string
 	triedSlot := false
 	for i := 0; i < numSlots; i++ {
 		slot := i // fill keys in order; a slot on cooldown is skipped without a call
-		if fc.RateLimiter.IsOnCooldown(cooldownKey(providerID, modelID, slot, len(keys))) {
+		if fc.RateLimiter.IsOnCooldown(cooldownKey(providerID, modelID, slot, len(keys))) ||
+			fc.RateLimiter.IsOnCooldown(authCooldownKey(providerID, slot, len(keys))) {
 			continue
 		}
 		triedSlot = true
@@ -288,6 +310,14 @@ func (fc *FallbackChain) attempt(ctx context.Context, providerID, modelID string
 		res := fc.callOnce(ctx, callCfg, providerID, modelID, body, estTokens)
 		calls += res.calls
 		res.calls = calls
+		if res.resp != nil && (res.resp.StatusCode == http.StatusUnauthorized || res.resp.StatusCode == http.StatusForbidden) {
+			// A rejected key says nothing about the provider's other keys:
+			// cool down this key for every model and try the next one.
+			fc.RateLimiter.SetCooldown(authCooldownKey(providerID, slot, len(keys)), time.Now().Add(authCooldown))
+			log.Printf("fallback: %s auth error %d on key slot %d — key cooldown %s", providerID, res.resp.StatusCode, slot+1, authCooldown)
+			last = res
+			continue
+		}
 		if res.outcome != outModelFail || res.resp == nil || res.resp.StatusCode != http.StatusTooManyRequests {
 			return res
 		}
@@ -303,6 +333,16 @@ func (fc *FallbackChain) attempt(ctx context.Context, providerID, modelID string
 		return attemptResult{outcome: outSkipModel}
 	}
 	return last
+}
+
+// authCooldownKey is the cooldown key for a key slot whose key was rejected
+// (401/403). It spans all models. With a single key it is the provider itself,
+// so a provider whose only key is bad sits out entirely.
+func authCooldownKey(providerID string, slot, numKeys int) string {
+	if numKeys <= 1 {
+		return providerID
+	}
+	return fmt.Sprintf("%s#key%d", providerID, slot+1)
 }
 
 // cooldown429 puts one key slot of a model on cooldown after a 429.
@@ -403,10 +443,7 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 	case resp == nil, status == 401, status == 403:
 		// Only transport and auth failures mean the provider itself is
 		// unusable, so only they count against its reliability.
-		if status != 0 {
-			fc.RateLimiter.SetCooldown(providerID, time.Now().Add(10*time.Minute))
-			log.Printf("fallback: %s auth error %d — cooldown 10min", providerID, status)
-		} else {
+		if status == 0 {
 			log.Printf("fallback: %s/%s transport error — skipping provider%s", providerID, modelID, upstreamErrSnippet(resp, err))
 		}
 		fc.ReliabilityTracker.Record(providerID, false)
@@ -424,7 +461,7 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 		// Interactions API"), so the model sits out for a while and later
 		// requests reach the provider's next model. 413/422 depend on the
 		// request itself, so they set no cooldown.
-		if status == http.StatusBadRequest {
+		if status == http.StatusBadRequest && isModelSpecific400(resp.Body) {
 			fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(badRequestCooldown))
 		}
 		log.Printf("fallback: %s/%s status %d — provider rejects this request, skipping provider%s", providerID, modelID, status, upstreamErrSnippet(resp, err))
@@ -432,6 +469,16 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 	case status == 404:
 		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(missingModelCooldown))
 		log.Printf("fallback: %s model %s not found — model cooldown %s", providerID, modelID, missingModelCooldown)
+	case status >= 500:
+		// An overloaded or failing model: let it rest briefly so concurrent
+		// requests stop spending attempts on it, and count it against the
+		// provider (a provider failing every model gets a short cooldown).
+		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(serverErrorCooldown))
+		fc.ReliabilityTracker.Record(providerID, false)
+		if fc.ReliabilityTracker.ShouldCooldown(providerID) {
+			fc.RateLimiter.SetCooldown(providerID, time.Now().Add(30*time.Second))
+		}
+		log.Printf("fallback: %s/%s status %d — model cooldown %s, trying next model%s", providerID, modelID, status, serverErrorCooldown, upstreamErrSnippet(resp, err))
 	case status != http.StatusTooManyRequests:
 		// Free tiers often fail one model (quota, retired, overloaded) while
 		// the provider's other models still answer.
@@ -607,9 +654,49 @@ const (
 	zeroQuotaCooldown = 24 * time.Hour
 	// missingModelCooldown applies when a provider returns 404 for a model.
 	missingModelCooldown = time.Hour
-	// badRequestCooldown applies to a model that answered 400.
+	// badRequestCooldown applies to a model whose 400 names the model itself
+	// (see isModelSpecific400).
 	badRequestCooldown = time.Hour
+	// authCooldown applies to a key slot (or a single-key provider) after 401/403.
+	authCooldown = 10 * time.Minute
+	// serverErrorCooldown applies to a model after a 5xx.
+	serverErrorCooldown = 30 * time.Second
 )
+
+// isRequestRejection reports whether a status means the provider rejected
+// this request's shape or size, as opposed to being unavailable.
+func isRequestRejection(status int) bool {
+	return status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge || status == http.StatusUnprocessableEntity
+}
+
+// modelSpecific400 are phrases in a 400 body that blame the model, not the
+// request. Most 400s blame the request (context too long, a bad tool schema,
+// an unsupported parameter); cooling the model down for those would let one
+// bad request take a model away from every other client for an hour.
+var modelSpecific400 = []string{
+	"only supports",
+	"not supported for this model",
+	"is not supported by this model",
+	"decommissioned",
+	"has been deprecated",
+	"no longer supported",
+	"no longer available",
+	"model_not_found",
+	"model not found",
+	"invalid model",
+	"unknown model",
+	"is not a valid model",
+}
+
+func isModelSpecific400(body []byte) bool {
+	b := strings.ToLower(string(body))
+	for _, p := range modelSpecific400 {
+		if strings.Contains(b, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // isZeroQuota reports whether a 429 body says the quota for this model is zero
 // (Gemini returns "limit: 0" for models outside the free tier).
