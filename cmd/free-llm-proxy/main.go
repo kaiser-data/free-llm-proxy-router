@@ -216,12 +216,16 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		log.Printf("proxy: shutting down...")
+		// A second Ctrl+C or SIGTERM during the drain quits at once.
+		signal.Reset(os.Interrupt, syscall.SIGTERM)
+		log.Printf("proxy: shutting down (waiting for in-flight requests; again to force)...")
 		saveState()
 		cancel()
 	}()
 
-	return srv.Start(ctx)
+	err = srv.Start(ctx)
+	saveState() // again: requests that finished while draining were counted after the first save
+	return err
 }
 
 // rescanCatalog runs a full scan and saves it to path. A provider whose scan

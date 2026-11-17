@@ -313,8 +313,9 @@ func TestFallbackChain_400CoolsDownModelForLaterRequests(t *testing.T) {
 		{ProviderID: "gemini", ModelID: "chat-model"},
 	}
 	req := Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}}
-	if resp, err := fc.Execute(context.Background(), req); err == nil {
-		t.Fatalf("400 should skip the provider for this request, got %s", resp.UsedModel)
+	// The 400 blames the model, so the provider's next model answers at once.
+	if resp, err := fc.Execute(context.Background(), req); err != nil || resp.UsedModel != "chat-model" {
+		t.Fatalf("a model-specific 400 should move on to the next model, got resp=%v err=%v", resp, err)
 	}
 	if !rl.IsOnCooldown("gemini/interactions-only") {
 		t.Fatal("model that answered 400 was not cooled down")

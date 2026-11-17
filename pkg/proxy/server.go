@@ -43,7 +43,10 @@ var upstreamClient = newUpstreamClient()
 func newUpstreamClient() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConnsPerHost = 16
-	return &http.Client{Timeout: 120 * time.Second, Transport: t}
+	// No Client.Timeout: it would also bound reading the body and cut long
+	// streams. Each call is bounded by the provider timeout (until the first
+	// content chunk) and the request deadline instead.
+	return &http.Client{Transport: t}
 }
 
 // NewServer creates a new proxy Server.
@@ -93,15 +96,17 @@ func (s *Server) Start(ctx context.Context) error {
 	})
 
 	var handler http.Handler = mux
-	handler = loggingMiddleware(handler)
+	if logRequests(cfg.Proxy.LogLevel) {
+		handler = loggingMiddleware(handler)
+	}
 	handler = recoveryMiddleware(handler)
 	handler = authMiddleware(cfg.Proxy.AuthToken, handler)
 
 	s.httpServer = &http.Server{
 		Addr:         net.JoinHostPort(cfg.Proxy.Host, strconv.Itoa(cfg.Proxy.Port)),
 		Handler:      handler,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout(cfg.Fallback.RequestTimeout),
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -110,17 +115,58 @@ func (s *Server) Start(ctx context.Context) error {
 		log.Printf("warning: listening on %q without proxy.auth_token — anyone who can reach this port can spend your provider quotas", cfg.Proxy.Host)
 	}
 
+	// ListenAndServe returns as soon as Shutdown starts; wait for Shutdown to
+	// drain in-flight requests (a streaming agent call, say) before returning,
+	// or main exits and cuts them off.
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 		defer cancel()
-		s.httpServer.Shutdown(shutCtx)
+		if err := s.httpServer.Shutdown(shutCtx); err != nil {
+			log.Printf("proxy: shutdown: %v", err)
+		}
 	}()
 
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
+	<-drained
 	return nil
+}
+
+// shutdownGrace is how long in-flight requests get to finish on SIGTERM.
+const shutdownGrace = 30 * time.Second
+
+// writeTimeout bounds writing one response. It must outlast the request
+// deadline (a streamed answer is written until the end), so it follows
+// fallback.request_timeout; with no request deadline there is none.
+//
+// The write deadline starts when the request headers are read, the request
+// deadline only after the body (up to ReadTimeout), hence both plus a margin.
+// Without a request deadline it is still bounded, so a client that stops
+// reading cannot hold a handler and its upstream connection forever.
+func writeTimeout(requestTimeout time.Duration) time.Duration {
+	if requestTimeout <= 0 {
+		return noDeadlineWriteTimeout
+	}
+	return requestTimeout + readTimeout + 15*time.Second
+}
+
+const (
+	readTimeout            = 30 * time.Second
+	noDeadlineWriteTimeout = 15 * time.Minute
+)
+
+// logRequests reports whether proxy.log_level asks for one line per request.
+// "warn" and "error" drop them, which spares an SD card on small boards.
+func logRequests(level string) bool {
+	switch strings.ToLower(level) {
+	case "warn", "warning", "error":
+		return false
+	}
+	return true
 }
 
 // isLoopbackHost reports whether a listen host only accepts local connections.
