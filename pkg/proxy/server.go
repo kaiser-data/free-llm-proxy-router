@@ -31,7 +31,6 @@ type Server struct {
 	geminiTracker   *ratelimit.GeminiTracker
 	reliabilityTracker *reliability.Tracker
 	cache           *ResponseCache
-	streamProxy     *StreamProxy
 	httpServer      *http.Server
 }
 
@@ -65,7 +64,6 @@ func NewServer(
 	s.cfg.Store(cfg)
 	s.catalog.Store(cat)
 	s.cache = NewResponseCache(cfg.Proxy.CacheTTL)
-	s.streamProxy = &StreamProxy{HTTPClient: upstreamClient}
 	return s
 }
 
@@ -281,6 +279,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		GeminiTracker:      s.geminiTracker,
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         upstreamClient,
+		Stream:             req.Stream,
 	}
 
 	found := false
@@ -298,6 +297,10 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 		}
 		if res.outcome == outSuccess {
 			resp := res.resp
+			if resp.stream != nil {
+				writeUpstreamStream(w, resp)
+				return
+			}
 			if req.Stream {
 				writeCompletionAsSSE(w, resp.Body)
 				return
@@ -376,11 +379,11 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		GeminiTracker:      s.geminiTracker,
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         upstreamClient,
+		Stream:             req.Stream,
 	}
 
-	// Always use the fallback chain regardless of stream flag.
-	// Streaming is stripped from provider requests in buildBody so the chain
-	// always receives buffered JSON — this is required for fallback to work.
+	// Streaming requests go upstream as SSE; the chain still falls back on
+	// anything that fails before the first content chunk (see peekStream).
 	resp, err := chain.Execute(r.Context(), req)
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)
@@ -393,6 +396,10 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		return
 	}
 
+	if resp.stream != nil {
+		writeUpstreamStream(w, resp)
+		return
+	}
 	if req.Stream && resp.StatusCode == http.StatusOK {
 		if resp.UsedModel != "" {
 			w.Header().Set("X-Used-Model", resp.UsedModel)
