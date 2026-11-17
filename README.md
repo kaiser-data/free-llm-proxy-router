@@ -65,7 +65,7 @@ This proxy does that once, locally, for every tool you use.
    | `401`/`403` bad key | cools down the provider for ten minutes |
    | timeout or connection error | moves on and lowers that provider's reliability score |
    | `200` with no content | tries another model; an empty reply cut off by `max_tokens` is kept only as a last resort |
-4. **The first good answer** goes back to your tool. If you asked for `stream: true`, it arrives as standard SSE chunks.
+4. **The first good answer** goes back to your tool. With `stream: true` the provider's own SSE stream is passed through token by token: the chain still falls back on anything that fails before the first content chunk (an error status, an error event, an empty stream, a dropped connection), then commits to that provider.
 5. **If every free model fails**, or `fallback.request_timeout` (90 s) passes, you get `503` with a `Retry-After` header, never a fake answer.
 
 ## Why not a full AI gateway?
@@ -301,14 +301,14 @@ configs/            bundled config and the free-model catalog
 ## Honest limits
 
 - **Free tiers are small, and they change.** The proxy makes the most of them. It does not create capacity, and it is not a fit for production traffic with an SLA.
-- **Streaming is buffered.** Providers are called without streaming so that a failure can fall back mid-request; the answer is re-emitted as SSE once it is complete. Time to first token equals the full response time.
+- **A stream that breaks after its first token cannot fall back.** The client already has part of the answer, so the stream just ends. Gemini is still buffered (its thought blocks are stripped from the full answer) and re-emitted as SSE.
 - **The catalog can lag a provider's change by up to a week.** Models that vanish are cooled down on the first 404 and skipped.
 - **Local quota tracking is best-effort.** The proxy honours the providers' rate-limit headers, but under heavy concurrency a provider may still send the occasional 429, which simply triggers the fallback.
 
 ## Development
 
 ```bash
-go test -race ./...    # 97 tests
+go test -race ./...    # 103 tests
 go vet ./...
 make build
 ```

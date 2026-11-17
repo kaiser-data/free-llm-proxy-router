@@ -38,6 +38,11 @@ type FallbackChain struct {
 	GeminiTracker   *ratelimit.GeminiTracker
 	ReliabilityTracker *reliability.Tracker
 	HTTPClient      *http.Client
+	// Stream asks providers for SSE. A provider's stream is committed to the
+	// client at its first content chunk; everything before that still falls
+	// back. Gemini is always buffered (its thoughts are stripped from the
+	// full body).
+	Stream bool
 }
 
 // Request is the parsed incoming chat-completions request.
@@ -60,6 +65,19 @@ type Response struct {
 	// Truncated marks an empty finish_reason=length reply returned only because
 	// nothing better answered; it must not be cached.
 	Truncated bool
+
+	// stream is set when the provider answered with SSE and content is
+	// flowing; Body is then unused and the caller must write or Close it.
+	stream *upstreamStream
+	// emptyStream: the provider's stream ended without any content.
+	emptyStream bool
+}
+
+// Close releases a committed upstream stream, if any.
+func (r *Response) Close() {
+	if r != nil && r.stream != nil {
+		r.stream.Close()
+	}
 }
 
 // withRequestTimeout applies fallback.request_timeout to ctx.
@@ -74,8 +92,17 @@ func (fc *FallbackChain) withRequestTimeout(ctx context.Context) (context.Contex
 // Returns the first successful response or an error if all providers fail.
 func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, error) {
 	ctx, cancel := fc.withRequestTimeout(ctx)
-	defer cancel()
+	resp, err := fc.execute(ctx, req)
+	if resp != nil && resp.stream != nil {
+		// The request deadline keeps bounding the stream; it ends with it.
+		resp.stream.onClose(cancel)
+	} else {
+		cancel()
+	}
+	return resp, err
+}
 
+func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, error) {
 	freeEntries := fc.Catalog.FreeEntries()
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
@@ -339,6 +366,7 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 	}
 	if ctx.Err() != nil {
 		// Deadline or client went away; not the provider's fault.
+		resp.Close()
 		return attemptResult{calls: calls, err: ctx.Err()}
 	}
 
@@ -356,7 +384,7 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 				fc.RateLimiter.Provider("cerebras").PreemptiveSlowdown(info.WaitDuration())
 			}
 		}
-		if isEmptyCompletion(resp.Body) {
+		if resp.emptyStream || (resp.stream == nil && isEmptyCompletion(resp.Body)) {
 			// Reasoning models (gpt-oss) can spend a small max_tokens budget on
 			// hidden reasoning, and some free endpoints return 200 with nothing
 			// in it. Neither is an answer: try another model.
@@ -413,10 +441,14 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 }
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
+	var timeoutCancel context.CancelFunc
 	if d, err := time.ParseDuration(cfg.Timeout); err == nil && d > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, d)
-		defer cancel()
+		ctx, timeoutCancel = context.WithTimeout(ctx, d)
+		defer func() {
+			if timeoutCancel != nil {
+				timeoutCancel()
+			}
+		}()
 	}
 	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 
@@ -439,9 +471,27 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		req.Header.Set(k, val)
 	}
 
+	if body["stream"] == true {
+		req.Header.Set("Accept", "text/event-stream")
+	}
+
 	resp, err := fc.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusOK && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		out, err := peekStream(resp.StatusCode, resp.Header, resp.Body)
+		if err != nil || out.stream == nil {
+			resp.Body.Close()
+			return out, err
+		}
+		// Committed: the stream owns the connection and the provider timeout.
+		out.stream.onClose(func() { resp.Body.Close() })
+		if timeoutCancel != nil {
+			out.stream.onClose(timeoutCancel)
+			timeoutCancel = nil
+		}
+		return out, nil
 	}
 	defer resp.Body.Close()
 
@@ -507,7 +557,14 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 		body["messages"] = deepCopySlice(msgs)
 	}
 	body["model"] = modelID
-	delete(body, "stream") // always non-streaming to providers; fallback requires buffered JSON
+	if fc.Stream && providerID != "gemini" {
+		body["stream"] = true
+	} else {
+		// Buffered: the chain parses the JSON answer. stream_options is only
+		// valid with stream:true and strict backends reject it otherwise.
+		delete(body, "stream")
+		delete(body, "stream_options")
+	}
 
 	// Strip Anthropic-specific fields that other providers reject with 400.
 	for _, f := range anthropicOnlyFields {
