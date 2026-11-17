@@ -4,10 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -42,63 +43,113 @@ const maxStreamPrefix = 1 << 20
 // streamReadBuffer is the read buffer for an upstream SSE stream.
 const streamReadBuffer = 32 << 10
 
-// errStreamEndedEarly marks a stream that closed before any content arrived.
-var errStreamEndedEarly = errors.New("stream ended before the first content chunk")
-
-// peekStream reads an SSE body until the first chunk that carries content or a
-// tool call, so the chain can still fall back on everything that goes wrong
+// peekStream reads an SSE body until the first event that carries content or
+// a tool call, so the chain can still fall back on everything that goes wrong
 // before the client has seen a byte. It returns one of:
 //
 //   - a committed stream (resp.stream set) — content is flowing;
-//   - an empty stream (resp.emptyStream) — [DONE] arrived with no content;
-//   - an upstream error (StatusCode 502, Body = the error event) — some
-//     providers answer 200 and then send {"error": …} as the first event;
+//   - an empty stream (resp.emptyStream) — the stream ended ([DONE] or EOF)
+//     without content, which falls back like an empty completion;
+//   - an upstream error (Body = the error event) — some providers answer 200
+//     and then send {"error": …}; its code becomes the status (400, 429, …)
+//     so it is classified like the same error sent as a plain HTTP response;
 //   - err — the connection broke before any content.
+//
+// Events follow the SSE spec: "data:" lines are joined until a blank line.
+// Memory stays bounded by maxStreamPrefix whatever the provider sends: past
+// it the stream is committed and piped as is.
 func peekStream(status int, header http.Header, body io.Reader) (*Response, error) {
 	br := bufio.NewReaderSize(body, streamReadBuffer) // reuses body if it already is one
-	var prefix bytes.Buffer
+	var prefix, line, data bytes.Buffer
 	usedModel := ""
-	for {
-		line, err := br.ReadBytes('\n')
-		prefix.Write(line)
-		if payload, ok := ssePayload(line); ok {
-			if bytes.Equal(payload, []byte("[DONE]")) {
-				return &Response{StatusCode: status, Header: header, Body: prefix.Bytes(), emptyStream: true}, nil
-			}
-			var chunk streamChunk
-			if json.Unmarshal(payload, &chunk) == nil {
-				if chunk.Error != nil {
-					return &Response{StatusCode: http.StatusBadGateway, Header: header, Body: append([]byte(nil), payload...)}, nil
-				}
-				if usedModel == "" {
-					usedModel = chunk.Model
-				}
-				if chunk.hasContent() || prefix.Len() > maxStreamPrefix {
-					return &Response{
-						StatusCode: status,
-						Header:     header,
-						UsedModel:  usedModel,
-						stream:     &upstreamStream{prefix: prefix.Bytes(), rest: br},
-					}, nil
-				}
-			}
+	commit := func() *Response {
+		return &Response{
+			StatusCode: status,
+			Header:     header,
+			UsedModel:  usedModel,
+			stream:     &upstreamStream{prefix: prefix.Bytes(), rest: br},
 		}
-		if err != nil {
-			if err == io.EOF {
-				return nil, errStreamEndedEarly
+	}
+	// dispatch handles one complete event; a non-nil result ends the peek.
+	dispatch := func() *Response {
+		payload := bytes.TrimSpace(data.Bytes())
+		data.Reset()
+		if len(payload) == 0 {
+			return nil
+		}
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			return &Response{StatusCode: status, Header: header, Body: prefix.Bytes(), emptyStream: true}
+		}
+		var chunk streamChunk
+		if json.Unmarshal(payload, &chunk) != nil {
+			return nil
+		}
+		if chunk.Error != nil {
+			return &Response{StatusCode: streamErrorStatus(chunk.Error), Header: header, Body: append([]byte(nil), payload...)}
+		}
+		if usedModel == "" {
+			usedModel = chunk.Model
+		}
+		if chunk.hasContent() {
+			return commit()
+		}
+		return nil
+	}
+	for {
+		frag, err := br.ReadSlice('\n')
+		prefix.Write(frag)
+		if line.Len() <= maxStreamPrefix {
+			line.Write(frag)
+		}
+		if err == bufio.ErrBufferFull {
+			if prefix.Len() > maxStreamPrefix {
+				return commit(), nil // a runaway line: stop buffering, pass it on
 			}
-			return nil, err
+			continue
+		}
+		l := bytes.TrimRight(line.Bytes(), "\r\n")
+		switch {
+		case len(l) == 0 && line.Len() > 0: // blank line: end of event
+			if r := dispatch(); r != nil {
+				return r, nil
+			}
+		case bytes.HasPrefix(l, []byte("data:")):
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.Write(bytes.TrimPrefix(bytes.TrimPrefix(l, []byte("data:")), []byte(" ")))
+		}
+		line.Reset()
+		if err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
+			if r := dispatch(); r != nil { // a last event without its blank line
+				return r, nil
+			}
+			return &Response{StatusCode: status, Header: header, Body: prefix.Bytes(), emptyStream: true}, nil
+		}
+		if prefix.Len() > maxStreamPrefix {
+			return commit(), nil
 		}
 	}
 }
 
-// ssePayload returns the payload of an SSE "data:" line.
-func ssePayload(line []byte) ([]byte, bool) {
-	line = bytes.TrimRight(line, "\r\n")
-	if !bytes.HasPrefix(line, []byte("data:")) {
-		return nil, false
+// streamErrorStatus maps an in-stream error object to an HTTP status: its
+// "code" when that is one (OpenRouter sends {"code":400,…}), else 502.
+func streamErrorStatus(e any) int {
+	m, _ := e.(map[string]any)
+	var code int
+	switch c := m["code"].(type) {
+	case float64:
+		code = int(c)
+	case string:
+		code, _ = strconv.Atoi(c)
 	}
-	return bytes.TrimSpace(line[len("data:"):]), true
+	if code >= 400 && code <= 599 {
+		return code
+	}
+	return http.StatusBadGateway
 }
 
 type streamChunk struct {
@@ -120,13 +171,10 @@ type streamChunk struct {
 func (c streamChunk) hasContent() bool {
 	for _, ch := range c.Choices {
 		d := ch.Delta
-		if len(d.ToolCalls) > 0 || d.FunctionCall != nil || ch.Text != "" {
+		if len(d.ToolCalls) > 0 || d.FunctionCall != nil {
 			return true
 		}
-		if s, ok := d.Content.(string); ok && s != "" {
-			return true
-		}
-		if d.Content != nil && hasContent(d.Content) {
+		if hasContent(d.Content) || strings.TrimSpace(ch.Text) != "" {
 			return true
 		}
 	}
@@ -169,8 +217,14 @@ func writeUpstreamStream(w http.ResponseWriter, resp *Response) {
 			flush()
 		}
 		if err != nil {
-			if err != io.EOF && !strings.Contains(err.Error(), "context canceled") {
+			if err != io.EOF {
+				// Cut mid-answer (request deadline, upstream reset). Say so:
+				// a stream that just stops looks like a complete, shorter
+				// answer to an SDK. If the client is the one that left, this
+				// write fails harmlessly.
 				log.Printf("stream: upstream ended mid-stream: %v", err)
+				writeStreamError(w, "upstream stream interrupted: "+err.Error())
+				flush()
 			}
 			return
 		}
@@ -192,4 +246,12 @@ func looksLikeSSE(h http.Header, br *bufio.Reader) bool {
 		}
 	}
 	return false
+}
+
+// writeStreamError ends an SSE stream with an OpenAI-style error event.
+func writeStreamError(w io.Writer, msg string) {
+	ev, _ := json.Marshal(map[string]any{"error": map[string]any{
+		"message": msg, "type": "server_error", "code": "stream_interrupted",
+	}})
+	fmt.Fprintf(w, "data: %s\n\n", ev)
 }

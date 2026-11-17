@@ -125,7 +125,7 @@ func TestLogRequestsAndWriteTimeout(t *testing.T) {
 			t.Errorf("logRequests(%q) != %v", level, want)
 		}
 	}
-	if writeTimeout(0) != 0 || writeTimeout(90*time.Second) != 105*time.Second {
+	if writeTimeout(0) != noDeadlineWriteTimeout || writeTimeout(90*time.Second) != 135*time.Second {
 		t.Error("writeTimeout must follow request_timeout")
 	}
 }

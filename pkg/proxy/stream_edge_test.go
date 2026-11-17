@@ -255,3 +255,57 @@ func FuzzPeekStream(f *testing.F) {
 }
 
 var _ = context.Background
+
+// A committed stream cut by the request deadline must end with an error
+// event, not a clean end that an SDK would take for a complete answer.
+func TestStream_DeadlineCutEndsWithErrorEvent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sseHello)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	s := singleProviderServer(upstream.URL, func(c *config.Config) { c.Fallback.RequestTimeout = 200 * time.Millisecond })
+	rec := httptest.NewRecorder()
+	s.handleChatCompletions(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(streamBody)))
+	got := rec.Body.String()
+	if !strings.HasPrefix(got, sseHello) || !strings.Contains(got, `"stream_interrupted"`) {
+		t.Errorf("client got %q, want the first chunk then an error event", got)
+	}
+}
+
+// A stream that ends without content and without [DONE] is an empty answer:
+// fall back, but do not count it against the provider like a broken link.
+func TestStream_EOFWithoutContentIsEmptyNotTransportError(t *testing.T) {
+	alpha := httptest.NewServer(sseHandler(sseRole))
+	defer alpha.Close()
+	beta := httptest.NewServer(sseHandler(sseHello, sseDone))
+	defer beta.Close()
+
+	fc := twoProviderChain(alpha.URL, beta.URL)
+	rec, _ := executeToClient(t, fc)
+	if rec.Body.String() != sseHello+sseDone {
+		t.Errorf("client got %q", rec.Body.String())
+	}
+	if rate := fc.ReliabilityTracker.SuccessRate("alpha"); rate < 1 {
+		t.Errorf("empty stream lowered alpha's reliability to %v", rate)
+	}
+}
+
+// A single line without a newline cannot grow memory without bound.
+func TestPeekStream_HugeLineIsBounded(t *testing.T) {
+	in := "data: " + strings.Repeat("x", 3*maxStreamPrefix)
+	resp, err := peekStream(200, http.Header{}, strings.NewReader(in))
+	if err != nil || resp.stream == nil {
+		t.Fatalf("resp=%v err=%v", resp, err)
+	}
+	if len(resp.stream.prefix) > maxStreamPrefix+streamReadBuffer {
+		t.Errorf("buffered %d bytes of one line", len(resp.stream.prefix))
+	}
+	rest, _ := io.ReadAll(resp.stream.rest)
+	if string(resp.stream.prefix)+string(rest) != in {
+		t.Error("prefix + rest must equal the upstream stream")
+	}
+}

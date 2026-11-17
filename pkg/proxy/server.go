@@ -43,7 +43,10 @@ var upstreamClient = newUpstreamClient()
 func newUpstreamClient() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConnsPerHost = 16
-	return &http.Client{Timeout: 120 * time.Second, Transport: t}
+	// No Client.Timeout: it would also bound reading the body and cut long
+	// streams. Each call is bounded by the provider timeout (until the first
+	// content chunk) and the request deadline instead.
+	return &http.Client{Transport: t}
 }
 
 // NewServer creates a new proxy Server.
@@ -102,7 +105,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.httpServer = &http.Server{
 		Addr:         net.JoinHostPort(cfg.Proxy.Host, strconv.Itoa(cfg.Proxy.Port)),
 		Handler:      handler,
-		ReadTimeout:  30 * time.Second,
+		ReadTimeout:  readTimeout,
 		WriteTimeout: writeTimeout(cfg.Fallback.RequestTimeout),
 		IdleTimeout:  60 * time.Second,
 	}
@@ -139,12 +142,22 @@ const shutdownGrace = 30 * time.Second
 // writeTimeout bounds writing one response. It must outlast the request
 // deadline (a streamed answer is written until the end), so it follows
 // fallback.request_timeout; with no request deadline there is none.
+//
+// The write deadline starts when the request headers are read, the request
+// deadline only after the body (up to ReadTimeout), hence both plus a margin.
+// Without a request deadline it is still bounded, so a client that stops
+// reading cannot hold a handler and its upstream connection forever.
 func writeTimeout(requestTimeout time.Duration) time.Duration {
 	if requestTimeout <= 0 {
-		return 0
+		return noDeadlineWriteTimeout
 	}
-	return requestTimeout + 15*time.Second
+	return requestTimeout + readTimeout + 15*time.Second
 }
+
+const (
+	readTimeout            = 30 * time.Second
+	noDeadlineWriteTimeout = 15 * time.Minute
+)
 
 // logRequests reports whether proxy.log_level asks for one line per request.
 // "warn" and "error" drop them, which spares an SD card on small boards.

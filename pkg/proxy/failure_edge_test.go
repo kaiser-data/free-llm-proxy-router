@@ -94,3 +94,19 @@ func TestFallbackChain_Mixed401And429MovesOn(t *testing.T) {
 		t.Errorf("alpha got %d calls, want 2 (each key once)", n)
 	}
 }
+
+// A model-specific 400 on the only model: not the client's fault, so a 503
+// (the next request reaches another model), and the model sits out.
+func TestFallbackChain_ModelSpecific400IsNotPassedThrough(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"The model m has been decommissioned"}}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+	fc, rl, _ := newTestChain(srv.URL, "p", "m")
+	if resp, err := fc.Execute(context.Background(), hiReq()); err == nil {
+		t.Fatalf("got status %d, want exhaustion (503)", resp.StatusCode)
+	}
+	if !rl.IsOnCooldown("p/m") {
+		t.Error("decommissioned model not cooled down")
+	}
+}
