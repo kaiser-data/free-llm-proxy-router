@@ -310,7 +310,7 @@ configs/            bundled config and the free-model catalog
 ## Development
 
 ```bash
-go test -race ./...    # 134 tests
+go test -race ./...    # 128 tests
 go vet ./...
 make build
 ```

@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -558,32 +557,24 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 			resp.Body.Close()
 		}
 	}()
-	var respReader io.Reader = resp.Body
-	if resp.StatusCode == http.StatusOK && body["stream"] == true {
-		// Only stream requests pay for the read buffer; a buffered answer is
-		// read straight into memory (a 32 KB buffer on every call showed up
-		// as a clear throughput drop at 50 concurrent requests).
-		br := bufio.NewReaderSize(resp.Body, streamReadBuffer)
-		respReader = br
-		if looksLikeSSE(resp.Header, br) {
-			out, err := peekStream(resp.StatusCode, resp.Header, br)
-			if err != nil || out.stream == nil {
-				return out, err
-			}
-			// Committed: the stream owns the connection; the provider timeout ends.
-			if !stopTimer() {
-				// The provider timeout fired just as the first chunk came in:
-				// the call's context is already cancelled.
-				return nil, context.DeadlineExceeded
-			}
-			committed = true
-			out.stream.onClose(func() { resp.Body.Close() })
-			out.stream.onClose(cancelCall)
-			return out, nil
+	if resp.StatusCode == http.StatusOK && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		out, err := peekStream(resp.StatusCode, resp.Header, resp.Body)
+		if err != nil || out.stream == nil {
+			return out, err
 		}
+		// Committed: the stream owns the connection; the provider timeout ends.
+		if !stopTimer() {
+			// The provider timeout fired just as the first chunk came in:
+			// the call's context is already cancelled.
+			return nil, context.DeadlineExceeded
+		}
+		committed = true
+		out.stream.onClose(func() { resp.Body.Close() })
+		out.stream.onClose(cancelCall)
+		return out, nil
 	}
 
-	respBody, err := io.ReadAll(respReader)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}

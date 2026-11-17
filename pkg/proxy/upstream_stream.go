@@ -59,7 +59,7 @@ const streamReadBuffer = 32 << 10
 // Memory stays bounded by maxStreamPrefix whatever the provider sends: past
 // it the stream is committed and piped as is.
 func peekStream(status int, header http.Header, body io.Reader) (*Response, error) {
-	br := bufio.NewReaderSize(body, streamReadBuffer) // reuses body if it already is one
+	br := bufio.NewReaderSize(body, streamReadBuffer)
 	var prefix, line, data bytes.Buffer
 	usedModel := ""
 	commit := func() *Response {
@@ -229,23 +229,6 @@ func writeUpstreamStream(w http.ResponseWriter, resp *Response) {
 			return
 		}
 	}
-}
-
-// looksLikeSSE reports whether a 200 answer to a stream:true request is an SSE
-// stream. Some providers send SSE with a wrong or missing Content-Type, so the
-// first bytes decide when the header does not.
-func looksLikeSSE(h http.Header, br *bufio.Reader) bool {
-	if strings.HasPrefix(h.Get("Content-Type"), "text/event-stream") {
-		return true
-	}
-	head, _ := br.Peek(16)
-	head = bytes.TrimLeft(head, " \t\r\n")
-	for _, p := range []string{"data:", ":", "event:", "id:", "retry:"} {
-		if bytes.HasPrefix(head, []byte(p)) {
-			return true
-		}
-	}
-	return false
 }
 
 // writeStreamError ends an SSE stream with an OpenAI-style error event.
