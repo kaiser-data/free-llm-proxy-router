@@ -22,6 +22,13 @@ type Config struct {
 	Providers []ProviderConfig `mapstructure:"providers"`
 }
 
+// FilterConfig holds the configuration for a single filter.
+type FilterConfig struct {
+	Name     string         `mapstructure:"name"`
+	Settings map[string]any `mapstructure:"settings"`
+	Unknown  string         `mapstructure:"unknown"` // "keep" | "drop" (default: "keep")
+}
+
 // ProxyConfig holds proxy server settings.
 type ProxyConfig struct {
 	// Host is the listen address. Default 127.0.0.1: the proxy spends your
@@ -38,6 +45,9 @@ type ProxyConfig struct {
 
 	// Similar holds model_family for the "similar" strategy.
 	Similar map[string]string `mapstructure:"similar"`
+
+	// Filters narrow the candidate list before strategies rank it.
+	Filters []FilterConfig `mapstructure:"filters"`
 
 	// Agents maps profile names to per-agent routing configuration.
 	// An agent sets model: "<profile-name>" and the proxy resolves it here.
