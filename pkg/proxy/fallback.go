@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -329,10 +330,24 @@ func (fc *FallbackChain) attempt(ctx context.Context, providerID, modelID string
 		last = res
 	}
 	if !triedSlot {
+		if fc.allKeysRejected(providerID, numSlots, len(keys)) {
+			return attemptResult{outcome: outSkipProvider}
+		}
 		log.Printf("fallback: %s/%s rate limited on every key — skipping model", providerID, modelID)
 		return attemptResult{outcome: outSkipModel}
 	}
 	return last
+}
+
+// allKeysRejected reports whether every key slot of a provider is cooling down
+// after a 401/403, so the provider can be skipped without walking its models.
+func (fc *FallbackChain) allKeysRejected(providerID string, numSlots, numKeys int) bool {
+	for slot := 0; slot < numSlots; slot++ {
+		if !fc.RateLimiter.IsOnCooldown(authCooldownKey(providerID, slot, numKeys)) {
+			return false
+		}
+	}
+	return true
 }
 
 // authCooldownKey is the cooldown key for a key slot whose key was rejected
@@ -488,15 +503,21 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 }
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
-	var timeoutCancel context.CancelFunc
+	// The provider timeout bounds a buffered answer, and a stream only up to
+	// its first content chunk: once tokens flow, a long answer from a slow
+	// model may take longer, and the request deadline bounds it instead.
+	ctx, cancelCall := context.WithCancel(ctx)
+	stopTimer := func() bool { return false }
 	if d, err := time.ParseDuration(cfg.Timeout); err == nil && d > 0 {
-		ctx, timeoutCancel = context.WithTimeout(ctx, d)
-		defer func() {
-			if timeoutCancel != nil {
-				timeoutCancel()
-			}
-		}()
+		stopTimer = time.AfterFunc(d, cancelCall).Stop
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			stopTimer()
+			cancelCall()
+		}
+	}()
 	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 
 	data, err := json.Marshal(body)
@@ -526,23 +547,33 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusOK && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		out, err := peekStream(resp.StatusCode, resp.Header, resp.Body)
-		if err != nil || out.stream == nil {
+	defer func() {
+		if !committed {
 			resp.Body.Close()
-			return out, err
 		}
-		// Committed: the stream owns the connection and the provider timeout.
-		out.stream.onClose(func() { resp.Body.Close() })
-		if timeoutCancel != nil {
-			out.stream.onClose(timeoutCancel)
-			timeoutCancel = nil
+	}()
+	var respReader io.Reader = resp.Body
+	if resp.StatusCode == http.StatusOK && body["stream"] == true {
+		// Only stream requests pay for the read buffer; a buffered answer is
+		// read straight into memory (a 32 KB buffer on every call showed up
+		// as a clear throughput drop at 50 concurrent requests).
+		br := bufio.NewReaderSize(resp.Body, streamReadBuffer)
+		respReader = br
+		if looksLikeSSE(resp.Header, br) {
+			out, err := peekStream(resp.StatusCode, resp.Header, br)
+			if err != nil || out.stream == nil {
+				return out, err
+			}
+			// Committed: the stream owns the connection; the provider timeout ends.
+			committed = true
+			stopTimer()
+			out.stream.onClose(func() { resp.Body.Close() })
+			out.stream.onClose(cancelCall)
+			return out, nil
 		}
-		return out, nil
 	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(respReader)
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
@@ -669,23 +700,22 @@ func isRequestRejection(status int) bool {
 	return status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge || status == http.StatusUnprocessableEntity
 }
 
-// modelSpecific400 are phrases in a 400 body that blame the model, not the
-// request. Most 400s blame the request (context too long, a bad tool schema,
-// an unsupported parameter); cooling the model down for those would let one
-// bad request take a model away from every other client for an hour.
+// modelSpecific400 are phrases in a 400 body that blame the model itself, not
+// the request. Most 400s blame the request (context too long, tools or images
+// the model can't take, a bad parameter); cooling the model down for those
+// would let one client's request take the model from everyone for an hour.
+// So the list is deliberately narrow: a missed phrase costs one wasted call on
+// a later request, a wrong one costs an hour of capacity.
 var modelSpecific400 = []string{
-	"only supports",
-	"not supported for this model",
-	"is not supported by this model",
 	"decommissioned",
-	"has been deprecated",
-	"no longer supported",
-	"no longer available",
 	"model_not_found",
 	"model not found",
-	"invalid model",
-	"unknown model",
+	"does not exist or you do not have access",
 	"is not a valid model",
+	"unknown model",
+	"interactions api",            // Gemini: "This model only supports Interactions API."
+	"only supported in v1/responses", // OpenAI: model needs the Responses API
+	"not a chat model",
 }
 
 func isModelSpecific400(body []byte) bool {

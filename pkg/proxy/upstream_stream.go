@@ -39,6 +39,9 @@ func (s *upstreamStream) onClose(f func()) { s.closers = append(s.closers, f) }
 // committed anyway: the client gets its bytes, the chain gives up fallback.
 const maxStreamPrefix = 1 << 20
 
+// streamReadBuffer is the read buffer for an upstream SSE stream.
+const streamReadBuffer = 32 << 10
+
 // errStreamEndedEarly marks a stream that closed before any content arrived.
 var errStreamEndedEarly = errors.New("stream ended before the first content chunk")
 
@@ -52,7 +55,7 @@ var errStreamEndedEarly = errors.New("stream ended before the first content chun
 //     providers answer 200 and then send {"error": …} as the first event;
 //   - err — the connection broke before any content.
 func peekStream(status int, header http.Header, body io.Reader) (*Response, error) {
-	br := bufio.NewReaderSize(body, 32<<10)
+	br := bufio.NewReaderSize(body, streamReadBuffer) // reuses body if it already is one
 	var prefix bytes.Buffer
 	usedModel := ""
 	for {
@@ -172,4 +175,21 @@ func writeUpstreamStream(w http.ResponseWriter, resp *Response) {
 			return
 		}
 	}
+}
+
+// looksLikeSSE reports whether a 200 answer to a stream:true request is an SSE
+// stream. Some providers send SSE with a wrong or missing Content-Type, so the
+// first bytes decide when the header does not.
+func looksLikeSSE(h http.Header, br *bufio.Reader) bool {
+	if strings.HasPrefix(h.Get("Content-Type"), "text/event-stream") {
+		return true
+	}
+	head, _ := br.Peek(16)
+	head = bytes.TrimLeft(head, " \t\r\n")
+	for _, p := range []string{"data:", ":", "event:", "id:", "retry:"} {
+		if bytes.HasPrefix(head, []byte(p)) {
+			return true
+		}
+	}
+	return false
 }
