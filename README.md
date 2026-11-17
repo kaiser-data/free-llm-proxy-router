@@ -20,8 +20,7 @@
 > **Try it in one minute.** You need one free key from [Groq](https://console.groq.com/keys) (no credit card). No Go toolchain, no config file. On Linux or macOS:
 >
 > ```bash
-> VERSION=0.1.4
-> curl -fsSL https://github.com/kaiser-data/free-llm-proxy-router/releases/download/v$VERSION/free-llm-proxy-router_${VERSION}_$(uname -s | tr A-Z a-z)_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/armv6l/armv6/;s/armv7l/armv7/').tar.gz | tar xz
+> curl -fsSL https://raw.githubusercontent.com/kaiser-data/free-llm-proxy-router/main/scripts/install.sh | sh
 > GROQ_API_KEY=gsk_... ./free-llm-proxy
 > ```
 >
@@ -32,7 +31,7 @@
 >   -d '{"model":"auto","messages":[{"role":"user","content":"In one sentence: why do free LLM tiers run dry?"}]}'
 > ```
 >
-> The `X-Used-Model` header tells you which free model answered. The archive brings its own provider list and a catalog of 253 free models. Windows: the `.zip` on the [releases page](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest), or Docker (see [Install](#install)).
+> The script picks the latest release for your OS and CPU (amd64, arm64, armv6, armv7, riscv64), checks it against `checksums.txt` and unpacks it into the current directory; `VERSION=x.y.z` pins a release, `DIR=…` picks another directory. The `X-Used-Model` header tells you which free model answered. The archive brings its own provider list and a catalog of 253 free models. Windows: the `.zip` on the [releases page](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest), or Docker (see [Install](#install)).
 
 <p align="center">
   <img src="docs/img/fallback.svg" width="860" alt="A real request on 31 October 2026. A tool sends model auto to the proxy on localhost. The proxy first tries Groq kimi-k2, which returns 404 model not found, and puts that model on a one-hour cooldown. It then tries Groq gpt-oss-20b, which answers. The other providers were not needed. The client saw one clean 200 after 0.45 seconds.">
@@ -186,6 +185,7 @@ Several keys per provider are pooled automatically: add `GROQ_API_KEY_2`, `GROQ_
 
 | | Command |
 |---|---|
+| **Install script** (Linux, macOS) | `curl -fsSL https://raw.githubusercontent.com/kaiser-data/free-llm-proxy-router/main/scripts/install.sh \| sh` ([read it first](scripts/install.sh)) |
 | **Docker** (amd64, arm64) | `docker run --rm -p 127.0.0.1:8080:8080 -e GROQ_API_KEY=gsk_... ghcr.io/kaiser-data/free-llm-proxy-router:latest` |
 | **Debian, Fedora, Alpine** | `.deb`, `.rpm` and `.apk` on the [releases page](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest) |
 | **Archive** (Linux, macOS, Windows) | `.tar.gz` / `.zip` on the [releases page](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest); keep `configs/` next to the binaries |
@@ -204,7 +204,7 @@ Every package ships three binaries plus `configs/` (the provider definitions and
 <summary><b>Package install, step by step</b></summary>
 
 ```bash
-VERSION=0.1.4
+VERSION=0.1.7
 # Debian/Ubuntu
 curl -LO https://github.com/kaiser-data/free-llm-proxy-router/releases/download/v$VERSION/free-llm-proxy-router_${VERSION}_amd64.deb
 sudo dpkg -i free-llm-proxy-router_${VERSION}_amd64.deb      # or: sudo rpm -i …rpm / sudo apk add --allow-untrusted …apk
