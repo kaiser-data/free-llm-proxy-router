@@ -166,6 +166,38 @@ func TestBuildBodyCollapsesMaxCompletionTokens(t *testing.T) {
 	}
 }
 
+// Every provider attempt builds its body from the same parsed request.
+// buildBody must hand each attempt its own messages, so a provider-specific
+// transform (a tool-call rewrite, say) cannot leak into another provider's
+// attempt — or into the caller's request.
+func TestBuildBodyAttemptsDoNotShareMessages(t *testing.T) {
+	cfg := &config.Config{Providers: []config.ProviderConfig{{ID: "gemini", Enabled: true}}}
+	fc := &FallbackChain{Cfg: cfg}
+	raw := map[string]any{
+		"model": "auto",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+			map[string]any{"role": "assistant", "tool_calls": []any{
+				map[string]any{"id": "call-1", "type": "function",
+					"function": map[string]any{"name": "get_weather", "arguments": "{}"}},
+			}},
+		},
+	}
+
+	first := fc.buildBody("gemini", raw, "gemini-3.5-flash")
+	// A provider-specific transform writes into the first attempt's body.
+	toolCall := first["messages"].([]any)[1].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)
+	toolCall["extra_content"] = map[string]any{"google": map[string]any{"thought_signature": "sig"}}
+
+	second := fc.buildBody("groq", raw, "llama-3.3-70b-versatile")
+	if leaked := second["messages"].([]any)[1].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)["extra_content"]; leaked != nil {
+		t.Fatalf("tool-call rewrite leaked into the next provider's attempt: %v", leaked)
+	}
+	if leaked := raw["messages"].([]any)[1].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)["extra_content"]; leaked != nil {
+		t.Fatalf("tool-call rewrite leaked into the caller's request: %v", leaked)
+	}
+}
+
 func TestIsZeroQuota(t *testing.T) {
 	gemini := []byte(`[{"error":{"code":429,"message":"Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-nano-banana-2.1"}}]`)
 	if !isZeroQuota(gemini) {

@@ -498,6 +498,14 @@ var anthropicOnlyFields = []string{
 
 func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelID string) map[string]any {
 	body := copyMap(raw)
+	// copyMap is shallow: body["messages"] would still alias the client's
+	// parsed request, and every provider attempt builds from the same raw.
+	// Without a private copy, a transform that writes into a message (a
+	// tool-call rewrite for one provider's quirk, say) leaks into the next
+	// provider's attempt and mutates the caller's request in place.
+	if msgs, ok := body["messages"].([]any); ok {
+		body["messages"] = deepCopySlice(msgs)
+	}
 	body["model"] = modelID
 	delete(body, "stream") // always non-streaming to providers; fallback requires buffered JSON
 
