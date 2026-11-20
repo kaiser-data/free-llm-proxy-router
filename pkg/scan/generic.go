@@ -59,18 +59,23 @@ type GenericScanner struct {
 
 type genericModelsResponse struct {
 	Object string `json:"object"`
-	Data   []struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		OwnedBy string `json:"owned_by"`
-		// Some providers include context_length in the model list
-		ContextLength int `json:"context_length"`
-		// Cohere includes a "endpoints" field listing supported operations
-		Endpoints []string `json:"endpoints"`
-		// Together includes a "type" field
-		Type string `json:"type"`
-	} `json:"data"`
+	// Data entries are kept raw so free-detection can walk arbitrary
+	// provider-specific fields (see freeByDiscovery).
+	Data []json.RawMessage `json:"data"`
+}
+
+// typedModel is the OpenAI-compatible shape every generic listing shares.
+type typedModel struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+	// Some providers include context_length in the model list
+	ContextLength int `json:"context_length"`
+	// Cohere includes a "endpoints" field listing supported operations
+	Endpoints []string `json:"endpoints"`
+	// Together includes a "type" field
+	Type string `json:"type"`
 }
 
 func (s *GenericScanner) ScanFreeModels(ctx context.Context, cfg config.ProviderConfig) ([]catalog.CatalogEntry, error) {
@@ -110,8 +115,19 @@ func (s *GenericScanner) ScanFreeModels(ctx context.Context, cfg config.Provider
 	}
 
 	var entries []catalog.CatalogEntry
-	for _, m := range gr.Data {
+	for _, raw := range gr.Data {
+		var m typedModel
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, fmt.Errorf("parsing %s model entry: %w", cfg.ID, err)
+		}
 		if !isEligibleModel(cfg.ID, m.ID, m.Type, m.Endpoints) {
+			continue
+		}
+		var rawMap map[string]any
+		if err := json.Unmarshal(raw, &rawMap); err != nil {
+			return nil, fmt.Errorf("parsing %s model entry: %w", cfg.ID, err)
+		}
+		if !freeByDiscovery(cfg, m.ID, rawMap) {
 			continue
 		}
 		entries = append(entries, catalog.CatalogEntry{
@@ -125,6 +141,51 @@ func (s *GenericScanner) ScanFreeModels(ctx context.Context, cfg config.Provider
 		})
 	}
 	return entries, nil
+}
+
+// freeByDiscovery applies the provider's configured free-detection knobs
+// (discovery.free_markers / discovery.free_detect_field, documented on
+// DiscoveryConfig): a model counts as free when its ID ends with any
+// marker, or when the dot-path field equals the expected value. Without
+// any knob every model is eligible — the historical all-free behavior.
+//
+// This matters for gateways whose /models listing mixes free and paid
+// models (Kilo: 471 listed, 16 free): without detection the scanner would
+// catalog paid models as free and the fallback chain would spend money.
+func freeByDiscovery(cfg config.ProviderConfig, modelID string, raw map[string]any) bool {
+	if len(cfg.Discovery.FreeMarkers) == 0 && cfg.Discovery.FreeDetectField == "" {
+		return true
+	}
+	id := strings.ToLower(modelID)
+	for _, marker := range cfg.Discovery.FreeMarkers {
+		if strings.HasSuffix(id, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	if cfg.Discovery.FreeDetectField != "" && cfg.Discovery.FreeDetectValue != "" {
+		if v := dotPath(raw, cfg.Discovery.FreeDetectField); v != nil &&
+			fmt.Sprint(v) == cfg.Discovery.FreeDetectValue {
+			return true
+		}
+	}
+	return false
+}
+
+// dotPath walks a dot-separated path ("cost.text.input.price") through a
+// decoded JSON object.
+func dotPath(m map[string]any, path string) any {
+	cur := any(m)
+	for _, seg := range strings.Split(path, ".") {
+		asMap, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur, ok = asMap[seg]
+		if !ok {
+			return nil
+		}
+	}
+	return cur
 }
 
 // isEligibleModel filters out models that are not chat-capable or paid-only.
