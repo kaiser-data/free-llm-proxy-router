@@ -173,6 +173,13 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 			if len(orModels) == 0 {
 				continue
 			}
+			// Provider: OpenRouter
+			// The free tier accepts at most 3 items in the models[] array
+			// (400 "'models' array must have 3 items or fewer").
+			// Last verified: 2026-11-20
+			if len(orModels) > openRouterModelsArrayLimit {
+				orModels = orModels[:openRouterModelsArrayLimit]
+			}
 			modelID = orModels[0]
 			body = fc.buildBody("openrouter", req.Raw, modelID)
 			body["models"] = orModels
@@ -461,12 +468,34 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 		status = resp.StatusCode
 	}
 	switch {
-	case resp == nil, isKeyRejection(resp):
-		// Only transport and auth failures mean the provider itself is
-		// unusable, so only they count against its reliability.
-		if status == 0 {
-			log.Printf("fallback: %s/%s transport error — skipping provider%s", providerID, modelID, upstreamErrSnippet(resp, err))
+	case resp == nil:
+		// Transport-level failure (timeout, conn refused): not evidence the
+		// whole provider is down — one hung model must not stop the walk.
+		// Cool the model briefly and continue with its siblings; reliability
+		// still records the failure and may short-cool the provider.
+		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(transportModelCooldown))
+		fc.ReliabilityTracker.Record(providerID, false)
+		if fc.ReliabilityTracker.ShouldCooldown(providerID) {
+			fc.RateLimiter.SetCooldown(providerID, time.Now().Add(30*time.Second))
+			log.Printf("fallback: %s reliability below 50%% — short cooldown", providerID)
 		}
+		log.Printf("fallback: %s/%s transport error — model cooldown %s, walking on%s", providerID, modelID, transportModelCooldown, upstreamErrSnippet(resp, err))
+		return attemptResult{outcome: outModelFail, calls: calls}
+	case isKeyRejection(resp):
+		// The key itself was rejected (invalid or revoked): every model of
+		// this provider would fail the same way — skip the provider.
+		log.Printf("fallback: %s/%s key rejected — skipping provider%s", providerID, modelID, upstreamErrSnippet(resp, err))
+		fc.ReliabilityTracker.Record(providerID, false)
+		if fc.ReliabilityTracker.ShouldCooldown(providerID) {
+			fc.RateLimiter.SetCooldown(providerID, time.Now().Add(30*time.Second))
+			log.Printf("fallback: %s reliability below 50%% — short cooldown", providerID)
+		}
+		return attemptResult{resp: resp, outcome: outProviderFail, calls: calls}
+	case status == 401, status == 403:
+		// Auth failures mean the provider itself is unusable: skip every
+		// remaining model and count against its reliability.
+		fc.RateLimiter.SetCooldown(providerID, time.Now().Add(10*time.Minute))
+		log.Printf("fallback: %s auth error %d — cooldown 10min", providerID, status)
 		fc.ReliabilityTracker.Record(providerID, false)
 		if fc.ReliabilityTracker.ShouldCooldown(providerID) {
 			fc.RateLimiter.SetCooldown(providerID, time.Now().Add(30*time.Second))
@@ -681,6 +710,14 @@ const (
 	// request tries after model-level errors (anything but auth/transport), so a large catalog
 	// such as NVIDIA NIM cannot use up every attempt.
 	maxModelsPerProvider = 3
+	// openRouterModelsArrayLimit caps the native-fallback models[] array:
+	// the OpenRouter free tier rejects more with 400 ("'models' array must
+	// have 3 items or fewer"). Verified 2026-11-20.
+	openRouterModelsArrayLimit = 3
+	// transportModelCooldown cools a model whose request failed at the
+	// transport level (timeout, conn refused) so one hung model costs its
+	// timeout once per window instead of stalling every walk.
+	transportModelCooldown = 5 * time.Minute
 	// zeroQuotaCooldown applies when a 429 reports a quota "limit: 0": the
 	// model is listed but not on the free tier, so retrying soon is pointless.
 	zeroQuotaCooldown = 24 * time.Hour
