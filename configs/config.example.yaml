@@ -13,7 +13,8 @@
 #   tier_type     "free" (rate-limited) or "credit" (token / $ / unit allowance). The
 #                 `economical` strategy ranks credit tiers last. Default: free.
 #   all_free      documentation only: every model the provider lists is free.
-#   free_markers, probe_for_free: parsed but not used by the generic scanner.
+#   free_markers  model-ID suffixes the generic scanner treats as free.
+#   probe_for_free: parsed but not used by the generic scanner.
 #   Only openrouter, groq, gemini, huggingface and github-models have a dedicated scanner.
 #   Every other provider uses the generic /models scan, which marks ALL listed models as
 #   free. Providers tagged "mixed" below also sell paid models: run `free-llm-scan update`
@@ -324,7 +325,12 @@ providers:
     priority: 16
     timeout: "30s"
     tier_type: "free"
-    # Scan: mixed. Only the default free models are free; anonymous use is allowed.
+    # Scan: mixed. Only the default free models are free (the isFree flag on
+    # each listing entry); anonymous use is allowed.
+    discovery:
+      models_endpoint: "/models"
+      free_detect_field: "isFree"
+      free_detect_value: "true"
     rate_limit_notes: "200 req/hour per IP on free models."
 
   - id: routeway
@@ -335,8 +341,11 @@ providers:
     priority: 17
     timeout: "30s"
     tier_type: "free"
-    # Scan: mixed. Only model IDs ending in :free are free, and the generic scanner does not
-    # filter on that suffix. Prune non-:free entries from the catalog.
+    # Scan: mixed. Only model IDs ending in :free are free — free_markers
+    # makes the generic scanner filter on that suffix.
+    discovery:
+      models_endpoint: "/models"
+      free_markers: [":free"]
     rate_limit_notes: "Registration. :free models: 5 RPM, 200 req/day, shared queue."
 
   - id: requesty
@@ -405,6 +414,25 @@ providers:
     tier_type: "free"
     rate_limit_notes: "Free plan ($0/month): 1 RPM, 1,000 req/day."
 
+  - id: unorouter
+    name: "UnoRouter"
+    base_url: "https://api.unorouter.com/v1"
+    api_key_env: "UNOROUTER_API_KEY"
+    enabled: true
+    priority: 24
+    # 60s: some :free upstreams (large reasoning models) answer slowly.
+    timeout: "60s"
+    tier_type: "free"
+    # Scan: mixed. Only model IDs ending in :free are free — free_markers
+    # makes the generic scanner filter on that suffix (the /models listing
+    # carries both free and paid ids, ~110 free chat models of ~290).
+    discovery:
+      models_endpoint: "/models"
+      free_markers: [":free"]
+    # Some :free upstreams may keep or train on prompts; those ask for a
+    # one-time per-provider consent (unorouter.com/consents). Until it is
+    # given, the model answers 403 consent_required — key is fine.
+    rate_limit_notes: "Sign-up (Google/Discord/GitHub), no card. :free models: ~1 req/min per model per account (429 + Retry-After); each model has its own allowance, so rotating models is allowed."
   # ===========================================================================
   # Added from free-llm.com: recharging allowances (tokens / credits / units).
   # tier_type "credit" so the `economical` strategy ranks them after request-limited tiers.
