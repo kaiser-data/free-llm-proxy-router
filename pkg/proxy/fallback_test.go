@@ -292,6 +292,78 @@ func TestStripGeminiThoughts(t *testing.T) {
 	}
 }
 
+// Provider: OpenRouter — the free tier rejects a models[] array with more
+// than 3 items (400 "'models' array must have 3 items or fewer"). The
+// native fallback must cap the array to the best-ranked models.
+func TestFallbackChain_OpenRouterModelsArrayCappedAtThree(t *testing.T) {
+	var gotModels []any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if arr, ok := body["models"].([]any); ok {
+			gotModels = arr
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "openrouter", "m0")
+	fc.Cfg.Fallback.MaxAttempts = 50
+	var ranked listStrategy
+	for i := 0; i < 5; i++ {
+		ranked = append(ranked, strategy.RankedEntry{ProviderID: "openrouter", ModelID: fmt.Sprintf("m%d", i)})
+	}
+	fc.Strategy = ranked
+	_, _ = fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if len(gotModels) != openRouterModelsArrayLimit {
+		t.Errorf("models[] array has %d items, want capped at %d", len(gotModels), openRouterModelsArrayLimit)
+	}
+}
+
+// A transport timeout on one model must not stop the walk (nor kill the
+// whole provider): the model cools down and its siblings are tried.
+func TestFallbackChain_TransportTimeoutWalksOn(t *testing.T) {
+	slowCalls, goodCalls := 0, 0
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slowCalls++
+		select {
+		case <-time.After(2 * time.Second):
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodCalls++
+		w.Write([]byte(`{"model":"good-model","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer good.Close()
+
+	fc, rl, _ := newTestChain(slow.URL, "slowprovider", "m0")
+	fc.Cfg.Providers[0].Timeout = "80ms"
+	fc.Cfg.Providers = append(fc.Cfg.Providers, config.ProviderConfig{
+		ID: "good", BaseURL: good.URL, Enabled: true,
+	})
+	fc.Cfg.Fallback.MaxAttempts = 50
+	fc.Strategy = listStrategy{
+		{ProviderID: "slowprovider", ModelID: "m0"},
+		{ProviderID: "slowprovider", ModelID: "m1"},
+		{ProviderID: "good", ModelID: "good-model"},
+	}
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "good-model" {
+		t.Fatalf("expected good-model after the slow provider timed out, got resp=%v err=%v", resp, err)
+	}
+	if slowCalls != 2 {
+		t.Errorf("slow provider called %d times, want 2 (both its models tried)", slowCalls)
+	}
+	if goodCalls != 1 {
+		t.Errorf("good provider called %d times, want 1", goodCalls)
+	}
+	if !rl.IsOnCooldown("slowprovider/m0") {
+		t.Error("timed-out model was not cooled down")
+	}
+}
+
 // A model-specific 400 skips the provider for this request (a malformed
 // request would fail on every model), but cools the model down so the next
 // request reaches the provider's next model.
