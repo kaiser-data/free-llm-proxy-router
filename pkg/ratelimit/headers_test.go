@@ -172,6 +172,17 @@ func TestExtractRateLimitInfo_AllProviders(t *testing.T) {
 	})
 }
 
+// A huge RetryAfterMs must not get a 10% jitter: the cap keeps the
+// overshoot at ≤5s past the announced reset, so daily-quota cooldowns
+// release when the provider says the quota is back.
+func TestWaitDuration_JitterCap(t *testing.T) {
+	info := RateLimitInfo{RetryAfterMs: (16 * time.Hour).Milliseconds()}
+	wait := info.WaitDuration()
+	if wait < 16*time.Hour || wait > 16*time.Hour+6*time.Second {
+		t.Errorf("WaitDuration() = %v, want within [16h, 16h+6s]", wait)
+	}
+}
+
 // itoa converts an int64 to a decimal string for test use.
 func itoa(n int64) string {
 	return itoa64(n)

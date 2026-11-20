@@ -267,8 +267,13 @@ func (r RateLimitInfo) WaitDuration() time.Duration {
 		return timeUntilMidnightPT()
 	}
 	if r.RetryAfterMs > 0 {
-		// Add 10% jitter
+		// Add 10% jitter, capped at 5s: jitter exists to avoid thundering-herd
+		// retries, but 10% of a multi-hour daily-reset cooldown would keep
+		// recovered models blocked for up to an extra hour past the reset.
 		jitterMs := r.RetryAfterMs / 10
+		if jitterMs > 5_000 {
+			jitterMs = 5_000
+		}
 		if jitterMs > 0 {
 			// Use deterministic jitter derived from current nanoseconds
 			jitter := time.Duration(time.Now().UnixNano()%jitterMs) * time.Millisecond
