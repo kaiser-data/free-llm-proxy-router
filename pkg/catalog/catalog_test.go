@@ -85,6 +85,9 @@ func TestFreeEntries_SkipsNonChatModels(t *testing.T) {
 	c := &Catalog{Entries: []CatalogEntry{
 		{ProviderID: "groq", ModelID: "meta-llama/llama-prompt-guard-2-22m", IsFree: true},
 		{ProviderID: "nvidia-nim", ModelID: "nvidia/nv-embedqa-e5-v5", IsFree: true},
+		// Provider: UnoRouter (verified 2026-11-20): Voyage AI models are all
+		// embeddings or rerankers but carry the :free suffix.
+		{ProviderID: "unorouter", ModelID: "voyage-code-2:free", IsFree: true},
 		{ProviderID: "groq", ModelID: "openai/gpt-oss-120b", IsFree: true},
 	}}
 	got := c.FreeEntries()
