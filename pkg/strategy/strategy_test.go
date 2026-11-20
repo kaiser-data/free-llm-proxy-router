@@ -359,6 +359,80 @@ func TestStrategyLongContextQualityTieBreak(t *testing.T) {
 	}
 }
 
+// TestStrategyLongContextSmallPromptQualityFirst verifies that a small
+// prompt flips the ranking to quality-first: mid-sized and code models
+// serve new sessions before the Gemini flashes, and the tiny model stays
+// last.
+func TestStrategyLongContextSmallPromptQualityFirst(t *testing.T) {
+	if err := models.LoadCapabilities("../../configs/capabilities.yaml"); err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+	entries := []catalog.CatalogEntry{
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash-lite", IsFree: true, ContextWindow: 1048576},
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash", IsFree: true, ContextWindow: 1048576},
+		{ProviderID: "openrouter", ModelID: "cohere/north-mini-code:free", IsFree: true, ContextWindow: 256000},
+		{ProviderID: "openrouter", ModelID: "recursive/flint-v1.0:free", IsFree: true, ContextWindow: 262144},
+		{ProviderID: "groq", ModelID: "qwen/qwen3.8-27b", IsFree: true, ContextWindow: 131072},
+		{ProviderID: "openrouter", ModelID: "liquid/lfm-2.5-2.6b:free", IsFree: true, ContextWindow: 65536},
+	}
+	req := Request{
+		Messages:              []map[string]any{{"role": "user", "content": "hi"}},
+		EstimatedPromptTokens: 500,
+		MaxTokens:             1024,
+	}
+	ranked := (&StrategyLongContext{}).Rank(req, entries, nil)
+	idx := map[string]int{}
+	for i, r := range ranked {
+		idx[r.ModelID] = i
+	}
+
+	if ranked[0].ModelID != "recursive/flint-v1.0:free" {
+		t.Errorf("small prompt: first = %s, want flint (code-tuned)", ranked[0].ModelID)
+	}
+	// Qwen (27B) before the full flash and the lites: quality first, and
+	// big windows are saved for the requests that need them.
+	if idx["qwen/qwen3.8-27b"] > idx["gemini-3.5-flash"] {
+		t.Errorf("small prompt: qwen (idx %d) should rank before full flash (idx %d)",
+			idx["qwen/qwen3.8-27b"], idx["gemini-3.5-flash"])
+	}
+	if idx["qwen/qwen3.8-27b"] > idx["gemini-3.5-flash-lite"] {
+		t.Errorf("small prompt: qwen (idx %d) should rank before flash-lite (idx %d)",
+			idx["qwen/qwen3.8-27b"], idx["gemini-3.5-flash-lite"])
+	}
+	// The tiny model is still the worst choice even for a tiny prompt.
+	if last := ranked[len(ranked)-1].ModelID; last != "liquid/lfm-2.5-2.6b:free" {
+		t.Errorf("small prompt: last = %s, want the tiny lfm", last)
+	}
+}
+
+// TestStrategyLongContextFitPenalty verifies that a model whose window
+// cannot hold prompt + reply ranks below every model that fits, whatever
+// its context tier.
+func TestStrategyLongContextFitPenalty(t *testing.T) {
+	entries := []catalog.CatalogEntry{
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash", IsFree: true, ContextWindow: 1048576},
+		{ProviderID: "groq", ModelID: "qwen/qwen3.8-27b", IsFree: true, ContextWindow: 131072},
+		{ProviderID: "openrouter", ModelID: "liquid/lfm-2.5-2.6b:free", IsFree: true, ContextWindow: 65536},
+		{ProviderID: "openrouter", ModelID: "tiny-8k", IsFree: true, ContextWindow: 8192},
+	}
+	req := Request{EstimatedPromptTokens: 100_000, MaxTokens: 4096} // needs 104k
+	ranked := (&StrategyLongContext{}).Rank(req, entries, nil)
+	idx := map[string]int{}
+	for i, r := range ranked {
+		idx[r.ModelID] = i
+	}
+
+	// Everything that fits ranks ahead of everything that does not.
+	for _, fits := range []string{"gemini-3.5-flash", "qwen/qwen3.8-27b"} {
+		for _, nofit := range []string{"liquid/lfm-2.5-2.6b:free", "tiny-8k"} {
+			if idx[fits] > idx[nofit] {
+				t.Errorf("fit ranking: %s (idx %d) should rank before %s (idx %d)",
+					fits, idx[fits], nofit, idx[nofit])
+			}
+		}
+	}
+}
+
 // helpers
 var _ = models.TierSmall // ensure package is linked
 

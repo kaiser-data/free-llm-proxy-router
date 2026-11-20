@@ -13,18 +13,26 @@ import (
 const contextWindowThreshold = 32_768
 
 // StrategyLongContext prefers models with large context windows (>32K tokens).
-// Gemini 2.0 Flash (1M context) is the top pick.
+// Gemini 2.0 Flash (1M context) is the top pick — for requests that need the
+// space. Small prompts are ranked quality-first instead; see longContextScore.
 type StrategyLongContext struct{}
 
 func (s *StrategyLongContext) Name() string { return "long_context" }
 
 func (s *StrategyLongContext) Rank(req Request, entries []catalog.CatalogEntry, enriched *models.EnrichedCatalog) []RankedEntry {
+	// need is the context the request will occupy: prompt plus the reply
+	// budget. A model with a smaller window is a guaranteed upstream 400.
+	need := req.EstimatedPromptTokens + req.MaxTokens
+	// A small prompt (input only, under Groq's ~7k/min free input limit)
+	// fits every free model: rank by quality and save the big-context
+	// models for the requests only they can hold.
+	small := req.EstimatedPromptTokens > 0 && req.EstimatedPromptTokens <= smallPromptThreshold
 	ranked := make([]RankedEntry, 0, len(entries))
 	for i, e := range entries {
 		if !e.IsFree {
 			continue
 		}
-		score := longContextScore(e, enriched)
+		score := longContextScore(e, enriched, need, small)
 		ranked = append(ranked, RankedEntry{
 			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
@@ -48,7 +56,7 @@ func (s *StrategyLongContext) Rank(req Request, entries []catalog.CatalogEntry, 
 	return ranked
 }
 
-func longContextScore(e catalog.CatalogEntry, enriched *models.EnrichedCatalog) float64 {
+func longContextScore(e catalog.CatalogEntry, enriched *models.EnrichedCatalog, need int, small bool) float64 {
 	// Use enriched context window if available
 	contextWindow := e.ContextWindow
 	if contextWindow == 0 && enriched != nil {
@@ -78,6 +86,20 @@ func longContextScore(e catalog.CatalogEntry, enriched *models.EnrichedCatalog) 
 				break
 			}
 		}
+	}
+
+	// A window that cannot hold prompt + reply ranks below every model
+	// that fits, whatever its tier: the upstream would reject the request.
+	if need > 0 && contextWindow > 0 && contextWindow < need {
+		return tier + doesNotFitPenalty
+	}
+
+	if small {
+		// Small request: quality first (see smallPromptQuality), then the
+		// window — smaller windows first, so 1M-context models are saved
+		// for the requests only they can hold. The quality term dominates:
+		// a tiny model still ranks last.
+		return smallPromptQuality(e.ModelID)*10 + windowTerm(contextWindow)
 	}
 
 	// Better models first within a tier; quality can never cross tiers
@@ -121,4 +143,49 @@ func qualityAdjustment(modelID string) float64 {
 		return -qualityTieBreakSpan
 	}
 	return adj
+}
+
+// smallPromptThreshold is the input-token estimate below which a request is
+// small: every free model can hold it, so ranking goes quality-first and
+// big-context models are saved for the requests only they can serve. It
+// sits safely under Groq's ~7k input-token-per-minute free limit, so small
+// requests can be routed to Groq's smaller-context models.
+const smallPromptThreshold = 4096
+
+// doesNotFitPenalty pushes a model whose window cannot hold prompt + reply
+// below every model that fits, including small-context last-resort models.
+const doesNotFitPenalty = 50.0
+
+// windowTerm normalises a context window to a small ranking term. Unknown
+// windows get a neutral middle value.
+func windowTerm(contextWindow int) float64 {
+	if contextWindow <= 0 {
+		return 0.5
+	}
+	return float64(contextWindow) / 1_000_000
+}
+
+// smallPromptQuality ranks how strongly a model answers a small prompt
+// (lower = stronger): code-tuned mid/large/unknown-size models first, then
+// mid/large general models, then small and "lite" models, tiny models last.
+// Purely name-pattern based, like the rest of the classifiers.
+func smallPromptQuality(modelID string) float64 {
+	rank := 1.0
+	for _, c := range models.DetectCapabilities(modelID) {
+		if c == models.CapCode {
+			rank = 0 // code-tuned models lead unless tiny or small (tier switch below)
+		}
+	}
+	switch models.ClassifyTier(models.ExtractParams(modelID)) {
+	case models.TierTiny:
+		rank = 4 // a 2-3B model is the weakest answer even for a tiny prompt
+	case models.TierSmall:
+		rank = 2 // small models answer, but mid-sized ones answer better
+	case models.TierPerformance:
+		rank = 0 // the biggest models are first-class too
+	}
+	if strings.Contains(strings.ToLower(modelID), "lite") {
+		rank++ // the lite variant of a family is its weakest member
+	}
+	return rank
 }
