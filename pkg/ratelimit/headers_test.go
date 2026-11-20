@@ -65,6 +65,46 @@ func TestExtractRateLimitInfo_AllProviders(t *testing.T) {
 		}
 	})
 
+	t.Run("openrouter_daily_reset_ms_epoch", func(t *testing.T) {
+		// Real shape verified 2026-11-20: no Retry-After, x-ratelimit-reset is
+		// a MILLISECOND epoch of the next 00:00 UTC reset.
+		resetMs := time.Now().Add(16 * time.Hour).UnixMilli()
+		h := http.Header{}
+		h.Set("x-ratelimit-reset", itoa(resetMs))
+		info := ExtractRateLimitInfo("openrouter", h, nil)
+		if info.RetryAfterMs <= 0 {
+			t.Errorf("RetryAfterMs = %d, want >0 for future ms-epoch reset", info.RetryAfterMs)
+		}
+		if !info.IsDailyLimitExhausted {
+			t.Errorf("IsDailyLimitExhausted = false, want true for reset >60min away")
+		}
+	})
+
+	t.Run("openrouter_daily_by_body_without_reset", func(t *testing.T) {
+		body := []byte(`{"error":{"message":"Rate limit exceeded: free-models-per-day","code":429}}`)
+		h := http.Header{}
+		info := ExtractRateLimitInfo("openrouter", h, body)
+		if !info.IsDailyLimitExhausted {
+			t.Errorf("IsDailyLimitExhausted = false, want true for free-models-per-day body")
+		}
+		if info.WaitDuration() <= 0 {
+			t.Errorf("WaitDuration() = %v, want >0", info.WaitDuration())
+		}
+	})
+
+	t.Run("openrouter_short_reset_not_daily", func(t *testing.T) {
+		resetMs := time.Now().Add(30 * time.Second).UnixMilli()
+		h := http.Header{}
+		h.Set("x-ratelimit-reset", itoa(resetMs))
+		info := ExtractRateLimitInfo("openrouter", h, nil)
+		if info.IsDailyLimitExhausted {
+			t.Errorf("IsDailyLimitExhausted = true, want false for reset <60min away")
+		}
+		if info.RetryAfterMs <= 0 {
+			t.Errorf("RetryAfterMs = %d, want >0", info.RetryAfterMs)
+		}
+	})
+
 	t.Run("cerebras_fractional_token_reset", func(t *testing.T) {
 		h := http.Header{}
 		h.Set("x-ratelimit-reset-tokens", "0.5")

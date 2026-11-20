@@ -443,6 +443,21 @@ func (fc *FallbackChain) cooldown429(providerID, modelID string, slot, numKeys i
 		// Quota "limit: 0" means the model is not on this key's free tier.
 		waitDur = zeroQuotaCooldown
 	}
+	if info.IsDailyLimitExhausted {
+		// Account-wide daily quota (e.g. OpenRouter free tier, reset at the
+		// next 00:00 UTC): every model of this provider would 429 the same
+		// way, so cool them all — retrying any of them would just re-burn
+		// the spent quota.
+		daily := fc.Catalog.ByProvider(providerID)
+		until := time.Now().Add(waitDur)
+		for _, entry := range daily {
+			for s := 0; s < numKeys; s++ {
+				fc.RateLimiter.SetCooldown(cooldownKey(providerID, entry.ModelID, s, numKeys), until)
+			}
+		}
+		log.Printf("fallback: %s daily quota exhausted — cooling all %d models for %s", providerID, len(daily), waitDur.Round(time.Second))
+		return
+	}
 	fc.RateLimiter.SetCooldown(cooldownKey(providerID, modelID, slot, numKeys), time.Now().Add(waitDur))
 	log.Printf("fallback: %s/%s rate limited — cooldown %s", providerID, modelID, waitDur.Round(time.Second))
 }
