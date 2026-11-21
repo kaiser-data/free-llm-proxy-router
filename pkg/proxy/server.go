@@ -25,6 +25,7 @@ import (
 // Server is the OpenAI-compatible proxy server.
 type Server struct {
 	cfg             atomic.Pointer[config.Config]
+	filters         atomic.Pointer[strategy.Filters] // built from cfg.Proxy.Filters
 	catalog         atomic.Pointer[catalog.Catalog]
 	strategyReg     *strategy.Registry
 	rateLimiter     *ratelimit.GlobalTracker
@@ -57,22 +58,31 @@ func NewServer(
 	rateLimiter *ratelimit.GlobalTracker,
 	geminiTracker *ratelimit.GeminiTracker,
 	reliabilityTracker *reliability.Tracker,
-) *Server {
+) (*Server, error) {
 	s := &Server{
 		strategyReg:        stratReg,
 		rateLimiter:        rateLimiter,
 		geminiTracker:      geminiTracker,
 		reliabilityTracker: reliabilityTracker,
 	}
-	s.cfg.Store(cfg)
+	if err := s.UpdateConfig(cfg); err != nil {
+		return nil, err
+	}
 	s.catalog.Store(cat)
 	s.cache = NewResponseCache(cfg.Proxy.CacheTTL)
-	return s
+	return s, nil
 }
 
-// UpdateConfig hot-reloads the configuration.
-func (s *Server) UpdateConfig(cfg *config.Config) {
+// UpdateConfig hot-reloads the configuration. A config whose filters do not
+// build is rejected and the current one stays in force.
+func (s *Server) UpdateConfig(cfg *config.Config) error {
+	filters, err := strategy.BuildFilters(cfg.Proxy.Filters)
+	if err != nil {
+		return err
+	}
+	s.filters.Store(&filters)
 	s.cfg.Store(cfg)
+	return nil
 }
 
 // UpdateCatalog hot-reloads the model catalog.
@@ -425,12 +435,20 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		GeminiTracker:      s.geminiTracker,
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         upstreamClient,
+		Filters:            *s.filters.Load(),
 		Stream:             req.Stream,
 	}
 
 	// Streaming requests go upstream as SSE; the chain still falls back on
 	// anything that fails before the first content chunk (see peekStream).
 	resp, err := chain.Execute(r.Context(), req)
+	if errors.Is(err, strategy.ErrNoCandidates) {
+		// No model can take this request (too long, needs tools): a retry
+		// would fail the same way, so this is the client's 400, not a 503.
+		log.Printf("fallback chain: %v", err)
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "no_model_fits_request", err.Error())
+		return
+	}
 	if err != nil {
 		log.Printf("fallback chain exhausted: %v", err)
 		// A retryable error, not a fake completion: SDKs retry 503s and honour

@@ -151,7 +151,10 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	stratReg := strategy.NewRegistry(reliabilityTracker, rateLimiter, similarFamily, geminiPreferred, fanOut, 5)
 
 	// Create server
-	srv := proxy.NewServer(cfg, cat, stratReg, rateLimiter, geminiTracker, reliabilityTracker)
+	srv, err := proxy.NewServer(cfg, cat, stratReg, rateLimiter, geminiTracker, reliabilityTracker)
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
 
 	// Handle graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -178,7 +181,10 @@ func runProxy(cmd *cobra.Command, args []string) error {
 
 	// Watch config for hot-reload
 	stopWatch, err := config.Watch(cfgFile, func(newCfg *config.Config) {
-		srv.UpdateConfig(newCfg)
+		if err := srv.UpdateConfig(newCfg); err != nil {
+			log.Printf("proxy: config reload rejected, keeping the previous config: %v", err)
+			return
+		}
 		log.Printf("proxy: config hot-reloaded")
 	})
 	if err != nil {

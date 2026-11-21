@@ -1,4 +1,3 @@
-// Package strategy implements the 13 model-selection strategies.
 package strategy
 
 import (
@@ -6,232 +5,154 @@ import (
 	"fmt"
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/config"
 )
 
-// Verdict represents the decision a filter makes about a candidate.
+// Verdict is a filter's decision about one candidate.
 type Verdict int
 
 const (
-	// Keep means the candidate passes the filter.
+	// Keep: the candidate can serve the request.
 	Keep Verdict = iota
-	// Drop means the candidate is filtered out.
+	// Drop: the candidate cannot serve the request.
 	Drop
-	// Unknown means the filter cannot decide (missing metadata).
+	// Unknown: the filter lacks the metadata to decide. The filter's
+	// "unknown" setting (keep|drop, default keep) settles it in Filters.keeps.
 	Unknown
 )
 
-// Filter is implemented by all model filters.
-// Filters narrow the candidate list BEFORE strategies rank it.
+// Filter narrows the candidate list before a strategy ranks it.
 type Filter interface {
 	// Name returns the filter identifier used in config.
 	Name() string
-	// Judge evaluates a catalog entry against the request.
-	// Return Keep to include, Drop to exclude, Unknown if metadata is missing.
+	// Judge decides whether e can serve req. It returns Unknown instead of
+	// guessing when the entry lacks the metadata it needs.
 	Judge(req Request, e catalog.CatalogEntry) Verdict
 }
 
-// UnknownBehavior controls what happens when a filter returns Unknown.
-type UnknownBehavior int
+// ErrNoCandidates is returned when the filters leave no model that can serve
+// the request. Retrying will not help, so it is not a 503.
+var ErrNoCandidates = errors.New("no free model fits the request after filtering")
 
-const (
-	// UnknownKeep includes candidates when the filter cannot decide (default).
-	UnknownKeep UnknownBehavior = iota
-	// UnknownDrop excludes candidates when the filter cannot decide.
-	UnknownDrop
-)
-
-// FilterConfig holds the configuration for a single filter.
-type FilterConfig struct {
-	Name      string                 `mapstructure:"name"`
-	Settings  map[string]any         `mapstructure:"settings"`
-	Unknown   string                 `mapstructure:"unknown"` // "keep" | "drop" (default: "keep")
+// filterConstructors maps config names to constructors. A constructor gets the
+// filter's settings without "name" and "unknown", and must reject keys it does
+// not know so a typo fails at startup.
+var filterConstructors = map[string]func(settings map[string]any) (Filter, error){
+	"context-fit":  newContextFitFilter,
+	"tool-calling": newToolCallingFilter,
 }
 
-// filterRegistry maps filter names to constructors.
-type filterRegistry struct {
-	constructors map[string]func(map[string]any) (Filter, error)
+// configuredFilter is a built filter plus its policy for Unknown verdicts.
+type configuredFilter struct {
+	Filter
+	dropUnknown bool
 }
 
-var defaultFilterRegistry = &filterRegistry{
-	constructors: map[string]func(map[string]any) (Filter, error){
-		"context-fit":      newContextFitFilter,
-		"tool-calling":     newToolCallingFilter,
-	},
-}
+// Filters is a validated filter chain, built once per config load. The zero
+// value filters nothing.
+type Filters []configuredFilter
 
-// RegisterFilter adds a filter constructor to the registry.
-func RegisterFilter(name string, constructor func(map[string]any) (Filter, error)) {
-	defaultFilterRegistry.constructors[name] = constructor
-}
-
-// BuildFilters creates filter instances from their configurations.
-func BuildFilters(configs []FilterConfig) ([]Filter, error) {
-	var filters []Filter
-	for _, fc := range configs {
-		constructor, ok := defaultFilterRegistry.constructors[fc.Name]
+// BuildFilters validates the configured filters and builds them in order.
+func BuildFilters(cfgs []config.FilterConfig) (Filters, error) {
+	var out Filters
+	for i, fc := range cfgs {
+		ctor, ok := filterConstructors[fc.Name]
 		if !ok {
-			return nil, fmt.Errorf("unknown filter: %q", fc.Name)
+			return nil, fmt.Errorf("proxy.filters[%d]: unknown filter %q", i, fc.Name)
 		}
-		// Merge the unknown setting into settings for the constructor
-		settings := make(map[string]any)
+		settings := make(map[string]any, len(fc.Settings))
+		dropUnknown := false
 		for k, v := range fc.Settings {
-			settings[k] = v
+			if k != "unknown" {
+				settings[k] = v
+				continue
+			}
+			switch v {
+			case "keep":
+			case "drop":
+				dropUnknown = true
+			default:
+				return nil, fmt.Errorf("proxy.filters[%d] %s: unknown must be keep or drop, got %v", i, fc.Name, v)
+			}
 		}
-		if fc.Unknown != "" {
-			settings["unknown"] = fc.Unknown
-		}
-		f, err := constructor(settings)
+		f, err := ctor(settings)
 		if err != nil {
-			return nil, fmt.Errorf("building filter %q: %w", fc.Name, err)
+			return nil, fmt.Errorf("proxy.filters[%d] %s: %w", i, fc.Name, err)
 		}
-		filters = append(filters, f)
+		out = append(out, configuredFilter{Filter: f, dropUnknown: dropUnknown})
 	}
-	return filters, nil
+	return out, nil
 }
 
-// toolCallingFilter checks if the model supports tool calling.
-type toolCallingFilter struct {
-	unknownBehavior UnknownBehavior
-}
-
-// newToolCallingFilter creates a tool-calling filter.
-// Settings: unknown (keep|drop, default keep) — behavior when capability metadata is missing.
-func newToolCallingFilter(settings map[string]any) (Filter, error) {
-	unknown := UnknownKeep
-	if u, ok := settings["unknown"]; ok {
-		switch v := u.(type) {
-		case string:
-			if v == "drop" {
-				unknown = UnknownDrop
+// Keeps reports whether every filter lets e serve req. This is the one place
+// an Unknown verdict becomes keep or drop.
+func (fs Filters) Keeps(req Request, e catalog.CatalogEntry) bool {
+	for _, f := range fs {
+		switch f.Judge(req, e) {
+		case Drop:
+			return false
+		case Unknown:
+			if f.dropUnknown {
+				return false
 			}
 		}
 	}
-	return &toolCallingFilter{unknownBehavior: unknown}, nil
+	return true
 }
 
-func (f *toolCallingFilter) Name() string { return "tool-calling" }
-
-func (f *toolCallingFilter) Judge(req Request, e catalog.CatalogEntry) Verdict {
-	if !req.HasTools {
-		return Keep // not a tools request, no filtering needed
+// Apply returns the entries that pass every filter, in their original order.
+// It filters in place, reusing entries' backing array (no allocation per
+// request), so callers pass a slice they own, such as Catalog.FreeEntries().
+// The result may be empty.
+func (fs Filters) Apply(req Request, entries []catalog.CatalogEntry) []catalog.CatalogEntry {
+	if len(fs) == 0 {
+		return entries
 	}
-
-	// Check metadata for tool-calling capability
-	// Expected metadata keys: "supports_tools", "has_tools", "tools", "function_calling"
-	if meta, ok := e.Metadata["supports_tools"].(bool); ok {
-		if meta {
-			return Keep
-		}
-		return Drop
-	}
-	if meta, ok := e.Metadata["has_tools"].(bool); ok {
-		if meta {
-			return Keep
-		}
-		return Drop
-	}
-	if meta, ok := e.Metadata["tools"].(bool); ok {
-		if meta {
-			return Keep
-		}
-		return Drop
-	}
-	if meta, ok := e.Metadata["function_calling"].(bool); ok {
-		if meta {
-			return Keep
-		}
-		return Drop
-	}
-
-	// Check OpenRouter's supported_parameters for "tools" or "functions"
-	if sp, ok := e.Metadata["supported_parameters"].([]any); ok {
-		for _, p := range sp {
-			if s, ok := p.(string); ok && (s == "tools" || s == "functions") {
-				return Keep
-			}
-		}
-	}
-	if sp, ok := e.Metadata["supported_parameters"].([]string); ok {
-		for _, p := range sp {
-			if p == "tools" || p == "functions" {
-				return Keep
-			}
-		}
-	}
-
-	// Unknown capability
-	switch f.unknownBehavior {
-	case UnknownDrop:
-		return Drop
-	default:
-		return Unknown
-	}
-}
-
-// ApplyFilters runs all filters on the candidate list.
-// If all candidates are dropped, returns an error instead of an empty list.
-func ApplyFilters(req Request, entries []catalog.CatalogEntry, filters []Filter) ([]catalog.CatalogEntry, error) {
-	if len(filters) == 0 {
-		return entries, nil
-	}
-
-	var kept []catalog.CatalogEntry
+	kept := entries[:0]
 	for _, e := range entries {
-		keep := true
-		for _, f := range filters {
-			verdict := f.Judge(req, e)
-			switch verdict {
-			case Drop:
-				keep = false
-				break
-			case Unknown:
-				// UnknownBehavior is encoded in the filter implementation.
-				// For filters that support it (like tool-calling), the filter
-				// itself returns Keep or Drop based on its configured behavior.
-				// For filters that don't (like context-fit), Unknown is never returned.
-				keep = false // conservative: treat Unknown as Drop
-			case Keep:
-				// continue to next filter
-			}
-			if !keep {
-				break
-			}
-		}
-		if keep {
+		if fs.Keeps(req, e) {
 			kept = append(kept, e)
 		}
 	}
-
-	if len(kept) == 0 {
-		return nil, ErrNoCandidates
-	}
-	return kept, nil
+	return kept
 }
 
-// ErrNoCandidates is returned when filters remove all candidates.
-var ErrNoCandidates = errors.New("no free model fits the request after filtering")
+// Names lists the filters for log and error messages.
+func (fs Filters) Names() []string {
+	names := make([]string, len(fs))
+	for i, f := range fs {
+		names[i] = f.Name()
+	}
+	return names
+}
 
-// contextFitFilter checks if the model's context window can accommodate the request.
+// contextFitFilter drops models whose context window cannot hold
+// (prompt + max_tokens) * margin.
 type contextFitFilter struct {
 	margin float64
 }
 
-// newContextFitFilter creates a context-fit filter.
-// Settings: margin (float64, default 1.2) — safety factor on estimated tokens.
+// newContextFitFilter: margin (number >= 1, default 1.2) is the safety factor
+// on the estimated token count.
 func newContextFitFilter(settings map[string]any) (Filter, error) {
-	margin := 1.2
-	if m, ok := settings["margin"]; ok {
-		switch v := m.(type) {
+	f := &contextFitFilter{margin: 1.2}
+	for k, v := range settings {
+		if k != "margin" {
+			return nil, fmt.Errorf("unknown setting %q", k)
+		}
+		switch n := v.(type) {
 		case float64:
-			margin = v
+			f.margin = n
 		case int:
-			margin = float64(v)
+			f.margin = float64(n)
+		default:
+			return nil, fmt.Errorf("margin must be a number, got %v", v)
+		}
+		if f.margin < 1 {
+			return nil, fmt.Errorf("margin must be at least 1, got %v", v)
 		}
 	}
-	if margin < 1.0 {
-		margin = 1.0
-	}
-	return &contextFitFilter{margin: margin}, nil
+	return f, nil
 }
 
 func (f *contextFitFilter) Name() string { return "context-fit" }
@@ -240,9 +161,57 @@ func (f *contextFitFilter) Judge(req Request, e catalog.CatalogEntry) Verdict {
 	if e.ContextWindow <= 0 {
 		return Unknown
 	}
-	required := int(float64(req.EstimatedPromptTokens+req.MaxTokens) * f.margin)
-	if required > e.ContextWindow {
+	required := float64(req.EstimatedPromptTokens+req.MaxTokens) * f.margin
+	if required > float64(e.ContextWindow) {
 		return Drop
 	}
 	return Keep
+}
+
+// toolCallingFilter drops models that cannot call tools when the request
+// carries tools. It reads OpenRouter's supported_parameters; other providers
+// do not report it yet, so their models are Unknown.
+type toolCallingFilter struct{}
+
+func newToolCallingFilter(settings map[string]any) (Filter, error) {
+	for k := range settings {
+		return nil, fmt.Errorf("unknown setting %q", k)
+	}
+	return toolCallingFilter{}, nil
+}
+
+func (toolCallingFilter) Name() string { return "tool-calling" }
+
+func (toolCallingFilter) Judge(req Request, e catalog.CatalogEntry) Verdict {
+	if !req.HasTools {
+		return Keep
+	}
+	params, ok := supportedParameters(e)
+	if !ok {
+		return Unknown
+	}
+	for _, p := range params {
+		if p == "tools" {
+			return Keep
+		}
+	}
+	return Drop // the provider listed its parameters and tools is not one
+}
+
+// supportedParameters reads the "supported_parameters" metadata: []string
+// straight from a scan, []any once the catalog has been through JSON.
+func supportedParameters(e catalog.CatalogEntry) ([]string, bool) {
+	switch v := e.Metadata["supported_parameters"].(type) {
+	case []string:
+		return v, true
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, p := range v {
+			if s, ok := p.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out, true
+	}
+	return nil, false
 }

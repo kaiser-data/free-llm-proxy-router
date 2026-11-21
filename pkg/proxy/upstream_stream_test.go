@@ -183,7 +183,10 @@ func TestStream_FirstChunkArrivesBeforeProviderFinishes(t *testing.T) {
 	cfg.Proxy.Strategy = "adaptive"
 	cat := &catalog.Catalog{Entries: []catalog.CatalogEntry{{ProviderID: "alpha", ModelID: "m", IsFree: true}}}
 	rl, rel := ratelimit.NewGlobalTracker(), reliability.New()
-	s := NewServer(cfg, cat, strategy.NewRegistry(rel, rl, "", "", 3, 5), rl, nil, rel)
+	s, err := NewServer(cfg, cat, strategy.NewRegistry(rel, rl, "", "", 3, 5), rl, nil, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
 	proxy := httptest.NewServer(loggingMiddleware(http.HandlerFunc(s.handleChatCompletions)))
 	defer proxy.Close()
 	defer close(release) // runs first, so the handlers can finish before Close
@@ -224,7 +227,11 @@ func singleProviderServer(upstreamURL string, mutate func(*config.Config)) *Serv
 	}
 	cat := &catalog.Catalog{Entries: []catalog.CatalogEntry{{ProviderID: "alpha", ModelID: "m", IsFree: true}}}
 	rl, rel := ratelimit.NewGlobalTracker(), reliability.New()
-	return NewServer(cfg, cat, strategy.NewRegistry(rel, rl, "", "", 3, 5), rl, nil, rel)
+	s, err := NewServer(cfg, cat, strategy.NewRegistry(rel, rl, "", "", 3, 5), rl, nil, rel)
+	if err != nil {
+		panic(err)
+	}
+	return s
 }
 
 const streamBody = `{"model":"auto","stream":true,"messages":[{"role":"user","content":"hi"}]}`

@@ -38,6 +38,9 @@ type FallbackChain struct {
 	GeminiTracker   *ratelimit.GeminiTracker
 	ReliabilityTracker *reliability.Tracker
 	HTTPClient      *http.Client
+	// Filters drop candidates that cannot serve the request (proxy.filters),
+	// built once per config load. Nil filters nothing.
+	Filters strategy.Filters
 	// Stream asks providers for SSE. A provider's stream is committed to the
 	// client at its first content chunk; everything before that still falls
 	// back. Gemini is always buffered (its thoughts are stripped from the
@@ -114,30 +117,15 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 	}
 	est := stratReq.EstimatedPromptTokens
 
-	// Apply filters before ranking
-	filterConfigs := fc.Cfg.Proxy.Filters
-	var filters []strategy.Filter
-	if len(filterConfigs) > 0 {
-		var err error
-		stratFilterConfigs := make([]strategy.FilterConfig, len(filterConfigs))
-		for i, fcCfg := range filterConfigs {
-			stratFilterConfigs[i] = strategy.FilterConfig{
-				Name:     fcCfg.Name,
-				Settings: fcCfg.Settings,
-				Unknown:  fcCfg.Unknown,
-			}
-		}
-		filters, err = strategy.BuildFilters(stratFilterConfigs)
-		if err != nil {
-			return nil, fmt.Errorf("building filters: %w", err)
-		}
-	}
-	filteredEntries, err := strategy.ApplyFilters(stratReq, freeEntries, filters)
-	if err != nil {
-		return nil, err
+	// Filters drop models that cannot serve the request before ranking. If
+	// none is left, only the openrouter/free router below can still answer.
+	candidates := fc.Filters.Apply(stratReq, freeEntries)
+	filteredOut := len(candidates) == 0 && len(freeEntries) > 0
+	if filteredOut {
+		log.Printf("fallback: filters %v left no candidate model", fc.Filters.Names())
 	}
 
-	ranked := fc.Strategy.Rank(stratReq, filteredEntries, nil)
+	ranked := fc.Strategy.Rank(stratReq, candidates, nil)
 	maxAttempts := fc.Cfg.Fallback.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 5
@@ -234,14 +222,17 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 
 	// Ultimate fallback: OpenRouter's free router picks any free model. It
 	// runs even after maxAttempts, as the one designed last resort.
-	// Apply the same filters so we don't send a request that will fail anyway.
-	if fc.findProvider("openrouter") != nil && !failedProviders["openrouter"] {
+	//
+	// The filters judge it like any model. It has no context window or
+	// supported_parameters, so it runs only where the filters keep unknowns.
+	if fc.findProvider("openrouter") != nil && !failedProviders["openrouter"] &&
+		fc.Filters.Keeps(stratReq, openRouterFreeEntry) {
 		log.Printf("fallback: trying openrouter/free ultimate fallback")
-		// The openrouter/free router will pick a model, but we should check
-		// if any model in the filtered list passes our filters.
-		// Since the router picks dynamically, we just check if the filtered list
-		// is non-empty (it is, since we got here).
-		res := fc.attempt(ctx, "openrouter", "openrouter/free", OpenRouterFreeRouterRequest(fc.buildBody("openrouter", req.Raw, "openrouter/free")), est)
+		body := OpenRouterFreeRouterRequest(fc.buildBody("openrouter", req.Raw, "openrouter/free"))
+		if stratReq.HasTools && len(fc.Filters) > 0 {
+			requireParameters(body)
+		}
+		res := fc.attempt(ctx, "openrouter", "openrouter/free", body, est)
 		attempts += res.calls
 		if res.err != nil {
 			return nil, res.err
@@ -259,7 +250,24 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 	if lastRejection != nil && !otherFailures && (!skipped || len(rejectedBy) >= 2) {
 		return lastRejection, nil
 	}
+	if filteredOut {
+		return nil, fmt.Errorf("%w (filters: %v)", strategy.ErrNoCandidates, fc.Filters.Names())
+	}
 	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempts)
+}
+
+// openRouterFreeEntry stands for the openrouter/free router when the filters
+// judge it: it picks the model itself, so nothing about it is known.
+var openRouterFreeEntry = catalog.CatalogEntry{ProviderID: "openrouter", ModelID: "openrouter/free", IsFree: true}
+
+// requireParameters asks OpenRouter to route only to providers that support
+// every request parameter, so a tool request is not silently answered by a
+// provider that ignores the tools.
+func requireParameters(body map[string]any) {
+	prov, _ := body["provider"].(map[string]any)
+	prov = copyMap(prov) // the client's own provider object stays untouched
+	prov["require_parameters"] = true
+	body["provider"] = prov
 }
 
 // availableModels returns a provider's ranked models that are not on cooldown.

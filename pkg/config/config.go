@@ -22,11 +22,16 @@ type Config struct {
 	Providers []ProviderConfig `mapstructure:"providers"`
 }
 
-// FilterConfig holds the configuration for a single filter.
+// FilterConfig is one entry of proxy.filters:
+//
+//   - name: context-fit
+//     margin: 1.2
+//
+// Every key besides name lands in Settings, including the shared
+// unknown: keep|drop. pkg/strategy validates them (BuildFilters).
 type FilterConfig struct {
 	Name     string         `mapstructure:"name"`
-	Settings map[string]any `mapstructure:"settings"`
-	Unknown  string         `mapstructure:"unknown"` // "keep" | "drop" (default: "keep")
+	Settings map[string]any `mapstructure:",remain"`
 }
 
 // ProxyConfig holds proxy server settings.
