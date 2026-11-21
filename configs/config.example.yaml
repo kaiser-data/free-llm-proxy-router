@@ -324,7 +324,12 @@ providers:
     priority: 16
     timeout: "30s"
     tier_type: "free"
-    # Scan: mixed. Only the default free models are free; anonymous use is allowed.
+    # Scan: mixed. Only the default free models are free (the isFree flag on
+    # each listing entry); anonymous use is allowed.
+    discovery:
+      models_endpoint: "/models"
+      free_detect_field: "isFree"
+      free_detect_value: "true"
     rate_limit_notes: "200 req/hour per IP on free models."
 
   - id: routeway
@@ -335,8 +340,11 @@ providers:
     priority: 17
     timeout: "30s"
     tier_type: "free"
-    # Scan: mixed. Only model IDs ending in :free are free, and the generic scanner does not
-    # filter on that suffix. Prune non-:free entries from the catalog.
+    # Scan: mixed. Only model IDs ending in :free are free — free_markers
+    # makes the generic scanner filter on that suffix.
+    discovery:
+      models_endpoint: "/models"
+      free_markers: [":free"]
     rate_limit_notes: "Registration. :free models: 5 RPM, 200 req/day, shared queue."
 
   - id: requesty
