@@ -138,6 +138,11 @@ func (c *Catalog) KeepUnscanned(prev *Catalog) []string {
 var nonChatPatterns = []string{
 	"embed", "rerank", "image", "vision-only",
 	"tts", "stt", "whisper", "orpheus", "transcribe",
+	// Voyage AI models are all embeddings or rerankers (voyage-3,
+	// voyage-code-2, …) — UnoRouter lists them with a :free suffix.
+	"voyage",
+	// BGE (BAAI General Embedding) models, likewise :free on UnoRouter.
+	"bge",
 	"guard",
 	// Gemini media and agent models listed alongside chat models
 	"nano-banana", "lyria", "robotics", "computer-use", "deep-research",

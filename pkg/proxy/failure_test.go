@@ -87,7 +87,6 @@ func TestFallbackChain_401OnOneKeyUsesNextKey(t *testing.T) {
 		t.Errorf("second request tried %v, want only the good key", calls)
 	}
 }
-
 func TestFallbackChain_5xxCoolsDownModelBriefly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"overloaded"}}`, http.StatusServiceUnavailable)
@@ -305,6 +304,69 @@ func TestFallbackChain_400StaysRetryableWhileAProviderIsOnCooldown(t *testing.T)
 	resp, err := fc.Execute(context.Background(), hiReq())
 	if err == nil {
 		t.Errorf("client gets status %d (non-retryable) while a working provider is only on cooldown: %s", resp.StatusCode, resp.Body)
+	}
+}
+
+// Provider: UnoRouter (verified 2026-11-20): a 403 consent_required means
+// the account has not consented to this model's upstream provider yet. The
+// key is fine and models behind already-consented providers still answer,
+// so only the model sits out — a provider-wide cooldown would hide them all.
+func TestFallbackChain_Consent403CoolsModelNotProvider(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"code":"consent_required","message":"m:free needs your consent for these providers: cfp (United States). Give it once at https://unorouter.com/consents"}}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+	fc, rl, _ := newTestChain(srv.URL, "unorouter", "m:free")
+	if resp, err := fc.Execute(context.Background(), hiReq()); err == nil {
+		t.Fatalf("got status %d, want exhaustion (503)", resp.StatusCode)
+	}
+	if !rl.IsOnCooldown("unorouter/m:free") {
+		t.Error("consent-gated model not cooled down")
+	}
+	if rl.IsOnCooldown("unorouter") {
+		t.Error("consent 403 put the whole provider on auth cooldown")
+	}
+}
+
+// A consent 403 is not a key rejection: the same key serves models whose
+// upstream providers are already consented.
+func TestIsKeyRejection_Consent403IsNotKeyRejection(t *testing.T) {
+	consent := []byte(`{"error":{"code":"consent_required","message":"m needs your consent for these providers: cfp"}}`)
+	if isKeyRejection(&Response{StatusCode: http.StatusForbidden, Body: consent}) {
+		t.Error("consent_required 403 classified as key rejection")
+	}
+	if !isConsent403(consent) {
+		t.Error("isConsent403 did not recognise the consent body")
+	}
+	credit := []byte(`{"error":{"message":"This provider ran out of credit on their side. That is on us, not you: retry and the request goes to another provider."}}`)
+	if isKeyRejection(&Response{StatusCode: http.StatusForbidden, Body: credit}) {
+		t.Error("upstream out-of-credit 403 classified as key rejection")
+	}
+	if !isUpstreamCredit403(credit) {
+		t.Error("isUpstreamCredit403 did not recognise the credit body")
+	}
+	if !isKeyRejection(&Response{StatusCode: http.StatusForbidden, Body: []byte(`{"error":{"message":"invalid api key"}}`)}) {
+		t.Error("plain 403 not classified as key rejection")
+	}
+}
+
+// An upstream out-of-credit 403 is upstream capacity, not the key: the
+// model rests briefly like after a 5xx, and the key stays usable for the
+// models whose upstream providers are fine.
+func TestFallbackChain_UpstreamCredit403CoolsModelNotKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"This provider ran out of credit on their side. That is on us, not you: retry and the request goes to another provider."}}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+	fc, rl, _ := newTestChain(srv.URL, "unorouter", "m:free")
+	if resp, err := fc.Execute(context.Background(), hiReq()); err == nil {
+		t.Fatalf("got status %d, want exhaustion (503)", resp.StatusCode)
+	}
+	if !rl.IsOnCooldown("unorouter/m:free") {
+		t.Error("upstream out-of-credit model not on cooldown")
+	}
+	if rl.IsOnCooldown("unorouter") {
+		t.Error("upstream out-of-credit 403 cooled the key/provider")
 	}
 }
 

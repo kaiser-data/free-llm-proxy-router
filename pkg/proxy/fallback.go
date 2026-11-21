@@ -473,6 +473,22 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 			log.Printf("fallback: %s reliability below 50%% — short cooldown", providerID)
 		}
 		return attemptResult{resp: resp, outcome: outProviderFail, calls: calls}
+	case status == http.StatusForbidden && isConsent403(resp.Body):
+		// Provider: UnoRouter (verified 2026-11-20): a 403 consent_required
+		// means the account has not consented to this model's upstream
+		// provider yet (unorouter.com/consents). The key is fine and models
+		// behind already-consented providers still answer, so this cools the
+		// model only — cooling the key would hide them all.
+		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(consentCooldown))
+		log.Printf("fallback: %s/%s needs upstream consent (403 consent_required) — model cooldown %s, trying next model%s", providerID, modelID, consentCooldown, upstreamErrSnippet(resp, err))
+	case status == http.StatusForbidden && isUpstreamCredit403(resp.Body):
+		// Provider: UnoRouter (verified 2026-11-20): "This provider ran out
+		// of credit on their side. That is on us, not you: retry and the
+		// request goes to another provider." Upstream capacity, not the key
+		// — a short model cooldown like a 5xx instead of cooling the key.
+		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(serverErrorCooldown))
+		fc.ReliabilityTracker.Record(providerID, false)
+		log.Printf("fallback: %s/%s status 403 — upstream out of credit, model cooldown %s, trying next model%s", providerID, modelID, serverErrorCooldown, upstreamErrSnippet(resp, err))
 	case status == http.StatusBadRequest && isModelSpecific400(resp.Body):
 		// The 400 blames the model (decommissioned, "only supports
 		// Interactions API"): it sits out, and the provider's next model can
@@ -691,6 +707,11 @@ const (
 	badRequestCooldown = time.Hour
 	// authCooldown applies to a key slot (or a single-key provider) after 401/403.
 	authCooldown = 10 * time.Minute
+	// consentCooldown applies to a model whose upstream provider awaits the
+	// account's consent (Provider: UnoRouter, 403 consent_required). Consent
+	// is given by a human on the provider's site, so retrying sooner than an
+	// hour cannot succeed; the model stays cataloged for after consenting.
+	consentCooldown = time.Hour
 	// serverErrorCooldown applies to a model after a 5xx.
 	serverErrorCooldown = 30 * time.Second
 )
@@ -714,13 +735,31 @@ func isRequestRejection(resp *Response) bool {
 }
 
 // isKeyRejection reports whether a response rejects the API key (401, or a
-// 403 that is not about the request's content).
+// 403 that is not about the request's content, its consent gate, or the
+// upstream provider's own credit).
 func isKeyRejection(resp *Response) bool {
 	if resp == nil {
 		return false
 	}
 	return resp.StatusCode == http.StatusUnauthorized ||
-		(resp.StatusCode == http.StatusForbidden && !isModeration403(resp.Body))
+		(resp.StatusCode == http.StatusForbidden && !isModeration403(resp.Body) && !isConsent403(resp.Body) && !isUpstreamCredit403(resp.Body))
+}
+
+// isConsent403 reports whether a 403 asks for the account's consent to an
+// upstream provider (Provider: UnoRouter, verified 2026-11-20:
+// `{"error":{"code":"consent_required","message":"…needs your consent for
+// these providers: …"}}`). The key is valid — cooling it down would hide
+// every model behind already-consented providers.
+func isConsent403(body []byte) bool {
+	return bytes.Contains(body, []byte("consent_required"))
+}
+
+// isUpstreamCredit403 reports whether a 403 says the upstream provider ran
+// out of credit (Provider: UnoRouter, verified 2026-11-20: "This provider
+// ran out of credit on their side. That is on us, not you"). The key is
+// valid and the failure is upstream capacity, so it is transient like a 5xx.
+func isUpstreamCredit403(body []byte) bool {
+	return bytes.Contains(body, []byte("ran out of credit"))
 }
 
 // isModeration403 reports whether a 403 blocks the request's content
