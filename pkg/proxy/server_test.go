@@ -28,7 +28,11 @@ func newTestServer(upstreamURL string, cacheTTL int) *Server {
 	cat := &catalog.Catalog{Entries: []catalog.CatalogEntry{{ProviderID: "gemini", ModelID: "gemma", IsFree: true}}}
 	rl, rel := ratelimit.NewGlobalTracker(), reliability.New()
 	reg := strategy.NewRegistry(rel, rl, "", "", 3, 5)
-	return NewServer(cfg, cat, reg, rl, nil, rel)
+	s, err := NewServer(cfg, cat, reg, rl, nil, rel)
+	if err != nil {
+		panic(err)
+	}
+	return s
 }
 
 // StripGeminiThoughts shortens the body; the upstream Content-Length must not

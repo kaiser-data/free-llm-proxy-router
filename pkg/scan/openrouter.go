@@ -32,9 +32,10 @@ type OpenRouterScanner struct {
 }
 
 type orModel struct {
-	ID      string `json:"id"`
-	Context int    `json:"context_length"`
-	Pricing struct {
+	ID                  string   `json:"id"`
+	Context             int      `json:"context_length"`
+	SupportedParameters []string `json:"supported_parameters"`
+	Pricing             struct {
 		Prompt     string `json:"prompt"`
 		Completion string `json:"completion"`
 	} `json:"pricing"`
@@ -91,12 +92,20 @@ func (s *OpenRouterScanner) ScanFreeModels(ctx context.Context, cfg config.Provi
 			continue
 		}
 
+		// supported_parameters feeds the tool-calling filter: present
+		// without "tools" means the model definitely cannot call tools.
+		var meta map[string]any
+		if m.SupportedParameters != nil {
+			meta = map[string]any{"supported_parameters": m.SupportedParameters}
+		}
+
 		entries = append(entries, catalog.CatalogEntry{
 			ProviderID:     cfg.ID,
 			ModelID:        m.ID,
 			IsFree:         true,
 			TierType:       "free",
 			ContextWindow:  m.Context,
+			Metadata:       meta,
 			DiscoveredAt:   time.Now(),
 			LastVerifiedAt: time.Now(),
 		})

@@ -22,6 +22,18 @@ type Config struct {
 	Providers []ProviderConfig `mapstructure:"providers"`
 }
 
+// FilterConfig is one entry of proxy.filters:
+//
+//   - name: context-fit
+//     margin: 1.2
+//
+// Every key besides name lands in Settings, including the shared
+// unknown: keep|drop. pkg/strategy validates them (BuildFilters).
+type FilterConfig struct {
+	Name     string         `mapstructure:"name"`
+	Settings map[string]any `mapstructure:",remain"`
+}
+
 // ProxyConfig holds proxy server settings.
 type ProxyConfig struct {
 	// Host is the listen address. Default 127.0.0.1: the proxy spends your
@@ -38,6 +50,9 @@ type ProxyConfig struct {
 
 	// Similar holds model_family for the "similar" strategy.
 	Similar map[string]string `mapstructure:"similar"`
+
+	// Filters narrow the candidate list before strategies rank it.
+	Filters []FilterConfig `mapstructure:"filters"`
 
 	// Agents maps profile names to per-agent routing configuration.
 	// An agent sets model: "<profile-name>" and the proxy resolves it here.

@@ -46,6 +46,26 @@ proxy:
   similar:
     model_family: "llama-3.1-70b"
 
+  # Filters drop models that cannot serve a request BEFORE the strategy ranks
+  # the rest. They are checked at startup and on reload: a typo stops the
+  # proxy from starting instead of failing requests.
+  #
+  # context-fit:  drops models whose context window cannot hold
+  #               (prompt + max_tokens) * margin. margin: >= 1, default 1.2.
+  # tool-calling: for requests with tools, drops models known not to support
+  #               them. Only OpenRouter reports this today.
+  #
+  # Every filter takes unknown: keep|drop (default keep) for models without
+  # the metadata to decide (no context window, no supported_parameters). The
+  # openrouter/free last-resort router is always "unknown"; with keep it still
+  # runs, and for tool requests it is sent require_parameters so OpenRouter
+  # only routes to providers that support tools.
+  filters:
+    - name: context-fit
+      margin: 1.2
+    - name: tool-calling
+      unknown: keep
+
   # Agent profiles: let named AI agents use different routing strategies.
   # An agent sends model: "<profile-name>" to select a profile.
   #

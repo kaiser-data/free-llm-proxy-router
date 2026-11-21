@@ -10,7 +10,7 @@
 [![CI](https://github.com/kaiser-data/free-llm-proxy-router/actions/workflows/ci.yml/badge.svg)](https://github.com/kaiser-data/free-llm-proxy-router/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kaiser-data/free-llm-proxy-router?color=2f7a4b)](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](go.mod)
-[![tests](https://img.shields.io/badge/tests-137%20passing-2f7a4b)](.github/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-146%20passing-2f7a4b)](.github/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 [**Free model list**](FREE_MODELS.md) · [Install](#install) · [PicoClaw & small boards](#run-it-beside-picoclaw-on-a-10-board) · [Strategies](#pick-a-strategy) · [How it works](#how-it-works) · [Limits](#honest-limits)
@@ -168,6 +168,19 @@ proxy:
 
 A pinned model that has left the free catalog falls back to the profile's strategy instead of failing.
 
+**Filters** drop models that cannot serve a request before the strategy ranks the rest ([#13](https://github.com/kaiser-data/free-llm-proxy-router/issues/13)):
+
+```yaml
+proxy:
+  filters:
+    - name: context-fit      # prompt + max_tokens, times margin, must fit the context window
+      margin: 1.2
+    - name: tool-calling     # requests with tools skip models known not to support them
+      unknown: keep          # keep (default) or drop models without that metadata
+```
+
+Only OpenRouter reports tool support today, so other providers' models are "unknown". If no model is left, the `openrouter/free` router still runs where unknowns are kept (with `require_parameters` for tool requests); otherwise the client gets a `400 no_model_fits_request`, since a retry would fail the same way. Filters are checked at startup and on reload, so a typo stops the proxy instead of failing requests.
+
 ## Providers
 
 One key is enough to start, and every extra key adds capacity. **These providers are on by default and stay idle until their key is set:**
@@ -319,18 +332,18 @@ configs/            bundled config and the free-model catalog
 ## Development
 
 ```bash
-go test -race ./...    # 137 tests
+go test -race ./...    # 146 tests
 go vet ./...
 make build
 ```
 
-**Next:** filters for tool calling and context size · Gemini tool-call signatures across turns ([#30](https://github.com/kaiser-data/free-llm-proxy-router/pull/30)) · a recount of the free-model list with the fixed scanner.
+**Next:** Gemini tool-call signatures across turns ([#30](https://github.com/kaiser-data/free-llm-proxy-router/pull/30)) · a recount of the free-model list with the fixed scanner.
 
 ## Contributors
 
 Thank you to everyone who has helped make this better:
 
-- [@BenediktChlopik](https://github.com/BenediktChlopik): empty-completion detection, so a `200` with no content is never passed off as an answer ([#16](https://github.com/kaiser-data/free-llm-proxy-router/pull/16), [#17](https://github.com/kaiser-data/free-llm-proxy-router/pull/17)), and new free providers ([#15](https://github.com/kaiser-data/free-llm-proxy-router/pull/15))
+- [@BenediktChlopik](https://github.com/BenediktChlopik): empty-completion detection, so a `200` with no content is never passed off as an answer ([#16](https://github.com/kaiser-data/free-llm-proxy-router/pull/16), [#17](https://github.com/kaiser-data/free-llm-proxy-router/pull/17)), new free providers ([#15](https://github.com/kaiser-data/free-llm-proxy-router/pull/15)), and model filters for context fit and tool calling ([#26](https://github.com/kaiser-data/free-llm-proxy-router/pull/26))
 - [@zedtux](https://github.com/zedtux): free-model detection for gateways that mix free and paid models ([#34](https://github.com/kaiser-data/free-llm-proxy-router/pull/34)), UnoRouter ([#36](https://github.com/kaiser-data/free-llm-proxy-router/pull/36)) and its consent and credit errors ([#35](https://github.com/kaiser-data/free-llm-proxy-router/pull/35)), `PROXY_AUTH_TOKEN` ([#31](https://github.com/kaiser-data/free-llm-proxy-router/pull/31)), shorter cooldowns after a daily reset ([#32](https://github.com/kaiser-data/free-llm-proxy-router/pull/32)), and fixes to request bodies and token limits ([#18](https://github.com/kaiser-data/free-llm-proxy-router/pull/18), [#25](https://github.com/kaiser-data/free-llm-proxy-router/pull/25))
 
 ## Acknowledgments
