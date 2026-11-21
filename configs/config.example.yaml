@@ -13,12 +13,15 @@
 #   tier_type     "free" (rate-limited) or "credit" (token / $ / unit allowance). The
 #                 `economical` strategy ranks credit tiers last. Default: free.
 #   all_free      documentation only: every model the provider lists is free.
-#   free_markers  model-ID suffixes the generic scanner treats as free.
+#   discovery.free_markers   model-ID suffixes the generic scanner treats as free (":free").
+#   discovery.free_detect_field / free_detect_value   a dot-path field that must equal the
+#                 value for a model to count as free (e.g. isFree = "true").
 #   probe_for_free: parsed but not used by the generic scanner.
 #   Only openrouter, groq, gemini, huggingface and github-models have a dedicated scanner.
-#   Every other provider uses the generic /models scan, which marks ALL listed models as
-#   free. Providers tagged "mixed" below also sell paid models: run `free-llm-scan update`
-#   and prune the catalog before enabling them.
+#   Every other provider uses the generic /models scan. Without free_markers or
+#   free_detect_field it marks ALL listed models as free. Providers tagged "mixed" below
+#   also sell paid models: set one of those knobs, or run `free-llm-scan update` and prune
+#   the catalog, before enabling them.
 #   A provider whose api_key_env has no key is skipped at routing time, so enabling one by
 #   mistake is harmless: enabled: true with api_key_env acts as "enabled when the key is
 #   set". Several accounts: add KEY_2 ... KEY_9 to .env and the router uses the next key
@@ -188,7 +191,7 @@ providers:
     name: "Mistral AI"
     base_url: "https://api.mistral.ai/v1"
     api_key_env: "MISTRAL_API_KEY"
-    enabled: false
+    enabled: true
     priority: 4
     timeout: "30s"
     rate_limit_notes: "Workspace-level limits. Phone verification. free-llm.com (Oct 2026): 1 req/s, 500K tokens/min, 1B tokens/month; older docs said 2 RPM. Always read Retry-After header."
@@ -197,7 +200,7 @@ providers:
     name: "Cerebras"
     base_url: "https://api.cerebras.ai/v1"
     api_key_env: "CEREBRAS_API_KEY"
-    enabled: false
+    enabled: true
     priority: 5
     timeout: "15s"
     # free-llm.com (Aug 2026): the no-card free tier ended. New accounts get a $5 trial credit
@@ -210,7 +213,7 @@ providers:
     name: "GitHub Models"
     base_url: "https://models.inference.ai.azure.com"
     api_key_env: "GITHUB_TOKEN"
-    enabled: false
+    enabled: true
     priority: 6
     timeout: "30s"
     rate_limit_notes: "Free plan: 15 low/medium + 8 high req/min; 150/500 req/day. Pro: 20/10 req/min; 300/1000 req/day."
@@ -222,7 +225,7 @@ providers:
     name: "NVIDIA NIM"
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key_env: "NVIDIA_API_KEY"
-    enabled: false
+    enabled: true
     priority: 8
     timeout: "30s"
     rate_limit_notes: "40 RPM. Free credits recharge monthly. Hundreds of models."
@@ -242,7 +245,7 @@ providers:
     name: "Hugging Face Inference"
     base_url: "https://router.huggingface.co/v1"
     api_key_env: "HF_API_KEY"
-    enabled: false
+    enabled: true
     priority: 10
     timeout: "120s"
     rate_limit_notes: "300 calls/hour/token. 503+loading = cold start; wait then retry SAME provider."
