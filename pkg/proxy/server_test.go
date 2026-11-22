@@ -208,3 +208,66 @@ func TestChatCompletions_MaxCompletionTokensBeatsProfileDefault(t *testing.T) {
 		t.Errorf("upstream max_tokens = %v, want client's 800", got["max_tokens"])
 	}
 }
+
+// A profile override of stream must change how the proxy serves the request,
+// not only the body: a client asking for SSE through a profile that forces
+// stream:false gets one buffered JSON answer.
+func TestChatCompletions_ProfileStreamOverrideChangesRouting(t *testing.T) {
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"model":"gemma","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	s := newTestServer(upstream.URL, 0)
+	s.cfg.Load().Proxy.Agents = map[string]config.AgentProfile{
+		"batch-agent": {Strategy: "adaptive", Overrides: map[string]any{"stream": false}},
+	}
+	body := `{"model":"batch-agent","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	rec := httptest.NewRecorder()
+	s.handleChatCompletions(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want JSON: the profile turned streaming off", ct)
+	}
+	if _, ok := got["stream"]; ok {
+		t.Errorf("upstream got stream=%v, want it absent", got["stream"])
+	}
+}
+
+// readFields re-reads everything a profile can change, and resets what the
+// profile removed.
+func TestRequest_ReadFieldsAfterProfileChange(t *testing.T) {
+	raw := map[string]any{
+		"stream":     true,
+		"max_tokens": float64(100),
+		"messages":   []any{map[string]any{"role": "user", "content": "short"}},
+	}
+	req := Request{Raw: raw}
+	req.readFields()
+	if !req.Stream || req.MaxTokens != 100 || len(req.Messages) != 1 {
+		t.Fatalf("first read: %+v", req)
+	}
+
+	raw["stream"] = false
+	delete(raw, "max_tokens")
+	raw["max_completion_tokens"] = 50 // YAML int
+	raw["messages"] = []any{
+		map[string]any{"role": "system", "content": "be brief"},
+		map[string]any{"role": "user", "content": strings.Repeat("x", 400)},
+	}
+	req.readFields()
+	if req.Stream {
+		t.Error("Stream still true after the profile set it false")
+	}
+	if req.MaxTokens != 50 {
+		t.Errorf("MaxTokens = %d, want 50 from max_completion_tokens", req.MaxTokens)
+	}
+	if len(req.Messages) != 2 || estimateTokens(req.Messages) != 102 {
+		t.Errorf("Messages = %v (est %d), want the profile's 2 messages", req.Messages, estimateTokens(req.Messages))
+	}
+}

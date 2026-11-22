@@ -244,23 +244,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if m, ok := raw["model"].(string); ok {
 		req.Model = m
 	}
-	if msgs, ok := raw["messages"].([]any); ok {
-		for _, msg := range msgs {
-			if m, ok := msg.(map[string]any); ok {
-				req.Messages = append(req.Messages, m)
-			}
-		}
-	}
-	if stream, ok := raw["stream"].(bool); ok {
-		req.Stream = stream
-	}
 	// Normalize the newer OpenAI spelling before agent-profile defaults run,
 	// so a profile's max_tokens default cannot override the client's
 	// explicit max_completion_tokens budget.
-	normalizeMaxTokens(raw)
-	if mt, ok := toInt(raw["max_tokens"]); ok {
-		req.MaxTokens = mt
-	}
+	req.readFields()
 
 	cfg := s.cfg.Load()
 	snap := s.catalog.Load()
@@ -285,11 +272,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		for k, v := range profile.Overrides {
 			raw[k] = v
 		}
-		// Re-read max_tokens in case defaults/overrides changed it.
-		normalizeMaxTokens(raw)
-		if mt, ok := toInt(raw["max_tokens"]); ok {
-			req.MaxTokens = mt
-		}
+		// Re-read what defaults/overrides may have changed: a profile that
+		// sets stream or messages must change routing (SSE or buffered,
+		// token estimate, filters), not only the body sent upstream.
+		req.readFields()
 		// Redirect routing: specific model takes precedence over strategy.
 		// A pinned model that has left the free catalog falls back to the
 		// profile's strategy rather than failing every request.
@@ -333,6 +319,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.executeStrategyChain(w, r, cfg, snap, req, raw)
+}
+
+// readFields sets Messages, Stream and MaxTokens from r.Raw (normalizing
+// max_completion_tokens into max_tokens first). Model is left alone: an agent
+// profile resolves it separately.
+func (r *Request) readFields() {
+	r.Messages = r.Messages[:0]
+	if msgs, ok := r.Raw["messages"].([]any); ok {
+		for _, msg := range msgs {
+			if m, ok := msg.(map[string]any); ok {
+				r.Messages = append(r.Messages, m)
+			}
+		}
+	}
+	r.Stream, _ = r.Raw["stream"].(bool)
+	normalizeMaxTokens(r.Raw)
+	r.MaxTokens = 0
+	if mt, ok := toInt(r.Raw["max_tokens"]); ok {
+		r.MaxTokens = mt
+	}
 }
 
 // serveDirectModel routes a request with a specific model ID to the right provider.
