@@ -7,11 +7,12 @@ import (
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/models"
 )
 
-// StrategyParallel fans out requests across multiple providers and returns the
-// fastest successful response. The Rank() method returns a list of candidates
-// which the proxy layer uses to send concurrent requests.
-//
-// FanOut controls how many parallel requests to send (default: 3).
+// StrategyParallel spreads a request across providers: it ranks the fastest
+// model of each provider (see speedScore), fastest providers first, and keeps
+// the top FanOut (default 3). The fallback chain tries them in turn, so a
+// provider that fails is followed by a different provider, not by another of
+// its own models. Calls are sequential: firing them concurrently would spend
+// several free quotas on every request.
 type StrategyParallel struct {
 	FanOut int
 }
@@ -19,28 +20,25 @@ type StrategyParallel struct {
 func (s *StrategyParallel) Name() string { return "parallel" }
 
 func (s *StrategyParallel) Rank(req Request, entries []catalog.CatalogEntry, enriched *models.EnrichedCatalog) []RankedEntry {
-	// Spread across providers first, then within providers by speed.
-	// At most one entry per provider: no catalog-sized preallocation.
+	// One entry per provider: its fastest free model. Ties keep catalog order.
 	var ranked []RankedEntry
-	seenProvider := map[string]bool{}
-	// First pass: one entry per provider (fastest per provider)
-	for i, e := range entries {
-		if !e.IsFree || seenProvider[e.ProviderID] {
+	best := map[string]int{} // provider → index in ranked
+	for i := range entries {
+		e := &entries[i]
+		if !e.IsFree {
 			continue
 		}
-		score, ok := providerSpeedScore[e.ProviderID]
-		if !ok {
-			score = 7.0
+		score := speedScore(e)
+		if j, ok := best[e.ProviderID]; ok {
+			if score < ranked[j].Score {
+				ranked[j] = RankedEntry{Entry: e, ProviderID: e.ProviderID, ModelID: e.ModelID, Score: score}
+			}
+			continue
 		}
-		ranked = append(ranked, RankedEntry{
-			Entry:      &entries[i],
-			ProviderID: e.ProviderID,
-			ModelID:    e.ModelID,
-			Score:      score,
-		})
-		seenProvider[e.ProviderID] = true
+		best[e.ProviderID] = len(ranked)
+		ranked = append(ranked, RankedEntry{Entry: e, ProviderID: e.ProviderID, ModelID: e.ModelID, Score: score})
 	}
-	sort.Slice(ranked, func(i, j int) bool {
+	sort.SliceStable(ranked, func(i, j int) bool {
 		return ranked[i].Score < ranked[j].Score
 	})
 	fanOut := s.FanOut
@@ -52,10 +50,3 @@ func (s *StrategyParallel) Rank(req Request, entries []catalog.CatalogEntry, enr
 	}
 	return ranked
 }
-
-// providerSpeedScore is also defined in speed.go — use the same values.
-// Go does not allow duplicate var declarations in the same package,
-// so we access the map from speed.go directly (same package).
-// This function is a compile-time guard.
-var _ = providerSpeedScore // ensure it's accessible
-var _ = models.ExtractParams
