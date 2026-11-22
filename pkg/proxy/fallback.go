@@ -77,6 +77,22 @@ type Response struct {
 	stream *upstreamStream
 	// emptyStream: the provider's stream ended without any content.
 	emptyStream bool
+	// bodyChecked/emptyBody: callProvider already parsed a buffered 200
+	// body (once, for both UsedModel and emptiness).
+	bodyChecked, emptyBody bool
+}
+
+// isEmpty reports whether a 200 carries no usable completion.
+func (r *Response) isEmpty() bool {
+	switch {
+	case r.emptyStream:
+		return true
+	case r.stream != nil:
+		return false
+	case r.bodyChecked:
+		return r.emptyBody
+	}
+	return isEmptyCompletion(r.Body)
 }
 
 // Close releases a committed upstream stream, if any.
@@ -488,7 +504,7 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 				fc.RateLimiter.Provider("cerebras").PreemptiveSlowdown(info.WaitDuration())
 			}
 		}
-		if resp.emptyStream || (resp.stream == nil && isEmptyCompletion(resp.Body)) {
+		if resp.isEmpty() {
 			// Reasoning models (gpt-oss) can spend a small max_tokens budget on
 			// hidden reasoning, and some free endpoints return 200 with nothing
 			// in it. Neither is an answer: try another model.
@@ -642,23 +658,18 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		respBody = StripGeminiThoughts(respBody)
 	}
 
-	// Extract the actual model used (OpenRouter fills this in)
-	usedModel := ""
-	if resp.StatusCode == http.StatusOK {
-		var parsed struct {
-			Model string `json:"model"`
-		}
-		if json.Unmarshal(respBody, &parsed) == nil {
-			usedModel = parsed.Model
-		}
-	}
-
-	return &Response{
+	out := &Response{
 		StatusCode: resp.StatusCode,
 		Header:     resp.Header,
 		Body:       respBody,
-		UsedModel:  usedModel,
-	}, nil
+	}
+	if resp.StatusCode == http.StatusOK {
+		// One parse for the model that answered (OpenRouter fills it in) and
+		// for whether there is any output.
+		out.UsedModel, out.emptyBody = parseCompletion(respBody)
+		out.bodyChecked = true
+	}
+	return out, nil
 }
 
 func (fc *FallbackChain) findProvider(id string) *config.ProviderConfig {
@@ -977,7 +988,15 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // content, tool calls or a function call. Reasoning-only output does not count.
 // Adapted from PR #16 by BenediktChlopik.
 func isEmptyCompletion(body []byte) bool {
+	_, empty := parseCompletion(body)
+	return empty
+}
+
+// parseCompletion reads, in one pass over a buffered 200 body, the model
+// that answered and whether the body is empty (see isEmptyCompletion).
+func parseCompletion(body []byte) (model string, empty bool) {
 	var c struct {
+		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
 				Content      any   `json:"content"`
@@ -988,18 +1007,18 @@ func isEmptyCompletion(body []byte) bool {
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &c); err != nil {
-		return true
+		return "", true
 	}
 	for _, ch := range c.Choices {
 		m := ch.Message
 		if len(m.ToolCalls) > 0 || m.FunctionCall != nil {
-			return false
+			return c.Model, false
 		}
 		if strings.TrimSpace(ch.Text) != "" || hasContent(m.Content) {
-			return false
+			return c.Model, false
 		}
 	}
-	return true
+	return c.Model, true
 }
 
 // hasContent reports whether a message "content" value (a string or an array

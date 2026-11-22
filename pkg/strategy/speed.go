@@ -38,7 +38,7 @@ func (s *StrategySpeed) Rank(req Request, entries []catalog.CatalogEntry, enrich
 		if !ok {
 			provScore = 7.0 // unknown provider = slower by default
 		}
-		params := models.ExtractParams(e.ModelID)
+		params := e.ParamScale()
 		size := params.Effective
 		if size == 0 {
 			size = params.Billions

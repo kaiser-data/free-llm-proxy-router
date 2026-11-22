@@ -41,7 +41,7 @@ func economicalScore(e catalog.CatalogEntry) float64 {
 		base += 100.0
 	}
 	// Within each tier, prefer smaller models (use less quota/tokens)
-	params := models.ExtractParams(e.ModelID)
+	params := e.ParamScale()
 	size := params.Effective
 	if size == 0 {
 		size = params.Billions

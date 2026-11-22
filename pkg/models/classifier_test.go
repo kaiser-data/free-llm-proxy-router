@@ -1,7 +1,6 @@
 package models
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -127,20 +126,3 @@ func TestMoEExtraction(t *testing.T) {
 	}
 }
 
-// The memo returns what the uncached parse returns, and stays bounded.
-func TestExtractParams_MemoMatchesAndIsBounded(t *testing.T) {
-	for _, id := range []string{"mixtral-8x7b", "llama-3.1-8b", "gemini-2.0-flash", "phi-3-mini", "GPT-oss-120B"} {
-		if a, b := ExtractParams(id), extractParams(id); a != b {
-			t.Errorf("%s: memo %+v, parse %+v", id, a, b)
-		}
-		if a, b := ExtractParams(id), extractParams(id); a != b { // cached path
-			t.Errorf("%s (cached): memo %+v, parse %+v", id, a, b)
-		}
-	}
-	for i := 0; i < paramsMemoMax+10; i++ {
-		ExtractParams(fmt.Sprintf("model-%d-7b", i))
-	}
-	if n := paramsMemoSize.Load(); n > paramsMemoMax {
-		t.Errorf("memo holds %d entries, cap %d", n, paramsMemoMax)
-	}
-}

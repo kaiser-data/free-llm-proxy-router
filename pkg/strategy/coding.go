@@ -57,7 +57,7 @@ func codingScore(e catalog.CatalogEntry, enriched *models.EnrichedCatalog) float
 	}
 
 	// Use parameter size as a proxy for code quality
-	params := models.ExtractParams(e.ModelID)
+	params := e.ParamScale()
 	effective := params.Effective
 	if effective == 0 {
 		effective = params.Billions

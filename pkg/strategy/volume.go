@@ -74,7 +74,7 @@ func volumeScore(e catalog.CatalogEntry, geminiPreferred string) float64 {
 		return 5.0
 	}
 	// Tier 6: Everything else
-	params := models.ExtractParams(e.ModelID)
+	params := e.ParamScale()
 	size := params.Effective
 	if size == 0 {
 		size = params.Billions

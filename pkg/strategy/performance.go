@@ -18,7 +18,7 @@ func (s *StrategyPerformance) Rank(req Request, entries []catalog.CatalogEntry, 
 		if !e.IsFree {
 			continue
 		}
-		params := models.ExtractParams(e.ModelID)
+		params := e.ParamScale()
 		effective := params.Effective
 		if effective == 0 {
 			effective = params.Billions

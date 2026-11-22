@@ -48,7 +48,8 @@ func newCatalogSnapshot(cat *catalog.Catalog) *catalogSnapshot {
 	if cat == nil {
 		cat = &catalog.Catalog{}
 	}
-	free := cat.FreeEntries()
+	free := cat.FreeEntries() // a fresh slice: safe to fill before sharing
+	catalog.PrecomputeParams(free)
 	if free == nil {
 		free = []catalog.CatalogEntry{} // non-nil: FallbackChain.Free nil means "compute"
 	}

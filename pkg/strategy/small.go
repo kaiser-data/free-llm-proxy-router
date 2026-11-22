@@ -27,7 +27,7 @@ func (s *StrategySmall) Rank(req Request, entries []catalog.CatalogEntry, enrich
 		if !e.IsFree {
 			continue
 		}
-		params := models.ExtractParams(e.ModelID)
+		params := e.ParamScale()
 		tier := models.ClassifyTier(params)
 
 		score := smallScore(e, tier, cerebrasAlmostFull)

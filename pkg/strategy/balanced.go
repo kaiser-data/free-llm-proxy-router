@@ -19,7 +19,7 @@ func (s *StrategyBalanced) Rank(req Request, entries []catalog.CatalogEntry, enr
 		if !e.IsFree {
 			continue
 		}
-		params := models.ExtractParams(e.ModelID)
+		params := e.ParamScale()
 		tier := models.ClassifyTier(params)
 		score := balancedScore(e, tier)
 		ranked = append(ranked, RankedEntry{

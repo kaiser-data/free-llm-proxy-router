@@ -4,8 +4,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 )
 
 var (
@@ -31,40 +29,11 @@ var (
 	}
 )
 
-// paramsMemo caches ExtractParams by model ID. Strategies rank every catalog
-// entry on every request, and the regexes dominated a request's CPU time
-// (~85% with a 3000-model catalog). Results are pure functions of the ID.
-// Catalog IDs are bounded, but the cache is capped anyway (and cleared when
-// full) so model IDs that never stop changing cannot grow it without limit.
-var (
-	paramsMemo     sync.Map // string → ParamScale
-	paramsMemoSize atomic.Int64
-)
-
-const paramsMemoMax = 16384
-
 // ExtractParams parses the parameter count from a raw model ID string.
 // It is agnostic — it works on model names it has never seen before.
 // No model names are hardcoded; classification is purely numeric.
+// It runs regexes: hot paths read catalog.CatalogEntry.ParamScale instead.
 func ExtractParams(modelID string) ParamScale {
-	if v, ok := paramsMemo.Load(modelID); ok {
-		return v.(ParamScale)
-	}
-	p := extractParams(modelID)
-	if paramsMemoSize.Load() >= paramsMemoMax {
-		// Full (IDs from old catalogs pile up across reloads): start over
-		// rather than stop caching, so the current catalog's IDs get cached
-		// again. The cap is approximate under concurrent misses; that is fine.
-		paramsMemo.Clear()
-		paramsMemoSize.Store(0)
-	}
-	if _, loaded := paramsMemo.LoadOrStore(modelID, p); !loaded {
-		paramsMemoSize.Add(1)
-	}
-	return p
-}
-
-func extractParams(modelID string) ParamScale {
 	lower := strings.ToLower(modelID)
 
 	// Pattern 1: NxMb — Mixture of Experts (e.g. "mixtral-8x7b")

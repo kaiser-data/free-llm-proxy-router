@@ -19,7 +19,7 @@ func (s *StrategyTiny) Rank(req Request, entries []catalog.CatalogEntry, enriche
 		if !e.IsFree {
 			continue
 		}
-		params := models.ExtractParams(e.ModelID)
+		params := e.ParamScale()
 		effective := params.Effective
 		if effective == 0 {
 			effective = params.Billions

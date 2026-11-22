@@ -25,11 +25,12 @@ func (s *StrategyAdaptive) Name() string { return "adaptive" }
 
 func (s *StrategyAdaptive) Rank(req Request, entries []catalog.CatalogEntry, enriched *models.EnrichedCatalog) []RankedEntry {
 	ranked := make([]RankedEntry, 0, len(entries))
+	successRate := successRates(s.Tracker)
 	for i, e := range entries {
 		if !e.IsFree {
 			continue
 		}
-		score := s.adaptiveScore(e, enriched)
+		score := s.adaptiveScore(e, successRate(e.ProviderID), enriched)
 		ranked = append(ranked, RankedEntry{
 			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
@@ -63,12 +64,9 @@ func (s *StrategyAdaptive) OpenRouterModels(entries []catalog.CatalogEntry, enri
 	return out
 }
 
-func (s *StrategyAdaptive) adaptiveScore(e catalog.CatalogEntry, enriched *models.EnrichedCatalog) float64 {
+func (s *StrategyAdaptive) adaptiveScore(e catalog.CatalogEntry, successRate float64, enriched *models.EnrichedCatalog) float64 {
 	// Reliability component (0.0 - 1.0, inverted: 0 = perfect)
-	reliability := 0.0
-	if s.Tracker != nil {
-		reliability = 1.0 - s.Tracker.SuccessRate(e.ProviderID)
-	}
+	reliability := 1.0 - successRate
 
 	// Speed component (lower = faster provider)
 	speedScore, ok := providerSpeedScore[e.ProviderID]
@@ -77,7 +75,7 @@ func (s *StrategyAdaptive) adaptiveScore(e catalog.CatalogEntry, enriched *model
 	}
 
 	// Parameter size (prefer balanced models 14-79B by default)
-	params := models.ExtractParams(e.ModelID)
+	params := e.ParamScale()
 	var tierScore float64
 	switch models.ClassifyTier(params) {
 	case models.TierBalanced:
