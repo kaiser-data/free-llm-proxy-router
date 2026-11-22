@@ -151,7 +151,7 @@ Put a strategy name in the `model` field, or set the default in `config.yaml`:
 | `reliable` | highest measured success rate | unattended scripts |
 | `economical` | recharging free tiers before credit-based ones | saving credits |
 | `similar` | the same model family as a reference model | consistency |
-| `parallel` | several models for fan-out | comparisons |
+| `parallel` | the fastest model of each of the `fan_out` fastest providers, tried in turn | spreading load across providers |
 
 **Agent profiles** bundle a strategy or a pinned model with defaults, so each tool can ask for its own name. The bundled config defines `coding`, `summariser`, `reliable`, `long-context` and `precise`:
 

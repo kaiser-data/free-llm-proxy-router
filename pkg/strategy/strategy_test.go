@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
@@ -325,4 +326,29 @@ func containsAny(s string, substrs ...string) bool {
 		}
 	}
 	return false
+}
+
+// parallel sends each provider's fastest model, not whichever the catalog
+// lists first, and orders providers fastest first.
+func TestStrategyParallel_PicksFastestModelPerProvider(t *testing.T) {
+	entries := []catalog.CatalogEntry{
+		{ProviderID: "groq", ModelID: "llama-3.3-70b-versatile", IsFree: true},
+		{ProviderID: "groq", ModelID: "llama-3.1-8b-instant", IsFree: true},
+		{ProviderID: "mistral", ModelID: "mistral-large-123b", IsFree: true},
+		{ProviderID: "cerebras", ModelID: "qwen-3-32b", IsFree: true},
+		{ProviderID: "cerebras", ModelID: "llama3.1-8b", IsFree: true},
+		{ProviderID: "groq", ModelID: "llama-3.2-1b-preview", IsFree: false}, // not free
+	}
+	ranked := (&StrategyParallel{FanOut: 3}).Rank(testReq(), entries, nil)
+	var got []string
+	for _, r := range ranked {
+		got = append(got, r.ProviderID+"/"+r.ModelID)
+		if r.Entry == nil || r.Entry.ModelID != r.ModelID {
+			t.Errorf("%s: Entry does not point at the ranked model", r.ModelID)
+		}
+	}
+	want := "cerebras/llama3.1-8b,groq/llama-3.1-8b-instant,mistral/mistral-large-123b"
+	if strings.Join(got, ",") != want {
+		t.Errorf("parallel ranked %v, want %s", got, want)
+	}
 }

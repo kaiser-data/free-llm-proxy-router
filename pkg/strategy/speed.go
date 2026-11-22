@@ -28,26 +28,31 @@ type StrategySpeed struct{}
 
 func (s *StrategySpeed) Name() string { return "speed" }
 
+// speedScore is lower for faster answers: provider speed first (×1000), then
+// model size (smaller = faster). Shared by speed and parallel.
+func speedScore(e *catalog.CatalogEntry) float64 {
+	provScore, ok := providerSpeedScore[e.ProviderID]
+	if !ok {
+		provScore = 7.0 // unknown provider = slower by default
+	}
+	params := e.ParamScale()
+	size := params.Effective
+	if size == 0 {
+		size = params.Billions
+	}
+	if size == 0 {
+		size = 100 // unknown = treat as large for speed ranking
+	}
+	return provScore*1000 + size
+}
+
 func (s *StrategySpeed) Rank(req Request, entries []catalog.CatalogEntry, enriched *models.EnrichedCatalog) []RankedEntry {
 	ranked := make([]RankedEntry, 0, len(entries))
 	for i, e := range entries {
 		if !e.IsFree {
 			continue
 		}
-		provScore, ok := providerSpeedScore[e.ProviderID]
-		if !ok {
-			provScore = 7.0 // unknown provider = slower by default
-		}
-		params := e.ParamScale()
-		size := params.Effective
-		if size == 0 {
-			size = params.Billions
-		}
-		if size == 0 {
-			size = 100 // unknown = treat as large for speed ranking
-		}
-		// Composite: provider speed * 1000 + model size (both ascending = faster)
-		score := provScore*1000 + size
+		score := speedScore(&entries[i])
 		ranked = append(ranked, RankedEntry{
 			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
