@@ -123,9 +123,14 @@ func (s *GenericScanner) ScanFreeModels(ctx context.Context, cfg config.Provider
 		if !isEligibleModel(cfg.ID, m.ID, m.Type, m.Endpoints) {
 			continue
 		}
+		// The per-entry map decode is the scan's hottest loop on big listings
+		// (Pi-class hardware is the main target), so skip it for providers
+		// whose free-detection uses only markers or nothing at all.
 		var rawMap map[string]any
-		if err := json.Unmarshal(raw, &rawMap); err != nil {
-			return nil, fmt.Errorf("parsing %s model entry: %w", cfg.ID, err)
+		if cfg.Discovery.FreeDetectField != "" {
+			if err := json.Unmarshal(raw, &rawMap); err != nil {
+				return nil, fmt.Errorf("parsing %s model entry: %w", cfg.ID, err)
+			}
 		}
 		if !freeByDiscovery(cfg, m.ID, rawMap) {
 			continue
