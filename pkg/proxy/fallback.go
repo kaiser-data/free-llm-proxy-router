@@ -649,9 +649,14 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 		return out, nil
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
+	}
+	if int64(len(respBody)) > maxResponseBytes {
+		// A chat answer this large is not one the proxy should hold in
+		// memory on a 512 MB board; the chain moves on to the next provider.
+		return nil, fmt.Errorf("response exceeds %d MB", maxResponseBytes>>20)
 	}
 
 	if cfg.ID == "gemini" && resp.StatusCode == http.StatusOK {
@@ -745,6 +750,10 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 	}
 	return body
 }
+
+// maxResponseBytes caps a buffered upstream body (an answer or an error),
+// like maxRequestBodyBytes caps the client's. A var so tests can lower it.
+var maxResponseBytes int64 = 16 << 20
 
 const (
 	// maxModelsPerProvider bounds how many models of one provider a single

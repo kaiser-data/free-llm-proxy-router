@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -69,5 +70,68 @@ func TestCacheable_ProfileInts(t *testing.T) {
 	}
 	if !cacheable(map[string]any{"temperature": 0, "n": 1}) {
 		t.Error("temperature 0, n 1 should be cacheable")
+	}
+}
+
+func cacheReq(i int) map[string]any {
+	return map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": fmt.Sprint("q", i)}}}
+}
+
+// The cache never holds more than its byte budget, replacing a key does not
+// count it twice, and a single huge answer is not cached at all.
+func TestResponseCache_StaysWithinByteBudget(t *testing.T) {
+	c := NewResponseCache(300)
+	c.maxBytes = 10 * (1000 + cacheEntryOverhead)
+	body := []byte(strings.Repeat("x", 1000))
+	for i := 0; i < 50; i++ {
+		c.Set(cacheReq(i), body)
+		if c.bytes > c.maxBytes {
+			t.Fatalf("after %d sets: %d bytes, budget %d", i+1, c.bytes, c.maxBytes)
+		}
+	}
+	if len(c.entries) != 10 {
+		t.Errorf("entries = %d, want 10 (budget holds 10)", len(c.entries))
+	}
+	if c.Get(cacheReq(49)) == nil {
+		t.Error("the newest answer must be cached")
+	}
+
+	before := c.bytes
+	c.Set(cacheReq(49), body) // same key again
+	if c.bytes != before {
+		t.Errorf("replacing a key changed bytes %d → %d", before, c.bytes)
+	}
+
+	c.Set(cacheReq(1000), make([]byte, cacheMaxEntryBytes+1))
+	if c.Get(cacheReq(1000)) != nil {
+		t.Error("an answer over cacheMaxEntryBytes must not be cached")
+	}
+
+	sum := 0
+	for _, e := range c.entries {
+		sum += entrySize(e)
+	}
+	if sum != c.bytes {
+		t.Errorf("tracked bytes %d, actual %d", c.bytes, sum)
+	}
+}
+
+// An upstream body over maxResponseBytes is not buffered: the call fails and
+// the client gets the retryable 503, not a truncated or giant answer.
+func TestChatCompletions_OversizedUpstreamBodyIsRejected(t *testing.T) {
+	old := maxResponseBytes
+	maxResponseBytes = 1 << 10
+	defer func() { maxResponseBytes = old }()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"model":"gemma","choices":[{"message":{"content":"`+strings.Repeat("x", 4<<10)+`"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	s := newTestServer(upstream.URL, 0)
+	rec := httptest.NewRecorder()
+	s.handleChatCompletions(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503: %.200s", rec.Code, rec.Body)
 	}
 }
