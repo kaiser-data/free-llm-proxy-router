@@ -147,6 +147,8 @@ var nonChatPatterns = []string{
 	// Gemini media and agent models listed alongside chat models
 	"nano-banana", "lyria", "robotics", "computer-use", "deep-research",
 	"antigravity", // Interactions API only, no chat completions
+	// Music generation (Suno), listed as free models by Api.Airforce
+	"suno",
 }
 
 // IsChatModel reports whether a model ID looks like it answers chat requests.
