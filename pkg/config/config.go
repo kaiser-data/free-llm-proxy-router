@@ -125,7 +125,7 @@ var current *Config
 
 // Load reads the configuration from the given file path.
 // If path is empty, it searches for config.yaml in the current directory
-// and in ~/.free-llm-proxy-router/.
+// and in ~/.config/free-llm-proxy-router/.
 //
 // Before returning, Load looks for .env and .secrets files in standard
 // locations and populates them into the dotenv map so that ResolvedAuth()
@@ -143,7 +143,7 @@ func Load(path string) (*Config, error) {
 		v.SetConfigName("config")
 		v.SetConfigType("yaml")
 		v.AddConfigPath(".")
-		v.AddConfigPath(expandHome("~/.free-llm-proxy-router"))
+		v.AddConfigPath(expandHome("~/.config/free-llm-proxy-router"))
 		v.AddConfigPath("configs")
 	}
 
@@ -256,8 +256,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.cache_ttl", 300)
 	v.SetDefault("proxy.log_level", "info")
 	v.SetDefault("proxy.strategy", "adaptive")
-	v.SetDefault("catalog.path", expandHome("~/.free-llm-proxy-router/catalog.json"))
-	v.SetDefault("catalog.enriched_path", expandHome("~/.free-llm-proxy-router/enriched.json"))
+	v.SetDefault("catalog.path", expandHome("~/.config/free-llm-proxy-router/catalog.json"))
+	v.SetDefault("catalog.enriched_path", expandHome("~/.config/free-llm-proxy-router/enriched.json"))
 	v.SetDefault("catalog.max_age_hours", 24)
 	v.SetDefault("fallback.retry_on_429", true)
 	v.SetDefault("fallback.retry_on_5xx", true)

@@ -11,7 +11,7 @@ import (
 // Search order, first existing file wins:
 //  1. ./configs/<name>              (running from a source checkout)
 //  2. <configPath dir>/<name>       (next to an explicit --config file)
-//  3. ~/.free-llm-proxy-router/<name>
+//  3. ~/.config/free-llm-proxy-router/<name>
 //  4. <executable dir>/configs/<name> (release archive layout)
 //
 // If nothing is found, "configs/<name>" is returned so callers report the
@@ -21,7 +21,7 @@ func FindDataFile(name, configPath string) string {
 	if configPath != "" {
 		candidates = append(candidates, filepath.Join(filepath.Dir(configPath), name))
 	}
-	candidates = append(candidates, filepath.Join(expandHome("~/.free-llm-proxy-router"), name))
+	candidates = append(candidates, filepath.Join(expandHome("~/.config/free-llm-proxy-router"), name))
 	if exe, err := os.Executable(); err == nil {
 		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = resolved
