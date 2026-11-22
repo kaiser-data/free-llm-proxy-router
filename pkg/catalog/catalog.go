@@ -4,6 +4,8 @@ package catalog
 import (
 	"strings"
 	"time"
+
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/models"
 )
 
 // CatalogEntry is a single model entry discovered at runtime.
@@ -20,6 +22,30 @@ type CatalogEntry struct {
 	LastVerifiedAt time.Time `json:"last_verified_at,omitempty"`
 	// Metadata holds provider-specific fields (e.g. pricing, max_tokens).
 	Metadata map[string]any `json:"metadata,omitempty"`
+
+	// params caches models.ExtractParams(ModelID) once PrecomputeParams ran.
+	params    models.ParamScale
+	hasParams bool
+}
+
+// ParamScale returns the model's parameter size: precomputed by
+// PrecomputeParams, otherwise parsed from the ID on each call. Strategies
+// rank every free entry on every request, and parsing (regexes) used to be
+// most of a request's CPU time.
+func (e *CatalogEntry) ParamScale() models.ParamScale {
+	if e.hasParams {
+		return e.params
+	}
+	return models.ExtractParams(e.ModelID)
+}
+
+// PrecomputeParams parses every entry's parameter size once, so ParamScale
+// is a field read. Call it on a slice before sharing it between goroutines.
+func PrecomputeParams(entries []CatalogEntry) {
+	for i := range entries {
+		entries[i].params = models.ExtractParams(entries[i].ModelID)
+		entries[i].hasParams = true
+	}
 }
 
 // Catalog holds all discovered free-model entries.

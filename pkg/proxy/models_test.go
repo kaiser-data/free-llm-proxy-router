@@ -16,7 +16,7 @@ func TestHandleModels_StrategiesProfilesDedupe(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Proxy.Agents = map[string]config.AgentProfile{"my-agent": {}}
 	s.cfg.Store(cfg)
-	s.catalog.Store(&catalog.Catalog{Entries: []catalog.CatalogEntry{
+	s.UpdateCatalog(&catalog.Catalog{Entries: []catalog.CatalogEntry{
 		{ProviderID: "groq", ModelID: "llama-x", IsFree: true},
 		{ProviderID: "openrouter", ModelID: "llama-x", IsFree: true}, // duplicate ID
 		{ProviderID: "gemini", ModelID: "gemma-y", IsFree: true},

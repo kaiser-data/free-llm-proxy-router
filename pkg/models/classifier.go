@@ -32,6 +32,7 @@ var (
 // ExtractParams parses the parameter count from a raw model ID string.
 // It is agnostic — it works on model names it has never seen before.
 // No model names are hardcoded; classification is purely numeric.
+// It runs regexes: hot paths read catalog.CatalogEntry.ParamScale instead.
 func ExtractParams(modelID string) ParamScale {
 	lower := strings.ToLower(modelID)
 

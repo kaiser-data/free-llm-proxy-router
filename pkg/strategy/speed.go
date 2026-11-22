@@ -29,8 +29,8 @@ type StrategySpeed struct{}
 func (s *StrategySpeed) Name() string { return "speed" }
 
 func (s *StrategySpeed) Rank(req Request, entries []catalog.CatalogEntry, enriched *models.EnrichedCatalog) []RankedEntry {
-	var ranked []RankedEntry
-	for _, e := range entries {
+	ranked := make([]RankedEntry, 0, len(entries))
+	for i, e := range entries {
 		if !e.IsFree {
 			continue
 		}
@@ -38,7 +38,7 @@ func (s *StrategySpeed) Rank(req Request, entries []catalog.CatalogEntry, enrich
 		if !ok {
 			provScore = 7.0 // unknown provider = slower by default
 		}
-		params := models.ExtractParams(e.ModelID)
+		params := e.ParamScale()
 		size := params.Effective
 		if size == 0 {
 			size = params.Billions
@@ -49,7 +49,7 @@ func (s *StrategySpeed) Rank(req Request, entries []catalog.CatalogEntry, enrich
 		// Composite: provider speed * 1000 + model size (both ascending = faster)
 		score := provScore*1000 + size
 		ranked = append(ranked, RankedEntry{
-			Entry:      e,
+			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
 			ModelID:    e.ModelID,
 			Score:      score,

@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -141,8 +142,14 @@ func TestFilters_Apply(t *testing.T) {
 
 	fs := mustBuild(t, filterCfg("context-fit"), filterCfg("tool-calling"))
 	var ids []string
-	for _, e := range fs.Apply(req, append([]catalog.CatalogEntry(nil), entries...)) { // Apply filters in place
+	before := append([]catalog.CatalogEntry(nil), entries...)
+	for _, e := range fs.Apply(req, entries) {
 		ids = append(ids, e.ModelID)
+	}
+	// The proxy shares one free-entry slice across requests: Apply must not
+	// write into it.
+	if !reflect.DeepEqual(entries, before) {
+		t.Errorf("Apply modified its input: %+v, was %+v", entries, before)
 	}
 	if got := strings.Join(ids, ","); got != "unknown,good" {
 		t.Errorf("kept %s, want unknown,good (order preserved)", got)

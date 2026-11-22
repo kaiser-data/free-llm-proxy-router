@@ -26,13 +26,34 @@ import (
 type Server struct {
 	cfg             atomic.Pointer[config.Config]
 	filters         atomic.Pointer[strategy.Filters] // built from cfg.Proxy.Filters
-	catalog         atomic.Pointer[catalog.Catalog]
+	catalog         atomic.Pointer[catalogSnapshot]
 	strategyReg     *strategy.Registry
 	rateLimiter     *ratelimit.GlobalTracker
 	geminiTracker   *ratelimit.GeminiTracker
 	reliabilityTracker *reliability.Tracker
 	cache           *ResponseCache
 	httpServer      *http.Server
+}
+
+// catalogSnapshot pairs a catalog with its free chat entries. FreeEntries
+// filters every entry through IsChatModel and copies the result; doing that
+// once per catalog load instead of once per request matters with thousands
+// of entries. Both fields are read-only once stored.
+type catalogSnapshot struct {
+	cat  *catalog.Catalog
+	free []catalog.CatalogEntry
+}
+
+func newCatalogSnapshot(cat *catalog.Catalog) *catalogSnapshot {
+	if cat == nil {
+		cat = &catalog.Catalog{}
+	}
+	free := cat.FreeEntries() // a fresh slice: safe to fill before sharing
+	catalog.PrecomputeParams(free)
+	if free == nil {
+		free = []catalog.CatalogEntry{} // non-nil: FallbackChain.Free nil means "compute"
+	}
+	return &catalogSnapshot{cat: cat, free: free}
 }
 
 // upstreamClient is shared by every upstream call so connections are reused.
@@ -68,7 +89,7 @@ func NewServer(
 	if err := s.UpdateConfig(cfg); err != nil {
 		return nil, err
 	}
-	s.catalog.Store(cat)
+	s.UpdateCatalog(cat)
 	s.cache = NewResponseCache(cfg.Proxy.CacheTTL)
 	return s, nil
 }
@@ -87,7 +108,7 @@ func (s *Server) UpdateConfig(cfg *config.Config) error {
 
 // UpdateCatalog hot-reloads the model catalog.
 func (s *Server) UpdateCatalog(cat *catalog.Catalog) {
-	s.catalog.Store(cat)
+	s.catalog.Store(newCatalogSnapshot(cat))
 }
 
 // Start begins listening on the configured port.
@@ -242,7 +263,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.cfg.Load()
-	cat := s.catalog.Load()
+	snap := s.catalog.Load()
 
 	// One deadline for the whole request: the direct route and the strategy
 	// chain it may fall back to share it.
@@ -272,7 +293,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// Redirect routing: specific model takes precedence over strategy.
 		// A pinned model that has left the free catalog falls back to the
 		// profile's strategy rather than failing every request.
-		if profile.Model != "" && !catalogHasModel(cat, profile.Model) {
+		if profile.Model != "" && !catalogHasModel(snap.cat, profile.Model) {
 			log.Printf("agent profile %q: pinned model %q not in free catalog — using strategy instead", req.Model, profile.Model)
 			profile.Model = ""
 		}
@@ -305,19 +326,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.Model != "" && req.Model != "auto" {
 		if _, errLookup := s.strategyReg.Get(req.Model); errLookup != nil {
 			// Not a known strategy — treat as a specific model ID.
-			s.serveDirectModel(w, r, cfg, cat, req, raw)
+			s.serveDirectModel(w, r, cfg, snap, req, raw)
 			return
 		}
 		// It is a named strategy — fall through to strategy chain.
 	}
 
-	s.executeStrategyChain(w, r, cfg, cat, req, raw)
+	s.executeStrategyChain(w, r, cfg, snap, req, raw)
 }
 
 // serveDirectModel routes a request with a specific model ID to the right provider.
 // Accepts both "model-id" and "provider/model-id" formats.
 // If all direct-provider attempts fail, falls back to the full strategy chain.
-func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *config.Config, cat *catalog.Catalog, req Request, raw map[string]any) {
+func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *config.Config, snap *catalogSnapshot, req Request, raw map[string]any) {
+	cat := snap.cat
 	// Parse optional "provider/model" prefix.
 	// Pass 1 (full exact match) handles IDs like "meta-llama/llama-3.3-70b-instruct:free"
 	// where "/" is part of the model ID. Pass 2 handles "groq/llama-3.3-70b-versatile".
@@ -379,7 +401,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 	log.Printf("direct route: all providers failed for %q — falling back to strategy chain", req.Model)
 	req.Model = ""
 	raw["model"] = ""
-	s.executeStrategyChain(w, r, cfg, cat, req, raw)
+	s.executeStrategyChain(w, r, cfg, snap, req, raw)
 }
 
 // catalogHasModel reports whether a model ID ("model" or "provider/model") is
@@ -414,7 +436,7 @@ func matchEntry(e catalog.CatalogEntry, reqModel, targetProvider, targetModel st
 }
 
 // executeStrategyChain selects the appropriate strategy and runs the provider fallback chain.
-func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cfg *config.Config, cat *catalog.Catalog, req Request, raw map[string]any) {
+func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cfg *config.Config, snap *catalogSnapshot, req Request, raw map[string]any) {
 	stratName := cfg.Proxy.Strategy
 	if req.Model != "" && req.Model != "auto" {
 		if _, err := s.strategyReg.Get(req.Model); err == nil {
@@ -431,7 +453,8 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 	chain := &FallbackChain{
 		Cfg:                cfg,
 		Strategy:           strat,
-		Catalog:            cat,
+		Catalog:            snap.cat,
+		Free:               snap.free,
 		RateLimiter:        s.rateLimiter,
 		GeminiTracker:      s.geminiTracker,
 		ReliabilityTracker: s.reliabilityTracker,
@@ -516,7 +539,7 @@ func copyUpstreamHeaders(dst, src http.Header) {
 // (deduplicated by ID; owned_by is the first provider serving it). UIs like
 // Open WebUI and Continue only offer IDs that appear here.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	cat := s.catalog.Load()
+	snap := s.catalog.Load()
 	cfg := s.cfg.Load()
 	type modelEntry struct {
 		ID      string `json:"id"`
@@ -552,8 +575,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			add(n, "free-llm-proxy-router")
 		}
 	}
-	if cat != nil {
-		for _, e := range cat.FreeEntries() {
+	if snap != nil {
+		for _, e := range snap.free {
 			add(e.ModelID, e.ProviderID)
 		}
 	}

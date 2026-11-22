@@ -24,7 +24,10 @@ type Request struct {
 
 // RankedEntry pairs a catalog entry with a priority score (lower = higher priority).
 type RankedEntry struct {
-	Entry    catalog.CatalogEntry
+	// Entry points into the slice passed to Rank (read-only, shared across
+	// requests): copying a CatalogEntry per ranked model cost ~150 bytes ×
+	// catalog size on every request.
+	Entry    *catalog.CatalogEntry
 	Score    float64
 	ProviderID string
 	ModelID  string
