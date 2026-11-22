@@ -22,8 +22,8 @@ func (s *StrategySmall) Rank(req Request, entries []catalog.CatalogEntry, enrich
 	// Pre-emption: if Cerebras is almost exhausted, bump Groq to front
 	cerebrasAlmostFull := s.isCerebrasAlmostFull()
 
-	var ranked []RankedEntry
-	for _, e := range entries {
+	ranked := make([]RankedEntry, 0, len(entries))
+	for i, e := range entries {
 		if !e.IsFree {
 			continue
 		}
@@ -32,7 +32,7 @@ func (s *StrategySmall) Rank(req Request, entries []catalog.CatalogEntry, enrich
 
 		score := smallScore(e, tier, cerebrasAlmostFull)
 		ranked = append(ranked, RankedEntry{
-			Entry:      e,
+			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
 			ModelID:    e.ModelID,
 			Score:      score,

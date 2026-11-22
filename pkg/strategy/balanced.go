@@ -14,8 +14,8 @@ type StrategyBalanced struct{}
 func (s *StrategyBalanced) Name() string { return "balanced" }
 
 func (s *StrategyBalanced) Rank(req Request, entries []catalog.CatalogEntry, enriched *models.EnrichedCatalog) []RankedEntry {
-	var ranked []RankedEntry
-	for _, e := range entries {
+	ranked := make([]RankedEntry, 0, len(entries))
+	for i, e := range entries {
 		if !e.IsFree {
 			continue
 		}
@@ -23,7 +23,7 @@ func (s *StrategyBalanced) Rank(req Request, entries []catalog.CatalogEntry, enr
 		tier := models.ClassifyTier(params)
 		score := balancedScore(e, tier)
 		ranked = append(ranked, RankedEntry{
-			Entry:      e,
+			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
 			ModelID:    e.ModelID,
 			Score:      score,

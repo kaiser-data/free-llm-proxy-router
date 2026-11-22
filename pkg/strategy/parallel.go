@@ -19,11 +19,12 @@ type StrategyParallel struct {
 func (s *StrategyParallel) Name() string { return "parallel" }
 
 func (s *StrategyParallel) Rank(req Request, entries []catalog.CatalogEntry, enriched *models.EnrichedCatalog) []RankedEntry {
-	// Spread across providers first, then within providers by speed
+	// Spread across providers first, then within providers by speed.
+	// At most one entry per provider: no catalog-sized preallocation.
 	var ranked []RankedEntry
 	seenProvider := map[string]bool{}
 	// First pass: one entry per provider (fastest per provider)
-	for _, e := range entries {
+	for i, e := range entries {
 		if !e.IsFree || seenProvider[e.ProviderID] {
 			continue
 		}
@@ -32,7 +33,7 @@ func (s *StrategyParallel) Rank(req Request, entries []catalog.CatalogEntry, enr
 			score = 7.0
 		}
 		ranked = append(ranked, RankedEntry{
-			Entry:      e,
+			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
 			ModelID:    e.ModelID,
 			Score:      score,

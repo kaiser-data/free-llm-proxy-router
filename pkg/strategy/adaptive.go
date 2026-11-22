@@ -24,14 +24,14 @@ type StrategyAdaptive struct {
 func (s *StrategyAdaptive) Name() string { return "adaptive" }
 
 func (s *StrategyAdaptive) Rank(req Request, entries []catalog.CatalogEntry, enriched *models.EnrichedCatalog) []RankedEntry {
-	var ranked []RankedEntry
-	for _, e := range entries {
+	ranked := make([]RankedEntry, 0, len(entries))
+	for i, e := range entries {
 		if !e.IsFree {
 			continue
 		}
 		score := s.adaptiveScore(e, enriched)
 		ranked = append(ranked, RankedEntry{
-			Entry:      e,
+			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
 			ModelID:    e.ModelID,
 			Score:      score,
@@ -78,13 +78,17 @@ func (s *StrategyAdaptive) adaptiveScore(e catalog.CatalogEntry, enriched *model
 
 	// Parameter size (prefer balanced models 14-79B by default)
 	params := models.ExtractParams(e.ModelID)
-	tier := models.ClassifyTier(params)
-	tierScore := map[models.ModelTier]float64{
-		models.TierBalanced:    1.0,
-		models.TierSmall:       1.5,
-		models.TierPerformance: 2.0,
-		models.TierTiny:        2.5,
-	}[tier]
+	var tierScore float64
+	switch models.ClassifyTier(params) {
+	case models.TierBalanced:
+		tierScore = 1.0
+	case models.TierSmall:
+		tierScore = 1.5
+	case models.TierPerformance:
+		tierScore = 2.0
+	case models.TierTiny:
+		tierScore = 2.5
+	}
 
 	// Weighted combination
 	return reliability*3.0 + speedScore*0.5 + tierScore*1.0

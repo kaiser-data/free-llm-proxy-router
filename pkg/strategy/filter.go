@@ -101,18 +101,29 @@ func (fs Filters) Keeps(req Request, e catalog.CatalogEntry) bool {
 }
 
 // Apply returns the entries that pass every filter, in their original order.
-// It filters in place, reusing entries' backing array (no allocation per
-// request), so callers pass a slice they own, such as Catalog.FreeEntries().
+// entries is never modified: the proxy shares one free-entry slice across all
+// requests. When every entry passes, entries itself is returned (no
+// allocation); a new slice is made only once a filter drops something.
 // The result may be empty.
 func (fs Filters) Apply(req Request, entries []catalog.CatalogEntry) []catalog.CatalogEntry {
 	if len(fs) == 0 {
 		return entries
 	}
-	kept := entries[:0]
-	for _, e := range entries {
+	var kept []catalog.CatalogEntry // nil until the first entry is dropped
+	for i, e := range entries {
 		if fs.Keeps(req, e) {
-			kept = append(kept, e)
+			if kept != nil {
+				kept = append(kept, e)
+			}
+			continue
 		}
+		if kept == nil {
+			kept = make([]catalog.CatalogEntry, i, len(entries))
+			copy(kept, entries[:i])
+		}
+	}
+	if kept == nil {
+		return entries
 	}
 	return kept
 }

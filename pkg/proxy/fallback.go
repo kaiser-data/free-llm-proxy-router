@@ -34,7 +34,10 @@ type FallbackChain struct {
 	Cfg             *config.Config
 	Strategy        strategy.Strategy
 	Catalog         *catalog.Catalog
-	RateLimiter     *ratelimit.GlobalTracker
+	// Free is Catalog.FreeEntries() computed once per catalog load and shared
+	// by every request; it must not be modified. Nil computes it per call.
+	Free        []catalog.CatalogEntry
+	RateLimiter    *ratelimit.GlobalTracker
 	GeminiTracker   *ratelimit.GeminiTracker
 	ReliabilityTracker *reliability.Tracker
 	HTTPClient      *http.Client
@@ -106,7 +109,10 @@ func (fc *FallbackChain) Execute(ctx context.Context, req Request) (*Response, e
 }
 
 func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, error) {
-	freeEntries := fc.Catalog.FreeEntries()
+	freeEntries := fc.Free
+	if freeEntries == nil {
+		freeEntries = fc.Catalog.FreeEntries()
+	}
 	stratReq := strategy.Request{
 		Messages:              req.Messages,
 		EstimatedPromptTokens: estimateTokens(req.Messages),

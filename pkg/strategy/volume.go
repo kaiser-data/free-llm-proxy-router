@@ -28,14 +28,14 @@ func (s *StrategyVolume) Rank(req Request, entries []catalog.CatalogEntry, enric
 		preferred = "gemini-2.0-flash-lite"
 	}
 
-	var ranked []RankedEntry
-	for _, e := range entries {
+	ranked := make([]RankedEntry, 0, len(entries))
+	for i, e := range entries {
 		if !e.IsFree {
 			continue
 		}
 		score := volumeScore(e, preferred)
 		ranked = append(ranked, RankedEntry{
-			Entry:      e,
+			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
 			ModelID:    e.ModelID,
 			Score:      score,

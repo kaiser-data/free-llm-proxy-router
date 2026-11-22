@@ -14,8 +14,8 @@ type StrategyTiny struct{}
 func (s *StrategyTiny) Name() string { return "tiny" }
 
 func (s *StrategyTiny) Rank(req Request, entries []catalog.CatalogEntry, enriched *models.EnrichedCatalog) []RankedEntry {
-	var ranked []RankedEntry
-	for _, e := range entries {
+	ranked := make([]RankedEntry, 0, len(entries))
+	for i, e := range entries {
 		if !e.IsFree {
 			continue
 		}
@@ -34,7 +34,7 @@ func (s *StrategyTiny) Rank(req Request, entries []catalog.CatalogEntry, enriche
 			score = effective + 10 // not tiny — deprioritise
 		}
 		ranked = append(ranked, RankedEntry{
-			Entry:      e,
+			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
 			ModelID:    e.ModelID,
 			Score:      score,

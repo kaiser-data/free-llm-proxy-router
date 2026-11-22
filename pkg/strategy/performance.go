@@ -13,8 +13,8 @@ type StrategyPerformance struct{}
 func (s *StrategyPerformance) Name() string { return "performance" }
 
 func (s *StrategyPerformance) Rank(req Request, entries []catalog.CatalogEntry, enriched *models.EnrichedCatalog) []RankedEntry {
-	var ranked []RankedEntry
-	for _, e := range entries {
+	ranked := make([]RankedEntry, 0, len(entries))
+	for i, e := range entries {
 		if !e.IsFree {
 			continue
 		}
@@ -24,7 +24,7 @@ func (s *StrategyPerformance) Rank(req Request, entries []catalog.CatalogEntry, 
 			effective = params.Billions
 		}
 		ranked = append(ranked, RankedEntry{
-			Entry:      e,
+			Entry:      &entries[i],
 			ProviderID: e.ProviderID,
 			ModelID:    e.ModelID,
 			// Lower score = higher priority; invert effective params
