@@ -9,7 +9,7 @@ WORKDIR /app
 COPY free-llm-proxy free-llm-scan /app/
 COPY configs /app/configs
 
-# Usage/reliability state and scanned catalogs go to $HOME/.free-llm-proxy-router
+# Usage/reliability state and scanned catalogs go to $HOME/.config/free-llm-proxy-router
 # (HOME=/home/nonroot, writable). Mount a volume there to keep them.
 USER nonroot:nonroot
 EXPOSE 8080
