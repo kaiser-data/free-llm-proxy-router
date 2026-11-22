@@ -88,6 +88,8 @@ func TestFreeEntries_SkipsNonChatModels(t *testing.T) {
 		// Provider: UnoRouter (verified 2026-11-20): Voyage AI models are all
 		// embeddings or rerankers but carry the :free suffix.
 		{ProviderID: "unorouter", ModelID: "voyage-code-2:free", IsFree: true},
+		// Api.Airforce (2026-11-22) lists Suno music models in its free tier.
+		{ProviderID: "api-airforce", ModelID: "suno-v5.5", IsFree: true},
 		{ProviderID: "groq", ModelID: "openai/gpt-oss-120b", IsFree: true},
 	}}
 	got := c.FreeEntries()

@@ -380,6 +380,11 @@ providers:
     timeout: "30s"
     tier_type: "free"
     # Scan: mixed (gateway with paid models).
+    # Free models list "input_price": 0 (8 of 787 on 2026-11-22, all with output 0 too).
+    discovery:
+      models_endpoint: "/models"
+      free_detect_field: "input_price"
+      free_detect_value: "0"
     rate_limit_notes: "Free models: 20 RPM; 200 req/day for new orgs (1,000/day paying orgs), shared across all free models."
 
   - id: onomeo
@@ -435,6 +440,12 @@ providers:
     priority: 23
     timeout: "30s"
     tier_type: "free"
+    # Scan: mixed. The listing marks each model "tier": "free" or "paid" (26 free of
+    # 783 on 2026-11-22); only the free tier is cataloged.
+    discovery:
+      models_endpoint: "/models"
+      free_detect_field: "tier"
+      free_detect_value: "free"
     rate_limit_notes: "Free plan ($0/month): 1 RPM, 1,000 req/day."
 
   - id: unorouter
