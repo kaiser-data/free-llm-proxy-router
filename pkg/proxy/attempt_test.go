@@ -227,7 +227,7 @@ func TestDirectModel_UsesBuildBody(t *testing.T) {
 	defer upstream.Close()
 
 	s := newTestServer(upstream.URL, 0)
-	cfg := s.cfg.Load()
+	cfg := s.config()
 	cfg.Providers[0].NativeFeatures.ServiceTier = "flex"
 	rec := httptest.NewRecorder()
 	s.handleChatCompletions(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",

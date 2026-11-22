@@ -192,7 +192,7 @@ func TestChatCompletions_MaxCompletionTokensBeatsProfileDefault(t *testing.T) {
 	defer upstream.Close()
 
 	s := newTestServer(upstream.URL, 0)
-	s.cfg.Load().Proxy.Agents = map[string]config.AgentProfile{
+	s.config().Proxy.Agents = map[string]config.AgentProfile{
 		"my-agent": {Strategy: "adaptive", Defaults: map[string]any{"max_tokens": 4096}},
 	}
 	body := `{"model":"my-agent","max_completion_tokens":800,"messages":[{"role":"user","content":"hi"}]}`
@@ -222,7 +222,7 @@ func TestChatCompletions_ProfileStreamOverrideChangesRouting(t *testing.T) {
 	defer upstream.Close()
 
 	s := newTestServer(upstream.URL, 0)
-	s.cfg.Load().Proxy.Agents = map[string]config.AgentProfile{
+	s.config().Proxy.Agents = map[string]config.AgentProfile{
 		"batch-agent": {Strategy: "adaptive", Overrides: map[string]any{"stream": false}},
 	}
 	body := `{"model":"batch-agent","stream":true,"messages":[{"role":"user","content":"hi"}]}`

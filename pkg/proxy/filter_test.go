@@ -177,13 +177,49 @@ func TestServer_NoModelFitsIs400(t *testing.T) {
 // A typo in a reloaded config is rejected and the running config stays.
 func TestServer_UpdateConfigRejectsBadFilters(t *testing.T) {
 	s := singleProviderServer("http://127.0.0.1:1", nil)
-	before := s.cfg.Load()
+	before := s.config()
 	bad := *before
 	bad.Proxy.Filters = []config.FilterConfig{{Name: "context-fits"}}
 	if err := s.UpdateConfig(&bad); err == nil {
 		t.Fatal("UpdateConfig accepted an unknown filter")
 	}
-	if s.cfg.Load() != before || len(*s.filters.Load()) != 0 {
+	if s.config() != before || len(s.conf.Load().filters) != 0 {
 		t.Error("a rejected reload replaced the running config or filters")
+	}
+}
+
+// Config and filters are swapped together: a request loading the state while
+// reloads run never pairs one config's filters with another config.
+func TestServer_ConfigAndFiltersReloadTogether(t *testing.T) {
+	s := singleProviderServer("http://127.0.0.1:1", nil)
+	with := *s.config()
+	with.Proxy.Filters = []config.FilterConfig{{Name: "context-fit"}, {Name: "tool-calling"}}
+	without := *s.config()
+	without.Proxy.Filters = nil
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			c := &with
+			if i%2 == 1 {
+				c = &without
+			}
+			if err := s.UpdateConfig(c); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		st := s.conf.Load()
+		if len(st.filters) != len(st.cfg.Proxy.Filters) {
+			t.Fatalf("filters %v built from another config (%d configured)", st.filters.Names(), len(st.cfg.Proxy.Filters))
+		}
 	}
 }

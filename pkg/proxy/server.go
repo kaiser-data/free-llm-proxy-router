@@ -24,8 +24,7 @@ import (
 
 // Server is the OpenAI-compatible proxy server.
 type Server struct {
-	cfg             atomic.Pointer[config.Config]
-	filters         atomic.Pointer[strategy.Filters] // built from cfg.Proxy.Filters
+	conf            atomic.Pointer[configState]
 	catalog         atomic.Pointer[catalogSnapshot]
 	strategyReg     *strategy.Registry
 	rateLimiter     *ratelimit.GlobalTracker
@@ -33,6 +32,22 @@ type Server struct {
 	reliabilityTracker *reliability.Tracker
 	cache           *ResponseCache
 	httpServer      *http.Server
+}
+
+// configState pairs a config with the filters built from it. They are stored
+// and loaded together, so a request never sees one reload's provider
+// settings with another reload's filters.
+type configState struct {
+	cfg     *config.Config
+	filters strategy.Filters
+}
+
+// config returns the running configuration.
+func (s *Server) config() *config.Config {
+	if st := s.conf.Load(); st != nil {
+		return st.cfg
+	}
+	return nil
 }
 
 // catalogSnapshot pairs a catalog with its free chat entries. FreeEntries
@@ -101,8 +116,7 @@ func (s *Server) UpdateConfig(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	s.filters.Store(&filters)
-	s.cfg.Store(cfg)
+	s.conf.Store(&configState{cfg: cfg, filters: filters})
 	return nil
 }
 
@@ -113,7 +127,7 @@ func (s *Server) UpdateCatalog(cat *catalog.Catalog) {
 
 // Start begins listening on the configured port.
 func (s *Server) Start(ctx context.Context) error {
-	cfg := s.cfg.Load()
+	cfg := s.config()
 	mux := http.NewServeMux()
 
 	// OpenAI-compatible routes
@@ -249,7 +263,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// explicit max_completion_tokens budget.
 	req.readFields()
 
-	cfg := s.cfg.Load()
+	conf := s.conf.Load() // one config + filters for the whole request
+	cfg := conf.cfg
 	snap := s.catalog.Load()
 
 	// One deadline for the whole request: the direct route and the strategy
@@ -312,13 +327,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.Model != "" && req.Model != "auto" {
 		if _, errLookup := s.strategyReg.Get(req.Model); errLookup != nil {
 			// Not a known strategy — treat as a specific model ID.
-			s.serveDirectModel(w, r, cfg, snap, req, raw)
+			s.serveDirectModel(w, r, conf, snap, req, raw)
 			return
 		}
 		// It is a named strategy — fall through to strategy chain.
 	}
 
-	s.executeStrategyChain(w, r, cfg, snap, req, raw)
+	s.executeStrategyChain(w, r, conf, snap, req, raw)
 }
 
 // readFields sets Messages, Stream and MaxTokens from r.Raw (normalizing
@@ -344,7 +359,8 @@ func (r *Request) readFields() {
 // serveDirectModel routes a request with a specific model ID to the right provider.
 // Accepts both "model-id" and "provider/model-id" formats.
 // If all direct-provider attempts fail, falls back to the full strategy chain.
-func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *config.Config, snap *catalogSnapshot, req Request, raw map[string]any) {
+func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, conf *configState, snap *catalogSnapshot, req Request, raw map[string]any) {
+	cfg := conf.cfg
 	cat := snap.cat
 	// Parse optional "provider/model" prefix.
 	// Pass 1 (full exact match) handles IDs like "meta-llama/llama-3.3-70b-instruct:free"
@@ -407,7 +423,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, cfg *c
 	log.Printf("direct route: all providers failed for %q — falling back to strategy chain", req.Model)
 	req.Model = ""
 	raw["model"] = ""
-	s.executeStrategyChain(w, r, cfg, snap, req, raw)
+	s.executeStrategyChain(w, r, conf, snap, req, raw)
 }
 
 // catalogHasModel reports whether a model ID ("model" or "provider/model") is
@@ -442,7 +458,8 @@ func matchEntry(e catalog.CatalogEntry, reqModel, targetProvider, targetModel st
 }
 
 // executeStrategyChain selects the appropriate strategy and runs the provider fallback chain.
-func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cfg *config.Config, snap *catalogSnapshot, req Request, raw map[string]any) {
+func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, conf *configState, snap *catalogSnapshot, req Request, raw map[string]any) {
+	cfg := conf.cfg
 	stratName := cfg.Proxy.Strategy
 	if req.Model != "" && req.Model != "auto" {
 		if _, err := s.strategyReg.Get(req.Model); err == nil {
@@ -465,7 +482,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		GeminiTracker:      s.geminiTracker,
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         upstreamClient,
-		Filters:            *s.filters.Load(),
+		Filters:            conf.filters,
 		Stream:             req.Stream,
 	}
 
@@ -546,7 +563,7 @@ func copyUpstreamHeaders(dst, src http.Header) {
 // Open WebUI and Continue only offer IDs that appear here.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	snap := s.catalog.Load()
-	cfg := s.cfg.Load()
+	cfg := s.config()
 	type modelEntry struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
