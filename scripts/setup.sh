@@ -2,7 +2,7 @@
 # setup.sh — Initial setup for free-llm-proxy-router
 set -euo pipefail
 
-PICOCLAW_DIR="$HOME/.free-llm-proxy-router"
+PICOCLAW_DIR="$HOME/.config/free-llm-proxy-router"
 CONFIG_DIR="$(cd "$(dirname "$0")/.." && pwd)/configs"
 
 echo "=== free-llm-proxy-router setup ==="

@@ -6,9 +6,9 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCAN_BIN="$REPO_DIR/bin/free-llm-scan"
-CATALOG_SRC="$HOME/.free-llm-proxy-router/catalog.json"
+CATALOG_SRC="$HOME/.config/free-llm-proxy-router/catalog.json"
 CATALOG_DEST="$REPO_DIR/configs/catalog.json"
-LOG_FILE="$HOME/.free-llm-proxy-router/refresh.log"
+LOG_FILE="$HOME/.config/free-llm-proxy-router/refresh.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 
