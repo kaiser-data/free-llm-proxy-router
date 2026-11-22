@@ -16,14 +16,27 @@ func (c *Catalog) WriteMarkdown(w io.Writer) error {
 		byProv[e.ProviderID] = append(byProv[e.ProviderID], e)
 	}
 	provs := make([]string, 0, len(byProv))
-	total := 0
+	// Credit-tier providers (a free monthly credit, tier_type "credit") are
+	// counted apart from free tiers: their models spend the credit, so adding
+	// them to the free headline overstated it (624 of 1114 on 22 Nov 2026).
+	credit := func(p string) bool { return byProv[p][0].TierType == "credit" }
+	freeTotal, freeProvs, creditTotal, creditProvs := 0, 0, 0, 0
 	for p, es := range byProv {
 		provs = append(provs, p)
-		total += len(es)
+		if credit(p) {
+			creditTotal += len(es)
+			creditProvs++
+		} else {
+			freeTotal += len(es)
+			freeProvs++
+		}
 		sort.Slice(es, func(i, j int) bool { return es[i].ModelID < es[j].ModelID })
 	}
-	// Most models first, then alphabetical.
+	// Free tiers first, then most models, then alphabetical.
 	sort.Slice(provs, func(i, j int) bool {
+		if credit(provs[i]) != credit(provs[j]) {
+			return !credit(provs[i])
+		}
 		if len(byProv[provs[i]]) != len(byProv[provs[j]]) {
 			return len(byProv[provs[i]]) > len(byProv[provs[j]])
 		}
@@ -37,14 +50,22 @@ func (c *Catalog) WriteMarkdown(w io.Writer) error {
 	if !c.UpdatedAt.IsZero() {
 		updated = c.UpdatedAt.UTC().Format("2006-01-02")
 	}
-	fmt.Fprintf(&b, "**%d free models** across **%d providers**, updated **%s**.\n\n", total, len(provs), updated)
+	fmt.Fprintf(&b, "**%d free models** across **%s**", freeTotal, providers(freeProvs))
+	if creditTotal > 0 {
+		fmt.Fprintf(&b, ", plus **%d models on a free monthly credit** across **%s**", creditTotal, providers(creditProvs))
+	}
+	fmt.Fprintf(&b, ", updated **%s**.\n\n", updated)
 	b.WriteString("Discovered automatically by scanning each provider's model API. ")
 	b.WriteString("Use any of them through [free-llm-proxy-router](README.md) with a single OpenAI-compatible endpoint. ")
 	b.WriteString("Free tiers change often, so check the provider's own terms before relying on one.\n\n")
 
-	b.WriteString("| Provider | Free models | Largest context |\n|---|---:|---:|\n")
+	b.WriteString("| Provider | Tier | Models | Largest context |\n|---|---|---:|---:|\n")
 	for _, p := range provs {
-		fmt.Fprintf(&b, "| [%s](#%s) | %d | %s |\n", p, p, len(byProv[p]), formatContext(maxContext(byProv[p])))
+		tier := "free"
+		if credit(p) {
+			tier = "monthly credit"
+		}
+		fmt.Fprintf(&b, "| [%s](#%s) | %s | %d | %s |\n", p, p, tier, len(byProv[p]), formatContext(maxContext(byProv[p])))
 	}
 
 	for _, p := range provs {
@@ -57,6 +78,13 @@ func (c *Catalog) WriteMarkdown(w io.Writer) error {
 
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+func providers(n int) string {
+	if n == 1 {
+		return "1 provider"
+	}
+	return fmt.Sprintf("%d providers", n)
 }
 
 func maxContext(es []CatalogEntry) int {

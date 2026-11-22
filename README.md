@@ -43,7 +43,7 @@ On `main` since [v0.1.8](https://github.com/kaiser-data/free-llm-proxy-router/re
 
 - **Routing is about 24× faster.** Picking a model for a request used to cost about 12 ms and 2.5 MB on one Jetson Orin Nano core with the 3000-model catalog. It now costs **0.5 ms and 160 KB** ([#42](https://github.com/kaiser-data/free-llm-proxy-router/pull/42)). Slower boards such as a Pi Zero spend longer on every request, so they save the most time.
 - **Model filters.** You can drop models whose context window is too small or that cannot call tools, before ranking ([#38](https://github.com/kaiser-data/free-llm-proxy-router/pull/38), by [@BenediktChlopik](https://github.com/BenediktChlopik)).
-- **More free models, counted correctly.** The list now shows 1114 free models, down from 3073 inflated by gateways that mix free and paid models. Of those, 439 come from providers that are on by default.
+- **More free models, counted correctly.** The list now shows 490 free-tier models plus 624 on a free monthly credit, counted apart. It used to claim 3073, inflated by gateways that mix free and paid models. 439 of the free-tier models come from providers that are on by default.
   - UnoRouter provider ([#36](https://github.com/kaiser-data/free-llm-proxy-router/pull/36)).
   - Free-model detection for gateways that mix free and paid models ([#34](https://github.com/kaiser-data/free-llm-proxy-router/pull/34), [#39](https://github.com/kaiser-data/free-llm-proxy-router/pull/39)).
   - Consent and credit errors from aggregators no longer bench a working key ([#35](https://github.com/kaiser-data/free-llm-proxy-router/pull/35)).
@@ -208,7 +208,7 @@ Only OpenRouter reports tool support today, so other providers' models are "unkn
 
 ## Providers
 
-One key is enough to start, and every extra key adds capacity. The providers that are on by default serve **439 free models** (scan of 22 Nov 2026). [`FREE_MODELS.md`](FREE_MODELS.md) lists 1114 in total; the rest sit behind credit-tier and other gateways that ship disabled. **These providers are on by default and stay idle until their key is set:**
+One key is enough to start, and every extra key adds capacity. The providers that are on by default serve **439 free models** (scan of 22 Nov 2026). [`FREE_MODELS.md`](FREE_MODELS.md) lists 490 free-tier models in all, plus 624 that run on a free monthly credit (Vercel AI Gateway, BazaarLink and others); those providers, and a few smaller free ones, ship disabled. **These providers are on by default and stay idle until their key is set:**
 
 | Provider | Free models (scan of 22 Nov 2026) | Key env var | Get a key |
 |---|---:|---|---|
@@ -362,7 +362,7 @@ go vet ./...
 make build
 ```
 
-**Next:** Gemini tool-call signatures across turns ([#30](https://github.com/kaiser-data/free-llm-proxy-router/pull/30)) · OpenRouter `models[]` capped at 3 ([#33](https://github.com/kaiser-data/free-llm-proxy-router/pull/33)) · free-model detection for Vercel AI Gateway (its listing has no single free marker) · ranking only the top candidates instead of the whole catalog.
+**Next:** Gemini tool-call signatures across turns ([#30](https://github.com/kaiser-data/free-llm-proxy-router/pull/30)) · OpenRouter `models[]` capped at 3 ([#33](https://github.com/kaiser-data/free-llm-proxy-router/pull/33)) · ranking only the top candidates instead of the whole catalog.
 
 ## Contributors
 

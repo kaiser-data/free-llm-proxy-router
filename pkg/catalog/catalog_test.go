@@ -44,6 +44,8 @@ func TestWriteMarkdown(t *testing.T) {
 		{ProviderID: "groq", ModelID: "llama-a", IsFree: true, ContextWindow: 8192},
 		{ProviderID: "gemini", ModelID: "flash", IsFree: true, ContextWindow: 1_048_576},
 		{ProviderID: "gemini", ModelID: "paid", IsFree: false},
+		{ProviderID: "vercel", ModelID: "credit-a", IsFree: true, TierType: "credit"},
+		{ProviderID: "vercel", ModelID: "credit-b", IsFree: true, TierType: "credit"},
 	}}
 	var b strings.Builder
 	if err := c.WriteMarkdown(&b); err != nil {
@@ -51,9 +53,10 @@ func TestWriteMarkdown(t *testing.T) {
 	}
 	out := b.String()
 	for _, want := range []string{
-		"**3 free models** across **2 providers**",
-		"| [groq](#groq) | 2 | 128k |",
-		"| [gemini](#gemini) | 1 | 1M |",
+		"**3 free models** across **2 providers**, plus **2 models on a free monthly credit** across **1 provider**",
+		"| [groq](#groq) | free | 2 | 128k |",
+		"| [gemini](#gemini) | free | 1 | 1M |",
+		"| [vercel](#vercel) | monthly credit | 2 | – |",
 		"| `flash` | 1M |",
 	} {
 		if !strings.Contains(out, want) {
@@ -62,6 +65,10 @@ func TestWriteMarkdown(t *testing.T) {
 	}
 	if strings.Contains(out, "paid") {
 		t.Error("non-free model listed")
+	}
+	// Free tiers come before credit tiers even when the credit tier is larger.
+	if strings.Index(out, "| [vercel]") < strings.Index(out, "| [gemini]") {
+		t.Error("credit-tier provider listed before a free tier")
 	}
 	if strings.Index(out, "llama-a") > strings.Index(out, "llama-b") {
 		t.Error("models not sorted")
