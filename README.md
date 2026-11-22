@@ -10,7 +10,7 @@
 [![CI](https://github.com/kaiser-data/free-llm-proxy-router/actions/workflows/ci.yml/badge.svg)](https://github.com/kaiser-data/free-llm-proxy-router/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kaiser-data/free-llm-proxy-router?color=2f7a4b)](https://github.com/kaiser-data/free-llm-proxy-router/releases/latest)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](go.mod)
-[![tests](https://img.shields.io/badge/tests-146%20passing-2f7a4b)](.github/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-148%20passing-2f7a4b)](.github/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 [**Free model list**](FREE_MODELS.md) · [Install](#install) · [PicoClaw & small boards](#run-it-beside-picoclaw-on-a-10-board) · [Strategies](#pick-a-strategy) · [How it works](#how-it-works) · [Limits](#honest-limits)
@@ -280,7 +280,7 @@ Or let one machine scan on a schedule and every other machine pull the result: s
 | Response header | Means |
 |---|---|
 | `X-Used-Model` | the model that actually answered |
-| `X-Cache: HIT` | served from the short response cache (non-streaming only) |
+| `X-Cache: HIT` | served from the short response cache: non-streaming requests without tools, with `temperature` 0 or unset and `n` ≤ 1 |
 | `X-Proxy-Exhausted` + `Retry-After` | every free model failed (`503`); retry after that many seconds |
 
 <details>
@@ -332,7 +332,7 @@ configs/            bundled config and the free-model catalog
 ## Development
 
 ```bash
-go test -race ./...    # 146 tests
+go test -race ./...    # 148 tests
 go vet ./...
 make build
 ```

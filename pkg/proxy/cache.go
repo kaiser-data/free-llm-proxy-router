@@ -34,6 +34,9 @@ func NewResponseCache(ttlSeconds int) *ResponseCache {
 
 // Get returns a cached response for the given request body, or nil if not cached.
 func (c *ResponseCache) Get(reqBody map[string]any) []byte {
+	if c.ttl <= 0 {
+		return nil // cache off: skip serialising and hashing the request
+	}
 	key := cacheKey(reqBody)
 	c.mu.RLock()
 	e, ok := c.entries[key]
@@ -75,6 +78,33 @@ func (c *ResponseCache) evict() {
 		}
 	}
 	c.mu.Unlock()
+}
+
+// cacheable reports whether a request asks for a repeatable answer. Tool
+// requests are agent turns (repeating one after a failed tool call must reach
+// a model again), and temperature > 0 or n > 1 ask for varied samples. An
+// unset temperature stays cacheable, as before.
+func cacheable(req map[string]any) bool {
+	if hasTools(req) {
+		return false
+	}
+	if f, ok := req["functions"].([]any); ok && len(f) > 0 { // legacy function calling
+		return false
+	}
+	switch t := req["temperature"].(type) { // JSON gives float64, a YAML profile int
+	case float64:
+		if t > 0 {
+			return false
+		}
+	case int:
+		if t > 0 {
+			return false
+		}
+	}
+	if n, ok := toInt(req["n"]); ok && n > 1 {
+		return false
+	}
+	return true
 }
 
 func cacheKey(req map[string]any) string {

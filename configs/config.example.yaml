@@ -31,7 +31,8 @@ proxy:
   host: "127.0.0.1"    # Listen address. Use "0.0.0.0" to expose on your network (set auth_token too)
   port: 8080
   auth_token: ""       # Set to require a Bearer token on incoming requests
-  cache_ttl: 300       # Response cache TTL in seconds (0 to disable)
+  cache_ttl: 300       # Response cache TTL in seconds (0 to disable). Requests with tools,
+                       # temperature > 0 or n > 1 are never cached.
   log_level: "info"    # "warn" or "error" drop the per-request log lines (fewer SD-card writes)
   strategy: "adaptive" # Default strategy: adaptive, performance, speed, volume, balanced,
                         # small, tiny, coding, long_context, similar, parallel, reliable, economical

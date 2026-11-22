@@ -290,8 +290,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		log.Printf("agent profile resolved: model=%q strategy=%q", profile.Model, profile.Strategy)
 	}
 
-	// Check cache for non-streaming requests
-	if !req.Stream {
+	// Check cache for non-streaming requests that ask for a repeatable answer.
+	useCache := !req.Stream && cacheable(raw)
+	if useCache {
 		if cached := s.cache.Get(raw); cached != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-Cache", "HIT")
@@ -472,7 +473,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, cf
 		return
 	}
 
-	if !req.Stream && resp.StatusCode == http.StatusOK && !resp.Truncated {
+	if !req.Stream && resp.StatusCode == http.StatusOK && !resp.Truncated && cacheable(raw) {
 		s.cache.Set(raw, resp.Body)
 	}
 
