@@ -29,8 +29,10 @@ jobs:
       - name: Build all binaries
         run: make build
 
-      - name: Run unit tests
-        run: go test ./... -count=1 -timeout 60s
+      - name: Run unit tests (race detector)
+        # -race catches unsynchronised test servers and shared state, which the
+        # fallback and streaming tests rely on heavily. Needs cgo (gcc is on the runner).
+        run: CGO_ENABLED=1 go test ./... -race -count=1 -timeout 180s
 
       - name: Check binary sizes
         run: |
