@@ -117,7 +117,48 @@ func (s *Server) UpdateConfig(cfg *config.Config) error {
 		return err
 	}
 	s.conf.Store(&configState{cfg: cfg, filters: filters})
+
+	// Pre-resolve DNS for all enabled providers so the first request
+	// doesn't pay a cold DNS lookup. Runs async to avoid blocking startup/reload.
+	go preResolveProviders(cfg)
 	return nil
+}
+
+// preResolveProviders fires off DNS lookups for all enabled provider BaseURLs.
+// Best-effort: failures are logged but don't block the proxy.
+func preResolveProviders(cfg *config.Config) {
+	seen := make(map[string]bool)
+	for _, p := range cfg.Providers {
+		if !p.Enabled || p.BaseURL == "" {
+			continue
+		}
+		host := extractHost(p.BaseURL)
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		go func(h string) {
+			if _, err := net.LookupHost(h); err != nil {
+				log.Printf("dns pre-resolve: %s: %v", h, err)
+			} else {
+				log.Printf("dns pre-resolve: %s ok", h)
+			}
+		}(host)
+	}
+}
+
+// extractHost returns the host:port from a URL like "https://api.openai.com/v1".
+func extractHost(baseURL string) string {
+	// Strip scheme
+	u := baseURL
+	if i := strings.Index(u, "://"); i >= 0 {
+		u = u[i+3:]
+	}
+	// Strip path
+	if i := strings.IndexByte(u, '/'); i >= 0 {
+		u = u[:i]
+	}
+	return u
 }
 
 // UpdateCatalog hot-reloads the model catalog.
