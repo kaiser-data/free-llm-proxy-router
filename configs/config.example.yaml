@@ -132,8 +132,8 @@ refresh:
   output_merge: "conservative"
 
 catalog:
-  path: "~/.free-llm-proxy-router/catalog.json"
-  enriched_path: "~/.free-llm-proxy-router/enriched.json"
+  path: "~/.config/free-llm-proxy-router/catalog.json"
+  enriched_path: "~/.config/free-llm-proxy-router/enriched.json"
   max_age_hours: 24
   auto_scan_on_start: false
 
