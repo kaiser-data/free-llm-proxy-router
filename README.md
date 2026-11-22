@@ -280,7 +280,7 @@ Or let one machine scan on a schedule and every other machine pull the result: s
 | Response header | Means |
 |---|---|
 | `X-Used-Model` | the model that actually answered |
-| `X-Cache: HIT` | served from the short response cache: non-streaming requests without tools, with `temperature` 0 or unset and `n` ≤ 1 |
+| `X-Cache: HIT` | served from the short response cache (at most 16 MB): non-streaming requests without tools, with `temperature` 0 or unset and `n` ≤ 1 |
 | `X-Proxy-Exhausted` + `Retry-After` | every free model failed (`503`); retry after that many seconds |
 
 <details>
