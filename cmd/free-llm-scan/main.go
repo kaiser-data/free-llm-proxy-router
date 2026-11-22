@@ -133,7 +133,7 @@ func updateCmd() *cobra.Command {
 func checkScanTargets(providers []config.ProviderConfig) error {
 	if len(providers) == 0 {
 		return fmt.Errorf("no providers configured: no config.yaml was found in ., " +
-			"~/.free-llm-proxy-router or configs/, and no bundled config.example.yaml next to the binary. " +
+			"~/.config/free-llm-proxy-router or configs/, and no bundled config.example.yaml next to the binary. " +
 			"Run `bash scripts/setup.sh`, or pass `-c path/to/config.yaml`")
 	}
 	for _, p := range providers {
