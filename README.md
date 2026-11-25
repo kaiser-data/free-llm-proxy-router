@@ -43,7 +43,7 @@ On `main` since [v0.1.8](https://github.com/kaiser-data/free-llm-proxy-router/re
 
 - **Routing is about 24× faster.** Picking a model for a request used to cost about 12 ms and 2.5 MB on one Jetson Orin Nano core with the 3000-model catalog. It now costs **0.5 ms and 160 KB** ([#42](https://github.com/kaiser-data/free-llm-proxy-router/pull/42)). Slower boards such as a Pi Zero spend longer on every request, so they save the most time.
 - **Model filters.** You can drop models whose context window is too small or that cannot call tools, before ranking ([#38](https://github.com/kaiser-data/free-llm-proxy-router/pull/38), by [@BenediktChlopik](https://github.com/BenediktChlopik)).
-- **More free models, counted correctly.** The list now shows 490 free-tier models plus 624 on a free monthly credit, counted apart. It used to claim 3073, inflated by gateways that mix free and paid models. 439 of the free-tier models come from providers that are on by default.
+- **More free models, counted correctly.** The list now shows about 480 free-tier models plus about 620 on a free monthly credit, counted apart. It used to claim 3073, inflated by gateways that mix free and paid models. About 440 of the free-tier models come from providers that are on by default.
   - UnoRouter provider ([#36](https://github.com/kaiser-data/free-llm-proxy-router/pull/36)).
   - Free-model detection for gateways that mix free and paid models ([#34](https://github.com/kaiser-data/free-llm-proxy-router/pull/34), [#39](https://github.com/kaiser-data/free-llm-proxy-router/pull/39)).
   - Consent and credit errors from aggregators no longer bench a working key ([#35](https://github.com/kaiser-data/free-llm-proxy-router/pull/35)).
@@ -208,7 +208,7 @@ Only OpenRouter reports tool support today, so other providers' models are "unkn
 
 ## Providers
 
-One key is enough to start, and every extra key adds capacity. The providers that are on by default serve **439 free models** (scan of 22 Nov 2026). [`FREE_MODELS.md`](FREE_MODELS.md) lists 490 free-tier models in all, plus 624 that run on a free monthly credit (Vercel AI Gateway, BazaarLink and others); those providers, and a few smaller free ones, ship disabled. **These providers are on by default and stay idle until their key is set:**
+One key is enough to start, and every extra key adds capacity. The providers that are on by default serve **about 440 free models** (scan of 22 Nov 2026). [`FREE_MODELS.md`](FREE_MODELS.md), refreshed every Monday, has the current count: about 480 free-tier models in all, plus about 620 that run on a free monthly credit (Vercel AI Gateway, BazaarLink and others); those providers, and a few smaller free ones, ship disabled. **These providers are on by default and stay idle until their key is set:**
 
 | Provider | Free models (scan of 22 Nov 2026) | Key env var | Get a key |
 |---|---:|---|---|
@@ -225,8 +225,6 @@ One key is enough to start, and every extra key adds capacity. The providers tha
 `GITHUB_TOKEN` is a common variable: if it is set in your shell, the proxy uses it for GitHub Models.
 
 About 25 more providers ship **disabled** in [`configs/config.example.yaml`](configs/config.example.yaml): gateways that also sell paid models, credit-based tiers, keyless endpoints and local servers (Ollama, LM Studio, llama.cpp…). Each has a comment saying why. Review one, then set `enabled: true`. For a gateway that mixes free and paid models, set `discovery.free_markers` (an ID suffix such as `:free`) or `discovery.free_detect_field` / `free_detect_value` (a field such as `isFree`), so that only its free models are cataloged.
-
-> **The full list is being recounted.** [`FREE_MODELS.md`](FREE_MODELS.md) from 16 Nov lists 3073 models. Most of them come from mixed gateways that are off by default, which the scanner counted as all-free before [#34](https://github.com/kaiser-data/free-llm-proxy-router/pull/34). The next weekly scan uses the fixed scanner. The counts in the table above are not affected: those providers either have their own scanner or list only free models.
 
 Several keys per provider are pooled automatically: add `GROQ_API_KEY_2`, `GROQ_API_KEY_3`… and on a 429 the proxy retries the same model with the next key. Free tiers change often, so check each provider's own terms.
 
