@@ -469,6 +469,7 @@ providers:
     # one-time per-provider consent (unorouter.com/consents). Until it is
     # given, the model answers 403 consent_required — key is fine.
     rate_limit_notes: "Sign-up (Google/Discord/GitHub), no card. :free models: ~1 req/min per model per account (429 + Retry-After); each model has its own allowance, so rotating models is allowed."
+
   # ===========================================================================
   # Added from free-llm.com: recharging allowances (tokens / credits / units).
   # tier_type "credit" so the `economical` strategy ranks them after request-limited tiers.
