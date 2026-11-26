@@ -44,6 +44,15 @@ proxy:
     tiny:          { max_tokens_cap: 128 }
     speed:         { max_tokens_cap: 512 }
     parallel:      { fan_out: 3 }
+    # long_context ranks largest context window first. The two knobs below
+    # opt small prompts into quality-first ranking: a request up to
+    # small_prompt_threshold input tokens is served by the best small/mid
+    # model, saving the 1M-context models for requests only they can hold.
+    # Off by default — with it on, a conversation can change models as it
+    # grows past the threshold.
+    # long_context:
+    #   small_prompt_quality_first: true
+    #   small_prompt_threshold: 4096   # input tokens
 
   similar:
     model_family: "llama-3.1-70b"
