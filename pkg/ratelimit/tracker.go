@@ -213,6 +213,15 @@ func (g *GlobalTracker) IsOnCooldown(providerID string) bool {
 	return ok && time.Now().Before(until)
 }
 
+// CooldownUntil returns the cooldown expiry for a key and whether it is
+// currently active. Used by tests to assert cooldown durations.
+func (g *GlobalTracker) CooldownUntil(key string) (time.Time, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	until, ok := g.cooldowns[key]
+	return until, ok && until.After(time.Now())
+}
+
 // EarliestRecovery returns the earliest time any currently-cooled-down provider will recover.
 // Returns zero time if no cooldowns are active.
 func (g *GlobalTracker) EarliestRecovery() time.Time {
