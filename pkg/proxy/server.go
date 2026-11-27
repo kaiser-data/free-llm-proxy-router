@@ -129,9 +129,21 @@ func (s *Server) UpdateCatalog(cat *catalog.Catalog) {
 	s.catalog.Store(newCatalogSnapshot(cat))
 }
 
+// checkExposure refuses a non-loopback listen address without an auth token,
+// unless proxy.allow_no_auth opts out.
+func checkExposure(p config.ProxyConfig) error {
+	if p.AuthToken != "" || isLoopbackHost(p.Host) || p.AllowNoAuth {
+		return nil
+	}
+	return fmt.Errorf("refusing to listen on %q without proxy.auth_token: anyone who can reach this port could spend your provider quotas. Set auth_token (or PROXY_AUTH_TOKEN), listen on 127.0.0.1, or pass --allow-no-auth if access is already restricted", p.Host)
+}
+
 // Start begins listening on the configured port.
 func (s *Server) Start(ctx context.Context) error {
 	cfg := s.config()
+	if err := checkExposure(cfg.Proxy); err != nil {
+		return err
+	}
 	mux := http.NewServeMux()
 
 	// OpenAI-compatible routes
@@ -161,7 +173,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	log.Printf("free-llm-proxy listening on %s (strategy: %s)", s.httpServer.Addr, cfg.Proxy.Strategy)
 	if cfg.Proxy.AuthToken == "" && !isLoopbackHost(cfg.Proxy.Host) {
-		log.Printf("warning: listening on %q without proxy.auth_token — anyone who can reach this port can spend your provider quotas", cfg.Proxy.Host)
+		log.Printf("warning: listening on %q without proxy.auth_token (--allow-no-auth) — anyone who can reach this port can spend your provider quotas", cfg.Proxy.Host)
 	}
 
 	// ListenAndServe returns as soon as Shutdown starts; wait for Shutdown to
