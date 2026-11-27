@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"github.com/kaiser-data/free-llm-proxy-router/pkg/catalog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -84,13 +85,13 @@ func TestQuirks_OpenRouterCountsTheModelItUsed(t *testing.T) {
 func TestQuirks_DefaultRateLimit(t *testing.T) {
 	q := quirksFor("some-generic-provider")
 	zero := &Response{StatusCode: 429, Header: http.Header{}, Body: []byte(`quota exceeded, limit: 0, model: x`)}
-	if wait, whole := q.rateLimitCooldown("some-generic-provider", zero); wait != zeroQuotaCooldown || whole {
-		t.Errorf("zero quota: got %s whole=%v, want %s for the key slot", wait, whole, zeroQuotaCooldown)
+	if wait, scope := q.rateLimitCooldown("some-generic-provider", zero); wait != zeroQuotaCooldown || scope != scopeKeySlot {
+		t.Errorf("zero quota: got %s scope=%v, want %s for the key slot", wait, scope, zeroQuotaCooldown)
 	}
 	h := http.Header{}
 	h.Set("Retry-After", "42")
-	if wait, whole := q.rateLimitCooldown("some-generic-provider", &Response{StatusCode: 429, Header: h}); wait < 42*time.Second || wait > 42*time.Second+4200*time.Millisecond || whole {
-		t.Errorf("Retry-After 42: got %s whole=%v, want 42s plus up to 10%% jitter for the key slot", wait, whole)
+	if wait, scope := q.rateLimitCooldown("some-generic-provider", &Response{StatusCode: 429, Header: h}); wait < 42*time.Second || wait > 42*time.Second+4200*time.Millisecond || scope != scopeKeySlot {
+		t.Errorf("Retry-After 42: got %s scope=%v, want 42s plus up to 10%% jitter for the key slot", wait, scope)
 	}
 }
 
@@ -112,7 +113,7 @@ func TestQuirks_RateLimitCanCoolTheWholeProvider(t *testing.T) {
 	defer ok.Close()
 
 	providerQuirksByID["alpha"] = providerQuirks{
-		rateLimit: func(*Response) (time.Duration, bool) { return time.Hour, true },
+		rateLimit: func(*Response) (time.Duration, rateLimitScope) { return time.Hour, scopeProvider },
 	}
 	defer delete(providerQuirksByID, "alpha")
 
@@ -136,5 +137,32 @@ func TestQuirks_RateLimitCanCoolTheWholeProvider(t *testing.T) {
 	}
 	if !fc.RateLimiter.IsOnCooldown("alpha") {
 		t.Error("alpha is not on a provider cooldown")
+	}
+}
+
+// An account-wide quota on one key cools every model on that key slot and
+// leaves the provider's other key slots usable.
+func TestCooldown429_KeySlotAllModelsScope(t *testing.T) {
+	providerQuirksByID["alpha"] = providerQuirks{
+		rateLimit: func(*Response) (time.Duration, rateLimitScope) { return time.Hour, scopeKeySlotAllModels },
+	}
+	defer delete(providerQuirksByID, "alpha")
+
+	fc := twoProviderChain("http://unused", "http://unused")
+	fc.Catalog = &catalog.Catalog{Entries: []catalog.CatalogEntry{
+		{ProviderID: "alpha", ModelID: "m1"},
+		{ProviderID: "alpha", ModelID: "m2"},
+		{ProviderID: "beta", ModelID: "m1"},
+	}}
+	fc.cooldown429("alpha", "m1", 0, 2, &Response{StatusCode: 429, Header: http.Header{}})
+
+	for key, want := range map[string]bool{
+		"alpha/m1#1": true, "alpha/m2#1": true, // every model on the spent key
+		"alpha/m1#2": false, "alpha/m2#2": false, // the other key's account
+		"alpha": false, "beta/m1": false,
+	} {
+		if got := fc.RateLimiter.IsOnCooldown(key); got != want {
+			t.Errorf("IsOnCooldown(%q) = %v, want %v", key, got, want)
+		}
 	}
 }

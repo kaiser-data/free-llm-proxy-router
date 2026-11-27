@@ -435,16 +435,33 @@ func authCooldownKey(providerID string, slot, numKeys int) string {
 	return fmt.Sprintf("%s#key%d", providerID, slot+1)
 }
 
-// cooldown429 puts one key slot of a model on cooldown after a 429, or the
-// whole provider when its quirks say the quota spans every model.
+// cooldown429 puts a model's key slot on cooldown after a 429, or a wider
+// scope when the provider's quirks say the quota is wider (see
+// rateLimitScope).
 func (fc *FallbackChain) cooldown429(providerID, modelID string, slot, numKeys int, resp *Response) {
-	waitDur, wholeProvider := quirksFor(providerID).rateLimitCooldown(providerID, resp)
-	key := cooldownKey(providerID, modelID, slot, numKeys)
-	if wholeProvider {
-		key = providerID
+	waitDur, scope := quirksFor(providerID).rateLimitCooldown(providerID, resp)
+	until := time.Now().Add(waitDur)
+	switch scope {
+	case scopeProvider:
+		fc.RateLimiter.SetCooldown(providerID, until)
+		log.Printf("fallback: %s rate limited on every key — provider cooldown %s", providerID, waitDur.Round(time.Second))
+	case scopeKeySlotAllModels:
+		fc.RateLimiter.SetCooldown(cooldownKey(providerID, modelID, slot, numKeys), until)
+		n := 1
+		if fc.Catalog != nil {
+			for _, e := range fc.Catalog.ByProvider(providerID) {
+				if e.ModelID != modelID {
+					fc.RateLimiter.SetCooldown(cooldownKey(providerID, e.ModelID, slot, numKeys), until)
+					n++
+				}
+			}
+		}
+		log.Printf("fallback: %s quota spent on key slot %d — cooling %d models for %s", providerID, slot+1, n, waitDur.Round(time.Second))
+	default:
+		key := cooldownKey(providerID, modelID, slot, numKeys)
+		fc.RateLimiter.SetCooldown(key, until)
+		log.Printf("fallback: %s rate limited — cooldown %s", key, waitDur.Round(time.Second))
 	}
-	fc.RateLimiter.SetCooldown(key, time.Now().Add(waitDur))
-	log.Printf("fallback: %s rate limited — cooldown %s", key, waitDur.Round(time.Second))
 }
 
 // callOnce makes one upstream call with a fixed key and classifies it.

@@ -29,10 +29,25 @@ type providerQuirks struct {
 	onSuccess func(env quirkEnv, resp *Response)
 	// usageModel names the model a 200 is counted under in usage tracking.
 	usageModel func(modelID string, resp *Response) string
-	// rateLimit decides a 429's cooldown and whether it covers every model
-	// of the provider instead of the one key slot. Default: defaultRateLimit.
-	rateLimit func(resp *Response) (wait time.Duration, wholeProvider bool)
+	// rateLimit decides a 429's cooldown and what it covers.
+	// Default: defaultRateLimit for the one model on the one key slot.
+	rateLimit func(resp *Response) (wait time.Duration, scope rateLimitScope)
 }
+
+// rateLimitScope is what a 429's cooldown covers.
+type rateLimitScope int
+
+const (
+	// scopeKeySlot cools this model on the key slot that got the 429; the
+	// next key slot is tried right away.
+	scopeKeySlot rateLimitScope = iota
+	// scopeKeySlotAllModels cools every model of the provider on that key
+	// slot: an account-wide quota (a daily free-tier cap) is spent, while
+	// other key slots belong to other accounts and stay usable.
+	scopeKeySlotAllModels
+	// scopeProvider cools the whole provider, every key.
+	scopeProvider
+)
 
 // quirkEnv is the shared state a quirk may use. It is passed by value rather
 // than as *FallbackChain: handing the chain to a function value would make
@@ -75,11 +90,11 @@ func quirksFor(providerID string) providerQuirks {
 
 // rateLimitCooldown is the 429 cooldown for providerID: the provider's own
 // rule if it has one, else defaultRateLimit.
-func (q providerQuirks) rateLimitCooldown(providerID string, resp *Response) (time.Duration, bool) {
+func (q providerQuirks) rateLimitCooldown(providerID string, resp *Response) (time.Duration, rateLimitScope) {
 	if q.rateLimit != nil {
 		return q.rateLimit(resp)
 	}
-	return defaultRateLimit(providerID, resp), false
+	return defaultRateLimit(providerID, resp), scopeKeySlot
 }
 
 // usageModelFor is the model a successful call is counted under.
