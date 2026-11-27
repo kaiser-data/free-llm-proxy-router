@@ -225,7 +225,6 @@ func writeUpstreamStream(w http.ResponseWriter, resp *Response) {
 				// The raw error stays in the server log only: it can carry
 				// internal addresses or provider detail (e.g. "read tcp
 				// 10.0.0.5:51234->…: connection reset by peer").
-				// Recommended by Norma — fixed with Claude Opus 5.5 via Claude Code
 				log.Printf("stream: upstream ended mid-stream: %v", err)
 				writeStreamError(w, "upstream stream interrupted")
 				flush()
