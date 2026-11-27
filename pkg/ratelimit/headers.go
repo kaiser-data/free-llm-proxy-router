@@ -25,6 +25,10 @@ type RateLimitInfo struct {
 	GeminiErrorType string
 	// IsRPDExhausted is true when a daily quota is exhausted (requires midnight-PT wait).
 	IsRPDExhausted bool
+	// IsDailyLimitExhausted is true when an account-level daily quota is used
+	// up (e.g. OpenRouter free tier) and the reset timestamp applies to every
+	// model of the provider, not just the one that got the 429.
+	IsDailyLimitExhausted bool
 	// GroqResetRequests is the parsed Go-duration form of x-ratelimit-reset-requests.
 	GroqResetRequests time.Duration
 	// GroqResetTokens is the parsed Go-duration form of x-ratelimit-reset-tokens.
@@ -36,10 +40,15 @@ type RateLimitInfo struct {
 //
 // Provider: OpenRouter
 // Docs: https://openrouter.ai/docs/faq
-// Last verified: 2026-02-28
+// Last verified: 2026-11-20
 // Free tier: 50 req/day (1000 with $10+ balance)
 // Auth: Authorization: Bearer (standard)
-// Special headers: HTTP-Referer, X-Title required; Retry-After on 429
+// Special headers: HTTP-Referer, X-Title required
+// On 429: NO Retry-After; x-ratelimit-reset is a MILLISECOND epoch of the
+// reset (e.g. 1795219200000 = next 00:00 UTC for the daily free-tier quota),
+// and the body says "free-models-per-day" with
+// metadata.limit_source=openrouter_free_tier_daily when the daily quota is
+// spent — the cooldown then applies to every model of the account.
 //
 // Provider: Groq
 // Docs: https://console.groq.com/docs/rate-limits
@@ -130,9 +139,41 @@ func ExtractRateLimitInfo(providerID string, headers http.Header, body []byte) R
 		extractCerebrasHeaders(&info, headers)
 	case "groq":
 		extractGroqHeaders(&info, headers)
+	case "openrouter":
+		extractOpenRouterHeaders(&info, headers, body)
 	}
 
 	return info
+}
+
+// extractOpenRouterHeaders processes OpenRouter-specific 429 indicators.
+// The daily free-tier 429 carries no Retry-After; x-ratelimit-reset is the
+// reset time as a millisecond epoch (next 00:00 UTC for the daily quota).
+func extractOpenRouterHeaders(info *RateLimitInfo, headers http.Header, body []byte) {
+	if reset := headers.Get("x-ratelimit-reset"); reset != "" {
+		if ms, err := strconv.ParseInt(strings.TrimSpace(reset), 10, 64); err == nil {
+			info.ResetTimestamp = ms / 1000
+			diff := ms - time.Now().UnixMilli()
+			if diff > info.RetryAfterMs {
+				info.RetryAfterMs = diff
+			}
+		}
+	}
+
+	// Same rule as Gemini: a reset more than an hour out means a daily quota,
+	// which is account-wide — every model of the provider must sit out.
+	if info.RetryAfterMs > 60*60*1000 || strings.Contains(string(body), "free-models-per-day") {
+		info.IsDailyLimitExhausted = true
+		if info.RetryAfterMs <= 0 {
+			// Body-only daily 429 (no x-ratelimit-reset header): the free
+			// tier resets at the next 00:00 UTC — wait for the reset, not
+			// the short default backoff.
+			now := time.Now().UTC()
+			next := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Add(24 * time.Hour)
+			info.ResetTimestamp = next.Unix()
+			info.RetryAfterMs = next.Sub(now).Milliseconds()
+		}
+	}
 }
 
 // extractGeminiHeaders processes Gemini-specific 429 indicators.
