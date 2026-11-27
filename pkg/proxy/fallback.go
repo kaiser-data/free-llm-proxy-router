@@ -445,17 +445,16 @@ func (fc *FallbackChain) cooldown429(providerID, modelID string, slot, numKeys i
 	}
 	if info.IsDailyLimitExhausted {
 		// Account-wide daily quota (e.g. OpenRouter free tier, reset at the
-		// next 00:00 UTC): every model of this provider would 429 the same
-		// way, so cool them all — retrying any of them would just re-burn
-		// the spent quota.
+		// next 00:00 UTC): every model on this key's account would 429 the
+		// same way, so cool them all on the slot that got the 429 — retrying
+		// any of them would just re-burn the spent quota. Other key slots
+		// belong to other accounts with their own quota and stay usable.
 		daily := fc.Catalog.ByProvider(providerID)
 		until := time.Now().Add(waitDur)
 		for _, entry := range daily {
-			for s := 0; s < numKeys; s++ {
-				fc.RateLimiter.SetCooldown(cooldownKey(providerID, entry.ModelID, s, numKeys), until)
-			}
+			fc.RateLimiter.SetCooldown(cooldownKey(providerID, entry.ModelID, slot, numKeys), until)
 		}
-		log.Printf("fallback: %s daily quota exhausted — cooling all %d models for %s", providerID, len(daily), waitDur.Round(time.Second))
+		log.Printf("fallback: %s daily quota exhausted — cooling all %d models on key slot %d for %s", providerID, len(daily), slot+1, waitDur.Round(time.Second))
 		return
 	}
 	fc.RateLimiter.SetCooldown(cooldownKey(providerID, modelID, slot, numKeys), time.Now().Add(waitDur))

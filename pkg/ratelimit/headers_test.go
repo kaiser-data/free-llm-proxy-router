@@ -87,8 +87,10 @@ func TestExtractRateLimitInfo_AllProviders(t *testing.T) {
 		if !info.IsDailyLimitExhausted {
 			t.Errorf("IsDailyLimitExhausted = false, want true for free-models-per-day body")
 		}
-		if info.WaitDuration() <= 0 {
-			t.Errorf("WaitDuration() = %v, want >0", info.WaitDuration())
+		// Body-only detection must still wait for the reset (next 00:00 UTC),
+		// not the short default backoff.
+		if wait := info.WaitDuration(); wait <= time.Hour {
+			t.Errorf("WaitDuration() = %v, want >1h (until the next 00:00 UTC)", wait)
 		}
 	})
 

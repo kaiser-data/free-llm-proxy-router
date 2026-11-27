@@ -164,6 +164,15 @@ func extractOpenRouterHeaders(info *RateLimitInfo, headers http.Header, body []b
 	// which is account-wide — every model of the provider must sit out.
 	if info.RetryAfterMs > 60*60*1000 || strings.Contains(string(body), "free-models-per-day") {
 		info.IsDailyLimitExhausted = true
+		if info.RetryAfterMs <= 0 {
+			// Body-only daily 429 (no x-ratelimit-reset header): the free
+			// tier resets at the next 00:00 UTC — wait for the reset, not
+			// the short default backoff.
+			now := time.Now().UTC()
+			next := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Add(24 * time.Hour)
+			info.ResetTimestamp = next.Unix()
+			info.RetryAfterMs = next.Sub(now).Milliseconds()
+		}
 	}
 }
 
