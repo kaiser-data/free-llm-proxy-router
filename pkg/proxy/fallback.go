@@ -443,6 +443,13 @@ func (fc *FallbackChain) cooldown429(providerID, modelID string, slot, numKeys i
 		// Quota "limit: 0" means the model is not on this key's free tier.
 		waitDur = zeroQuotaCooldown
 	}
+	if info.RetryAfterMs <= 0 && waitDur < min429Cooldown {
+		// The provider sent no retry hint (no Retry-After, no reset header):
+		// floor the guessed backoff. When the provider does tell us its
+		// window, trust it — a per-second tier would otherwise sit out 30s
+		// instead of 1-2s.
+		waitDur = min429Cooldown
+	}
 	fc.RateLimiter.SetCooldown(cooldownKey(providerID, modelID, slot, numKeys), time.Now().Add(waitDur))
 	log.Printf("fallback: %s/%s rate limited — cooldown %s", providerID, modelID, waitDur.Round(time.Second))
 }
@@ -804,6 +811,15 @@ const (
 	// transport level (timeout, conn refused) so one hung model costs its
 	// timeout once per window instead of stalling every walk.
 	transportModelCooldown = 5 * time.Minute
+	// min429Cooldown floors the 429 cooldown when the provider sent no
+	// retry hint (no Retry-After, no reset header) and the chain had to
+	// guess. Providers often suggest retrying in ~5s (per-minute windows),
+	// so a model that just 429'd was retried within the same minute,
+	// re-burning quota attempts against a window that was already spent.
+	// 30s matches the RPM-window semantics: this minute's budget is gone
+	// either way, and a retry only makes sense once the window has reset.
+	// An explicit provider hint is always honored as-is.
+	min429Cooldown = 30 * time.Second
 	// zeroQuotaCooldown applies when a 429 reports a quota "limit: 0": the
 	// model is listed but not on the free tier, so retrying soon is pointless.
 	zeroQuotaCooldown = 24 * time.Hour

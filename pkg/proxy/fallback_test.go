@@ -81,6 +81,44 @@ func TestFallbackChain_404TriggersCooldown(t *testing.T) {
 	}
 }
 
+// The 30s 429 floor applies only when the provider sent no retry hint;
+// an explicit Retry-After must be honored as-is.
+func TestCooldown429_FloorOnlyWithoutHint(t *testing.T) {
+	rl := ratelimit.NewGlobalTracker()
+	fc := &FallbackChain{RateLimiter: rl}
+	noHint := &Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       []byte(`{"error":{"message":"rate limited"}}`),
+	}
+
+	// No Retry-After / reset header: the 5s guessed backoff is floored at 30s.
+	fc.cooldown429("testprovider", "guessed-model", 0, 1, noHint)
+	until, ok := rl.CooldownUntil("testprovider/guessed-model")
+	if !ok {
+		t.Fatal("expected guessed-model on cooldown after a hint-less 429")
+	}
+	// Small slack for the time between setting and reading the cooldown.
+	if wait := time.Until(until); wait < 29*time.Second {
+		t.Errorf("wait = %v, want ~30s floor", wait)
+	}
+
+	// An explicit Retry-After is honored — no 30s floor on top of it.
+	hinted := &Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{"2"}},
+		Body:       []byte(`{"error":{"message":"rate limited"}}`),
+	}
+	fc.cooldown429("testprovider", "hinted-model", 0, 1, hinted)
+	until, ok = rl.CooldownUntil("testprovider/hinted-model")
+	if !ok {
+		t.Fatal("expected hinted-model on cooldown with a Retry-After hint")
+	}
+	if wait := time.Until(until); wait >= 30*time.Second {
+		t.Errorf("wait = %v, want ~2s (Retry-After must not be floored)", wait)
+	}
+}
+
 func TestFallbackChain_401TriggersCooldown(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"unauthorized"}}`, http.StatusUnauthorized)
