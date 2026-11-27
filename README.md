@@ -150,6 +150,19 @@ Use `"model": "coding"`, `"speed"` or any other [strategy](#pick-a-strategy) in 
 | Memory ceiling | requests, provider answers and the response cache are each capped at 16 MB |
 | Prebuilt for | `linux/arm` v6 (Pi Zero, Pi 1), v7 (32-bit Pi OS, LicheePi), `linux/riscv64` (LicheeRV Nano), `linux/arm64`, `amd64`, as archives and `.deb`/`.rpm`/`.apk` |
 
+### What failover costs you
+
+How long a client waits for its first token when the first provider fails. Two local upstreams, the first one failing, 400 streaming requests per row, 16 concurrent clients, upstream first token after 25 ms, first-provider timeout 2 s (8-core Apple Silicon Mac, 27 Nov 2026):
+
+| First provider | Completed | p50 TTFT | p95 TTFT | p99 TTFT |
+|---|---|---|---|---|
+| no proxy (direct to upstream) | 100% | 26.2 ms | 26.6 ms | 26.7 ms |
+| healthy | 100% | 26.7 ms | 28.1 ms | 29.9 ms |
+| returns 429 | 100% | 27.1 ms | 28.0 ms | 31.1 ms |
+| stalls before its first token | 100% | 2028 ms | 2032 ms | 2036 ms |
+
+Each request starts with no health history here, so every one of them pays the fallback. In a running proxy the first failures put the provider on cooldown: after a 429, 11 of 400 requests still reached it; after a stall, 16 did (one per client in flight), and p95 fell back to 33 ms. A 429 costs about half a millisecond. A stall costs the provider's `timeout`, because the proxy cannot tell a slow first token from none. Keep `timeout` short on providers you route latency-sensitive work to. Reproduce with `make bench-failover` (knobs: `FAILOVER_BENCH_N`, `_CONC`, `_TIMEOUT`, `_UPSTREAM_TTFT`).
+
 The [install script](#install) picks the right archive on the board itself. For `mipsle`, `loong64` or other targets, cross-compile from any machine with Go and copy the result over:
 
 ```bash
@@ -350,6 +363,7 @@ configs/            bundled config and the free-model catalog
 - **Free tiers are small, and they change.** The proxy makes the most of them. It does not create capacity, and it is not a fit for production traffic with an SLA.
 - **A stream that breaks after its first token cannot fall back.** The client already has part of the answer, so the stream ends with an SSE error event (`stream_interrupted`), never with a clean end that would look like a complete answer. Gemini is still buffered (its thought blocks are stripped from the full answer) and re-emitted as SSE.
 - **The catalog can lag a provider's change by up to a week.** Models that vanish are cooled down on the first 404 and skipped.
+- **A provider that stalls before its first token costs its full `timeout`** before the fallback starts (15–30 s in the example config). After that the provider is cooled down and skipped. See [What failover costs you](#what-failover-costs-you).
 - **Local quota tracking is best-effort.** The proxy honours the providers' rate-limit headers, but under heavy concurrency a provider may still send the occasional 429, which simply triggers the fallback.
 
 ## Development
