@@ -271,3 +271,21 @@ func TestRequest_ReadFieldsAfterProfileChange(t *testing.T) {
 		t.Errorf("Messages = %v (est %d), want the profile's 2 messages", req.Messages, estimateTokens(req.Messages))
 	}
 }
+
+func TestCheckExposure(t *testing.T) {
+	for _, tc := range []struct {
+		p       config.ProxyConfig
+		wantErr bool
+	}{
+		{config.ProxyConfig{Host: "127.0.0.1"}, false},
+		{config.ProxyConfig{Host: "localhost"}, false},
+		{config.ProxyConfig{Host: "0.0.0.0"}, true},
+		{config.ProxyConfig{Host: ""}, true}, // empty host listens on every interface
+		{config.ProxyConfig{Host: "0.0.0.0", AuthToken: "t"}, false},
+		{config.ProxyConfig{Host: "0.0.0.0", AllowNoAuth: true}, false},
+	} {
+		if err := checkExposure(tc.p); (err != nil) != tc.wantErr {
+			t.Errorf("checkExposure(%+v) err = %v, wantErr %v", tc.p, err, tc.wantErr)
+		}
+	}
+}

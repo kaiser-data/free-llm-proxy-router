@@ -28,6 +28,7 @@ var (
 	host     string
 	port     int
 	stratName string
+	allowNoAuth bool
 )
 
 func main() {
@@ -39,6 +40,7 @@ func main() {
 	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and ~/.free-llm-proxy-router/)")
 	root.Flags().StringVar(&host, "host", "", "override listen address (default from config: 127.0.0.1; use 0.0.0.0 to expose)")
 	root.Flags().IntVarP(&port, "port", "p", 0, "override proxy port (default from config: 8080)")
+	root.Flags().BoolVar(&allowNoAuth, "allow-no-auth", false, "allow a non-loopback --host without proxy.auth_token (access must be restricted some other way)")
 	root.Flags().StringVarP(&stratName, "strategy", "s", "", "override strategy name")
 
 	if err := root.Execute(); err != nil {
@@ -61,6 +63,9 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 	if stratName != "" {
 		cfg.Proxy.Strategy = stratName
+	}
+	if allowNoAuth {
+		cfg.Proxy.AllowNoAuth = true
 	}
 
 	// Load model catalog (bundled catalog.json until the first scan writes cfg.Catalog.Path)

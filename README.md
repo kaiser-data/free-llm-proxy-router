@@ -281,7 +281,7 @@ proxy:
   auth_token: ""         # when set, clients must send it as their API key
 ```
 
-**It spends your quotas, so it listens on `127.0.0.1` by default.** To reach it from other machines, use `--host 0.0.0.0` *and* set a token. The proxy logs a warning if you expose it without one. `PROXY_AUTH_TOKEN` in the environment or `.env` overrides `proxy.auth_token`, so the token never has to sit in a config file you might commit (`docker run -e PROXY_AUTH_TOKEN=…` works the same way). The Docker image listens on all interfaces inside the container, so publish its port to `127.0.0.1` as shown above.
+**It spends your quotas, so it listens on `127.0.0.1` by default.** To reach it from other machines, use `--host 0.0.0.0` *and* set a token. Without one it refuses to start on a non-loopback host; pass `--allow-no-auth` (or set `proxy.allow_no_auth: true`) only if access is already restricted, e.g. by a firewall or VPN. `PROXY_AUTH_TOKEN` in the environment or `.env` overrides `proxy.auth_token`, so the token never has to sit in a config file you might commit (`docker run -e PROXY_AUTH_TOKEN=…` works the same way). The Docker image listens on all interfaces inside the container, so publish its port to `127.0.0.1` as shown above.
 
 ### Keep the catalog fresh
 
