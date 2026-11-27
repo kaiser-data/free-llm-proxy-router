@@ -27,7 +27,7 @@ func newTestServer(upstreamURL string, cacheTTL int) *Server {
 	cfg.Proxy.CacheTTL = cacheTTL
 	cat := &catalog.Catalog{Entries: []catalog.CatalogEntry{{ProviderID: "gemini", ModelID: "gemma", IsFree: true}}}
 	rl, rel := ratelimit.NewGlobalTracker(), reliability.New()
-	reg := strategy.NewRegistry(rel, rl, "", "", 3, 5)
+	reg := strategy.NewRegistry(rel, rl, "", "", 3, 5, strategy.LongContextOptions{})
 	s, err := NewServer(cfg, cat, reg, rl, nil, rel)
 	if err != nil {
 		panic(err)

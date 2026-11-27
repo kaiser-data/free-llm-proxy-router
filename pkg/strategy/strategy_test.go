@@ -43,7 +43,7 @@ func TestAllStrategiesReturnResults(t *testing.T) {
 	relTracker := reliability.New()
 	rateLimiter := ratelimit.NewGlobalTracker()
 
-	reg := NewRegistry(relTracker, rateLimiter, "llama-3.1", "gemini-2.0-flash-lite", 3, 5)
+	reg := NewRegistry(relTracker, rateLimiter, "llama-3.1", "gemini-2.0-flash-lite", 3, 5, LongContextOptions{})
 
 	for _, name := range reg.Names() {
 		t.Run(name, func(t *testing.T) {
@@ -305,10 +305,226 @@ func TestStrategyBalanced(t *testing.T) {
 func TestRegistry13Strategies(t *testing.T) {
 	relTracker := reliability.New()
 	rateLimiter := ratelimit.NewGlobalTracker()
-	reg := NewRegistry(relTracker, rateLimiter, "", "", 3, 5)
+	reg := NewRegistry(relTracker, rateLimiter, "", "", 3, 5, LongContextOptions{})
 	names := reg.Names()
 	if len(names) != 13 {
 		t.Errorf("registry has %d strategies, want 13: %v", len(names), names)
+	}
+}
+
+// TestStrategyLongContextQualityTieBreak verifies the quality tie-break
+// within one context tier: full variants before "lite" siblings, code-capable
+// models before generic ones, mid-sized before tiny — while context tiers
+// themselves still dominate quality.
+func TestStrategyLongContextQualityTieBreak(t *testing.T) {
+	// Capability patterns are loaded from YAML at startup; load the bundled
+	// set so the code-capability tie-break is active in this test too.
+	if err := models.LoadCapabilities("../../configs/capabilities.yaml"); err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+	entries := []catalog.CatalogEntry{
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash-lite", IsFree: true, ContextWindow: 1048576},
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash", IsFree: true, ContextWindow: 1048576},
+		{ProviderID: "openrouter", ModelID: "cohere/north-mini-code:free", IsFree: true, ContextWindow: 256000},
+		{ProviderID: "openrouter", ModelID: "recursive/flint-v1.0:free", IsFree: true, ContextWindow: 262144},
+		{ProviderID: "groq", ModelID: "qwen/qwen3.8-27b", IsFree: true, ContextWindow: 131072},
+		{ProviderID: "openrouter", ModelID: "liquid/lfm-2.5-2.6b:free", IsFree: true, ContextWindow: 65536},
+	}
+	ranked := (&StrategyLongContext{}).Rank(testReq(), entries, nil)
+	idx := map[string]int{}
+	for i, r := range ranked {
+		idx[r.ModelID] = i
+	}
+
+	if idx["gemini-3.5-flash"] > idx["gemini-3.5-flash-lite"] {
+		t.Errorf("long_context: full flash (idx %d) should rank before flash-lite (idx %d)",
+			idx["gemini-3.5-flash"], idx["gemini-3.5-flash-lite"])
+	}
+	if idx["recursive/flint-v1.0:free"] > idx["cohere/north-mini-code:free"] {
+		t.Errorf("long_context: code-capable flint (idx %d) should rank before north-mini-code (idx %d)",
+			idx["recursive/flint-v1.0:free"], idx["cohere/north-mini-code:free"])
+	}
+	if idx["qwen/qwen3.8-27b"] > idx["liquid/lfm-2.5-2.6b:free"] {
+		t.Errorf("long_context: 27B qwen (idx %d) should rank before 2.6B lfm (idx %d)",
+			idx["qwen/qwen3.8-27b"], idx["liquid/lfm-2.5-2.6b:free"])
+	}
+	// Context tiers still dominate: a 1M-context lite model outranks a
+	// 256k full model, and the tiny 65k model stays last.
+	if idx["gemini-3.5-flash-lite"] > idx["recursive/flint-v1.0:free"] {
+		t.Errorf("long_context: 1M-context flash-lite (idx %d) should rank before 262k flint (idx %d)",
+			idx["gemini-3.5-flash-lite"], idx["recursive/flint-v1.0:free"])
+	}
+	if last := ranked[len(ranked)-1].ModelID; last != "liquid/lfm-2.5-2.6b:free" {
+		t.Errorf("long_context: tiny 65k-context lfm should rank last, got %s", last)
+	}
+}
+
+// TestStrategyLongContextSmallPromptQualityFirst verifies that a small
+// prompt flips the ranking to quality-first: mid-sized and code models
+// serve new sessions before the Gemini flashes, and the tiny model stays
+// last.
+func TestStrategyLongContextSmallPromptQualityFirst(t *testing.T) {
+	if err := models.LoadCapabilities("../../configs/capabilities.yaml"); err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+	s := &StrategyLongContext{LongContextOptions: LongContextOptions{SmallPromptQualityFirst: true}}
+	entries := longContextTestEntries()
+	req := Request{
+		Messages:              []map[string]any{{"role": "user", "content": "hi"}},
+		EstimatedPromptTokens: 500,
+		MaxTokens:             1024,
+	}
+	ranked := s.Rank(req, entries, nil)
+	idx := map[string]int{}
+	for i, r := range ranked {
+		idx[r.ModelID] = i
+	}
+
+	if ranked[0].ModelID != "recursive/flint-v1.0:free" {
+		t.Errorf("small prompt: first = %s, want flint (code-tuned)", ranked[0].ModelID)
+	}
+	// Qwen (27B) before the full flash and the lites: quality first, and
+	// big windows are saved for the requests that need them.
+	if idx["qwen/qwen3.8-27b"] > idx["gemini-3.5-flash"] {
+		t.Errorf("small prompt: qwen (idx %d) should rank before full flash (idx %d)",
+			idx["qwen/qwen3.8-27b"], idx["gemini-3.5-flash"])
+	}
+	if idx["qwen/qwen3.8-27b"] > idx["gemini-3.5-flash-lite"] {
+		t.Errorf("small prompt: qwen (idx %d) should rank before flash-lite (idx %d)",
+			idx["qwen/qwen3.8-27b"], idx["gemini-3.5-flash-lite"])
+	}
+	// The tiny model is still the worst choice even for a tiny prompt.
+	if last := ranked[len(ranked)-1].ModelID; last != "liquid/lfm-2.5-2.6b:free" {
+		t.Errorf("small prompt: last = %s, want the tiny lfm", last)
+	}
+}
+
+// TestStrategyLongContextFitPenalty verifies that a model whose window
+// cannot hold prompt + reply ranks below every model that fits, whatever
+// its context tier.
+func TestStrategyLongContextFitPenalty(t *testing.T) {
+	entries := []catalog.CatalogEntry{
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash", IsFree: true, ContextWindow: 1048576},
+		{ProviderID: "groq", ModelID: "qwen/qwen3.8-27b", IsFree: true, ContextWindow: 131072},
+		{ProviderID: "openrouter", ModelID: "liquid/lfm-2.5-2.6b:free", IsFree: true, ContextWindow: 65536},
+		{ProviderID: "openrouter", ModelID: "tiny-8k", IsFree: true, ContextWindow: 8192},
+	}
+	req := Request{EstimatedPromptTokens: 100_000, MaxTokens: 4096} // needs 104k
+	ranked := (&StrategyLongContext{}).Rank(req, entries, nil)
+	idx := map[string]int{}
+	for i, r := range ranked {
+		idx[r.ModelID] = i
+	}
+
+	// Everything that fits ranks ahead of everything that does not.
+	for _, fits := range []string{"gemini-3.5-flash", "qwen/qwen3.8-27b"} {
+		for _, nofit := range []string{"liquid/lfm-2.5-2.6b:free", "tiny-8k"} {
+			if idx[fits] > idx[nofit] {
+				t.Errorf("fit ranking: %s (idx %d) should rank before %s (idx %d)",
+					fits, idx[fits], nofit, idx[nofit])
+			}
+		}
+	}
+}
+
+// TestStrategyLongContextSmallPromptDefaultOff verifies the small-prompt
+// quality-first mode is opt-in: by default a small prompt still ranks
+// largest-context-first (the documented long_context behaviour), so a
+// conversation does not change models as it grows.
+func TestStrategyLongContextSmallPromptDefaultOff(t *testing.T) {
+	if err := models.LoadCapabilities("../../configs/capabilities.yaml"); err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+	entries := longContextTestEntries()
+	req := Request{
+		Messages:              []map[string]any{{"role": "user", "content": "hi"}},
+		EstimatedPromptTokens: 500,
+		MaxTokens:             1024,
+	}
+	ranked := (&StrategyLongContext{}).Rank(req, entries, nil)
+	if got := ranked[0].ModelID; got != "gemini-3.5-flash" {
+		t.Errorf("default off: first = %s, want the 1M-context full flash (largest window first)", got)
+	}
+}
+
+// TestStrategyLongContextSmallPromptThreshold verifies the small-prompt
+// threshold override: a prompt above it is not small (largest-window-first
+// even with the opt-in on), a prompt at or below it is.
+func TestStrategyLongContextSmallPromptThreshold(t *testing.T) {
+	if err := models.LoadCapabilities("../../configs/capabilities.yaml"); err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+	entries := longContextTestEntries()
+	s := &StrategyLongContext{LongContextOptions: LongContextOptions{
+		SmallPromptQualityFirst: true,
+		SmallPromptThreshold:    1024,
+	}}
+	big := Request{EstimatedPromptTokens: 5000, MaxTokens: 1024}
+	ranked := s.Rank(big, entries, nil)
+	if got := ranked[0].ModelID; got != "gemini-3.5-flash" {
+		t.Errorf("threshold: prompt above the threshold should rank largest-window-first, got first = %s", got)
+	}
+	small := Request{EstimatedPromptTokens: 1000, MaxTokens: 1024}
+	ranked = s.Rank(small, entries, nil)
+	if got := ranked[0].ModelID; got != "recursive/flint-v1.0:free" {
+		t.Errorf("threshold: prompt at the threshold should rank quality-first, got first = %s", got)
+	}
+}
+
+// TestIsLiteVariant verifies "lite" only matches as a whole ID segment, so
+// "satellite" and "elite" are not taken for a family's lite variant.
+func TestIsLiteVariant(t *testing.T) {
+	cases := map[string]bool{
+		"gemini-3.5-flash-lite": true,
+		"lite-8b":               true,
+		"Lite":                  true,
+		"flash-lite-preview":    true,
+		"satellite":             false,
+		"elite":                 false,
+		"flashlite":             false,
+		"gemini-3.5-flash":      false,
+	}
+	for id, want := range cases {
+		if got := isLiteVariant(id); got != want {
+			t.Errorf("isLiteVariant(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
+// TestStrategyLongContextFitPenaltyDominatesQuality verifies the penalty is
+// out of reach of every ranking term: in small-prompt mode a huge max_tokens
+// must not let a model that does not fit outrank a big-window model that fits
+// (the old 50-point penalty lost to a tiny 2M-window lite model scoring ~52).
+func TestStrategyLongContextFitPenaltyDominatesQuality(t *testing.T) {
+	if err := models.LoadCapabilities("../../configs/capabilities.yaml"); err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+	entries := []catalog.CatalogEntry{
+		// A 2M-window tiny lite model: the highest-scoring model that fits
+		// (small-prompt quality 5 × 10 + windowTerm 2.0 = 52).
+		{ProviderID: "vendor", ModelID: "lite-2.6b", IsFree: true, ContextWindow: 2_000_000},
+		// A 1M-window model the request does not fit (needs 1,000,100).
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash", IsFree: true, ContextWindow: 1_000_000},
+	}
+	s := &StrategyLongContext{LongContextOptions: LongContextOptions{SmallPromptQualityFirst: true}}
+	req := Request{EstimatedPromptTokens: 100, MaxTokens: 1_000_000}
+	ranked := s.Rank(req, entries, nil)
+	if got := ranked[0].ModelID; got != "lite-2.6b" {
+		t.Errorf("fit penalty: first = %s, want the 2M-window model that fits (got a does-not-fit model?)", got)
+	}
+}
+
+// longContextTestEntries is the shared catalog for the long_context ranking
+// tests: one family with a lite sibling (1M), a code-tuned 256k model, a
+// generic 262k model, a 131k mid-sized model and a tiny 65k model.
+func longContextTestEntries() []catalog.CatalogEntry {
+	return []catalog.CatalogEntry{
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash-lite", IsFree: true, ContextWindow: 1048576},
+		{ProviderID: "gemini", ModelID: "gemini-3.5-flash", IsFree: true, ContextWindow: 1048576},
+		{ProviderID: "openrouter", ModelID: "cohere/north-mini-code:free", IsFree: true, ContextWindow: 256000},
+		{ProviderID: "openrouter", ModelID: "recursive/flint-v1.0:free", IsFree: true, ContextWindow: 262144},
+		{ProviderID: "groq", ModelID: "qwen/qwen3.8-27b", IsFree: true, ContextWindow: 131072},
+		{ProviderID: "openrouter", ModelID: "liquid/lfm-2.5-2.6b:free", IsFree: true, ContextWindow: 65536},
 	}
 }
 
@@ -350,5 +566,34 @@ func TestStrategyParallel_PicksFastestModelPerProvider(t *testing.T) {
 	want := "cerebras/llama3.1-8b,groq/llama-3.1-8b-instant,mistral/mistral-large-123b"
 	if strings.Join(got, ",") != want {
 		t.Errorf("parallel ranked %v, want %s", got, want)
+	}
+}
+
+// BenchmarkLongContextRank guards the ranking cost of the long_context
+// strategy on the bundled catalog: the strategy ranks every free entry on
+// every request, so per-entry regex parsing or capability detection here
+// shows up directly in routing latency (this ranking regressed ~4x once;
+// see the #53 review). Run: go test ./pkg/strategy -bench LongContextRank
+func BenchmarkLongContextRank(b *testing.B) {
+	if err := models.LoadCapabilities("../../configs/capabilities.yaml"); err != nil {
+		b.Fatalf("LoadCapabilities: %v", err)
+	}
+	cat, err := catalog.Load("../../configs/catalog.json")
+	if err != nil {
+		b.Skipf("bundled catalog not available: %v", err)
+	}
+	free := cat.FreeEntries()
+	if len(free) == 0 {
+		b.Skip("bundled catalog has no free entries")
+	}
+	catalog.PrecomputeParams(free) // as the server does before ranking
+	s := &StrategyLongContext{}
+	req := Request{EstimatedPromptTokens: 4_000, MaxTokens: 4_096}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if r := s.Rank(req, free, nil); len(r) == 0 {
+			b.Fatal("no results")
+		}
 	}
 }

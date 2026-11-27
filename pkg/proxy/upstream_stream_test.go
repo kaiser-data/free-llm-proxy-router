@@ -183,7 +183,7 @@ func TestStream_FirstChunkArrivesBeforeProviderFinishes(t *testing.T) {
 	cfg.Proxy.Strategy = "adaptive"
 	cat := &catalog.Catalog{Entries: []catalog.CatalogEntry{{ProviderID: "alpha", ModelID: "m", IsFree: true}}}
 	rl, rel := ratelimit.NewGlobalTracker(), reliability.New()
-	s, err := NewServer(cfg, cat, strategy.NewRegistry(rel, rl, "", "", 3, 5), rl, nil, rel)
+	s, err := NewServer(cfg, cat, strategy.NewRegistry(rel, rl, "", "", 3, 5, strategy.LongContextOptions{}), rl, nil, rel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func singleProviderServer(upstreamURL string, mutate func(*config.Config)) *Serv
 	}
 	cat := &catalog.Catalog{Entries: []catalog.CatalogEntry{{ProviderID: "alpha", ModelID: "m", IsFree: true}}}
 	rl, rel := ratelimit.NewGlobalTracker(), reliability.New()
-	s, err := NewServer(cfg, cat, strategy.NewRegistry(rel, rl, "", "", 3, 5), rl, nil, rel)
+	s, err := NewServer(cfg, cat, strategy.NewRegistry(rel, rl, "", "", 3, 5, strategy.LongContextOptions{}), rl, nil, rel)
 	if err != nil {
 		panic(err)
 	}

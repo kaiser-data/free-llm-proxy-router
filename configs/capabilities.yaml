@@ -2,7 +2,8 @@
   keywords: ["vision", "visual", "vl", "multimodal", "image", "vlm", "11b-vision", "90b-vision"]
 
 - capability: code
-  keywords: ["coder", "code", "codestral", "deepseek-coder", "starcoder", "codegen", "qwen-coder", "instruct-code"]
+  # recursive/flint is an agentic coding model
+  keywords: ["coder", "code", "codestral", "deepseek-coder", "starcoder", "codegen", "qwen-coder", "instruct-code", "flint"]
 
 - capability: reasoning
   keywords: ["r1", "reasoning", "think", "qwq", "o1", "thinking"]

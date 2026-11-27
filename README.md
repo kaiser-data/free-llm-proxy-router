@@ -170,7 +170,7 @@ Put a strategy name in the `model` field, or set the default in `config.yaml`:
 | `speed` | fastest providers first (Cerebras, Groq) | chat, autocomplete |
 | `volume` | highest daily request limits | batch jobs |
 | `coding` | models with code capability | coding agents |
-| `long_context` | largest context window first | long documents |
+| `long_context` | largest context window first (small prompts can rank quality-first, off by default) | long documents |
 | `balanced` | 14–79B models | quality per token |
 | `small` / `tiny` | 3–13B / under 3B models | low latency |
 | `reliable` | highest measured success rate | unattended scripts |

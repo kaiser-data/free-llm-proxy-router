@@ -51,7 +51,7 @@ func benchServer(b *testing.B, entries int) *Server {
 		})
 	}
 	rl, rel := ratelimit.NewGlobalTracker(), reliability.New()
-	reg := strategy.NewRegistry(rel, rl, "", "", 3, 5)
+	reg := strategy.NewRegistry(rel, rl, "", "", 3, 5, strategy.LongContextOptions{})
 	s, err := NewServer(cfg, cat, reg, rl, nil, rel)
 	if err != nil {
 		b.Fatal(err)
