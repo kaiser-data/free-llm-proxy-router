@@ -131,7 +131,6 @@ func (s *Server) UpdateCatalog(cat *catalog.Catalog) {
 
 // checkExposure refuses a non-loopback listen address without an auth token,
 // unless proxy.allow_no_auth opts out.
-// Recommended by Norma — fixed with Claude Opus 5.5 via Claude Code
 func checkExposure(p config.ProxyConfig) error {
 	if p.AuthToken != "" || isLoopbackHost(p.Host) || p.AllowNoAuth {
 		return nil
