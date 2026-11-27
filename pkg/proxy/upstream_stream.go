@@ -203,6 +203,8 @@ func writeUpstreamStream(w http.ResponseWriter, resp *Response) {
 		}
 	}
 
+	var end streamEnd
+	end.observe(s.prefix)
 	if _, err := w.Write(s.prefix); err != nil {
 		return
 	}
@@ -211,25 +213,93 @@ func writeUpstreamStream(w http.ResponseWriter, resp *Response) {
 	for {
 		n, err := s.rest.Read(buf)
 		if n > 0 {
+			end.observe(buf[:n])
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				return // client went away; Close cancels the upstream call
 			}
 			flush()
 		}
 		if err != nil {
-			if err != io.EOF {
-				// Cut mid-answer (request deadline, upstream reset). Say so:
-				// a stream that just stops looks like a complete, shorter
-				// answer to an SDK. If the client is the one that left, this
-				// write fails harmlessly.
-				// The raw error stays in the server log only: it can carry
-				// internal addresses or provider detail (e.g. "read tcp
-				// 10.0.0.5:51234->…: connection reset by peer").
-				log.Printf("stream: upstream ended mid-stream: %v", err)
-				writeStreamError(w, "upstream stream interrupted")
-				flush()
+			// A stream that just stops looks like a complete, shorter answer
+			// to an SDK, so a cut is always said: a read error (request
+			// deadline, upstream reset), or a clean EOF before the provider
+			// finished (it closed the connection without [DONE] or a
+			// finish_reason). If the client is the one that left, this write
+			// fails harmlessly.
+			if err == io.EOF && end.complete() {
+				return
 			}
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			// The raw error stays in the server log only: it can carry
+			// internal addresses or provider detail (e.g. "read tcp
+			// 10.0.0.5:51234->…: connection reset by peer").
+			log.Printf("stream: upstream ended mid-stream: %v", err)
+			writeStreamError(w, "upstream stream interrupted")
+			flush()
 			return
+		}
+	}
+}
+
+// streamEnd tracks, without parsing the stream, whether a provider finished
+// its answer: a final "data: [DONE]", or a chunk with a non-null
+// finish_reason (for providers that skip [DONE]). Work per read is one
+// substring scan; memory is a fixed tail.
+type streamEnd struct {
+	tail     [32]byte // the last bytes seen, for matches across reads
+	tailLen  int
+	finished bool // a non-null finish_reason was seen
+	done     bool // the stream so far ends with data: [DONE]
+}
+
+var (
+	finishReasonKey = []byte(`"finish_reason":`)
+	doneEvent       = []byte("data: [DONE]")
+)
+
+func (e *streamEnd) observe(p []byte) {
+	if len(p) == 0 {
+		return
+	}
+	if !e.finished {
+		// Search the tail joined with the head of p, then p itself, so a key
+		// split across two reads is still found.
+		var joint [64]byte
+		k := copy(joint[:], e.tail[:e.tailLen])
+		k += copy(joint[k:], p)
+		e.finished = hasFinishReason(joint[:k]) || hasFinishReason(p)
+	}
+	// Keep the last bytes for the next read and for the [DONE] check.
+	if len(p) >= len(e.tail) {
+		e.tailLen = copy(e.tail[:], p[len(p)-len(e.tail):])
+	} else {
+		keep := len(e.tail) - len(p)
+		if keep > e.tailLen {
+			keep = e.tailLen
+		}
+		copy(e.tail[:], e.tail[e.tailLen-keep:e.tailLen])
+		e.tailLen = keep + copy(e.tail[keep:], p)
+	}
+	t := bytes.TrimRight(e.tail[:e.tailLen], " \r\n")
+	e.done = bytes.HasSuffix(t, doneEvent)
+}
+
+func (e *streamEnd) complete() bool { return e.done || e.finished }
+
+// hasFinishReason reports whether b holds "finish_reason": with a string
+// value (not null).
+func hasFinishReason(b []byte) bool {
+	for {
+		i := bytes.Index(b, finishReasonKey)
+		if i < 0 {
+			return false
+		}
+		b = b[i+len(finishReasonKey):]
+		v := bytes.TrimLeft(b, " ")
+		if len(v) > 0 && v[0] == '"' {
+			return true
 		}
 	}
 }

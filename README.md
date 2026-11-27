@@ -361,7 +361,7 @@ configs/            bundled config and the free-model catalog
 ## Honest limits
 
 - **Free tiers are small, and they change.** The proxy makes the most of them. It does not create capacity, and it is not a fit for production traffic with an SLA.
-- **A stream that breaks after its first token cannot fall back.** The client already has part of the answer, so the stream ends with an SSE error event (`stream_interrupted`), never with a clean end that would look like a complete answer. Gemini is still buffered (its thought blocks are stripped from the full answer) and re-emitted as SSE.
+- **A stream that breaks after its first token cannot fall back.** The client already has part of the answer, so the stream ends with an SSE error event (`stream_interrupted`), never with a clean end that would look like a complete answer. That includes a provider that closes its connection cleanly before sending `[DONE]` or a `finish_reason`. Gemini is still buffered (its thought blocks are stripped from the full answer) and re-emitted as SSE.
 - **The catalog can lag a provider's change by up to a week.** Models that vanish are cooled down on the first 404 and skipped.
 - **A provider that stalls before its first token costs its full `timeout`** before the fallback starts (15–30 s in the example config). After that the provider is cooled down and skipped. See [What failover costs you](#what-failover-costs-you).
 - **Local quota tracking is best-effort.** The proxy honours the providers' rate-limit headers, but under heavy concurrency a provider may still send the occasional 429, which simply triggers the fallback.

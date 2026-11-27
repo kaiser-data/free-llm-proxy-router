@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -318,8 +319,8 @@ func TestStream_UpstreamBreaksAfterCommit(t *testing.T) {
 	}()
 	select {
 	case got := <-done:
-		if !strings.HasPrefix(got, sseHello) {
-			t.Errorf("client got %q", got)
+		if !strings.HasPrefix(got, sseHello) || !strings.Contains(got, `"stream_interrupted"`) {
+			t.Errorf("client got %q, want the first chunk then an error event", got)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("a broken upstream stream hung the handler")
@@ -542,6 +543,61 @@ func TestStream_WhitespaceOnlyContentFallsBack(t *testing.T) {
 		b, _ := io.ReadAll(resp.stream.rest)
 		if !bytes.Contains(append(resp.stream.prefix, b...), []byte("hello")) {
 			t.Errorf("whitespace-only stream committed; client gets empty answer, no fallback")
+		}
+	}
+}
+
+// A provider that closes its connection cleanly after content but before it
+// finished (no [DONE], no finish_reason) has cut the answer short. A plain
+// end would look complete to an SDK, so the client gets an error event.
+func TestStream_CleanEOFBeforeFinishEndsWithErrorEvent(t *testing.T) {
+	alpha := httptest.NewServer(sseHandler(sseRole, sseHello))
+	defer alpha.Close()
+	rec, _ := executeToClient(t, twoProviderChain(alpha.URL, "http://127.0.0.1:1"))
+	got := rec.Body.String()
+	if !strings.HasPrefix(got, sseRole+sseHello) || !strings.Contains(got, `"stream_interrupted"`) {
+		t.Errorf("client got %q, want the partial answer then an error event", got)
+	}
+}
+
+// Some providers end with a finish_reason and skip [DONE]: that answer is
+// complete and must pass through untouched.
+func TestStream_FinishReasonWithoutDoneIsComplete(t *testing.T) {
+	alpha := httptest.NewServer(sseHandler(sseHello, sseWorld))
+	defer alpha.Close()
+	rec, _ := executeToClient(t, twoProviderChain(alpha.URL, "http://127.0.0.1:1"))
+	if got := rec.Body.String(); got != sseHello+sseWorld {
+		t.Errorf("client got %q, want the stream unchanged", got)
+	}
+}
+
+func TestStreamEnd(t *testing.T) {
+	cases := []struct {
+		name   string
+		stream string
+		want   bool
+	}{
+		{"done", sseHello + sseDone, true},
+		{"done with CRLF", sseHello + "data: [DONE]\r\n\r\n", true},
+		{"finish_reason, no done", sseHello + sseWorld, true},
+		{"finish_reason with a space", sseHello + `data: {"choices":[{"finish_reason": "length"}]}` + "\n\n", true},
+		{"finish_reason null only", sseHello + `data: {"choices":[{"delta":{"content":"x"},"finish_reason":null}]}` + "\n\n", false},
+		{"cut mid-answer", sseRole + sseHello, false},
+		{"done not at the end", sseHello + sseDone + sseHello, false}, // only a trailing [DONE] counts
+	}
+	for _, c := range cases {
+		for _, size := range []int{1, 3, 7, 1 << 20} { // split every way, then whole
+			t.Run(fmt.Sprintf("%s/%d", c.name, size), func(t *testing.T) {
+				var e streamEnd
+				for p := c.stream; len(p) > 0; {
+					n := min(size, len(p))
+					e.observe([]byte(p[:n]))
+					p = p[n:]
+				}
+				if got := e.complete(); got != c.want {
+					t.Errorf("complete() = %v, want %v", got, c.want)
+				}
+			})
 		}
 	}
 }
