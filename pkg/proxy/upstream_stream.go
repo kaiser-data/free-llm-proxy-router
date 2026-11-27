@@ -222,8 +222,11 @@ func writeUpstreamStream(w http.ResponseWriter, resp *Response) {
 				// a stream that just stops looks like a complete, shorter
 				// answer to an SDK. If the client is the one that left, this
 				// write fails harmlessly.
+				// The raw error stays in the server log only: it can carry
+				// internal addresses or provider detail (e.g. "read tcp
+				// 10.0.0.5:51234->…: connection reset by peer").
 				log.Printf("stream: upstream ended mid-stream: %v", err)
-				writeStreamError(w, "upstream stream interrupted: "+err.Error())
+				writeStreamError(w, "upstream stream interrupted")
 				flush()
 			}
 			return
