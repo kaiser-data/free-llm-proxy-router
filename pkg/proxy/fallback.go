@@ -49,6 +49,9 @@ type FallbackChain struct {
 	// back. Gemini is always buffered (its thoughts are stripped from the
 	// full body).
 	Stream bool
+	// Signatures caches Gemini thought signatures across requests; see
+	// gemini_signatures.go. Shared from the Server, never per-request.
+	Signatures *thoughtSignatureCache
 }
 
 // Request is the parsed incoming chat-completions request.
@@ -206,6 +209,13 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 			orModels := fc.availableModels("openrouter", ranked)
 			if len(orModels) == 0 {
 				continue
+			}
+			// Provider: OpenRouter
+			// The free tier accepts at most 3 items in the models[] array
+			// (400 "'models' array must have 3 items or fewer").
+			// Last verified: 2026-11-20
+			if len(orModels) > openRouterModelsArrayLimit {
+				orModels = orModels[:openRouterModelsArrayLimit]
 			}
 			modelID = orModels[0]
 			body = fc.buildBody("openrouter", req.Raw, modelID)
@@ -425,59 +435,61 @@ func authCooldownKey(providerID string, slot, numKeys int) string {
 	return fmt.Sprintf("%s#key%d", providerID, slot+1)
 }
 
-// cooldown429 puts one key slot of a model on cooldown after a 429.
+// cooldown429 puts a model's key slot on cooldown after a 429, or a wider
+// scope when the provider's quirks say the quota is wider (see
+// rateLimitScope).
 func (fc *FallbackChain) cooldown429(providerID, modelID string, slot, numKeys int, resp *Response) {
-	info := ratelimit.ExtractRateLimitInfo(providerID, resp.Header, resp.Body)
-	waitDur := info.WaitDuration()
-	if isZeroQuota(resp.Body) {
-		// Quota "limit: 0" means the model is not on this key's free tier.
-		waitDur = zeroQuotaCooldown
+	waitDur, scope := quirksFor(providerID).rateLimitCooldown(providerID, resp)
+	until := time.Now().Add(waitDur)
+	switch scope {
+	case scopeProvider:
+		fc.RateLimiter.SetCooldown(providerID, until)
+		log.Printf("fallback: %s rate limited on every key — provider cooldown %s", providerID, waitDur.Round(time.Second))
+	case scopeKeySlotAllModels:
+		fc.RateLimiter.SetCooldown(cooldownKey(providerID, modelID, slot, numKeys), until)
+		n := 1
+		if fc.Catalog != nil {
+			for _, e := range fc.Catalog.ByProvider(providerID) {
+				if e.ModelID != modelID {
+					fc.RateLimiter.SetCooldown(cooldownKey(providerID, e.ModelID, slot, numKeys), until)
+					n++
+				}
+			}
+		}
+		log.Printf("fallback: %s quota spent on key slot %d — cooling %d models for %s", providerID, slot+1, n, waitDur.Round(time.Second))
+	default:
+		key := cooldownKey(providerID, modelID, slot, numKeys)
+		fc.RateLimiter.SetCooldown(key, until)
+		log.Printf("fallback: %s rate limited — cooldown %s", key, waitDur.Round(time.Second))
 	}
-	fc.RateLimiter.SetCooldown(cooldownKey(providerID, modelID, slot, numKeys), time.Now().Add(waitDur))
-	log.Printf("fallback: %s/%s rate limited — cooldown %s", providerID, modelID, waitDur.Round(time.Second))
 }
 
 // callOnce makes one upstream call with a fixed key and classifies it.
+// Provider-specific steps come from quirksFor; the failure handling from
+// classifyFailure.
 func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderConfig, providerID, modelID string, body map[string]any, estTokens int) attemptResult {
-	// Cerebras pre-emptive check (RPS-level, finer than cooldown) and spacing
-	// shared by all concurrent requests.
-	if providerID == "cerebras" {
-		tracker := fc.RateLimiter.Provider("cerebras")
-		if !tracker.CanRequest(modelID, 0, 0) {
-			log.Printf("fallback: cerebras pre-emptive skip (rate limited)")
-			return attemptResult{outcome: outSkipProvider}
-		}
-		if ms := fc.Cfg.Fallback.CerebrasRequestSpacingMs; ms > 0 {
-			if err := sleepCtx(ctx, tracker.NextSlot(time.Duration(ms)*time.Millisecond)); err != nil {
-				return attemptResult{err: err}
-			}
-		}
-	}
-
-	// Gemini: check and count in one step, so concurrent requests cannot
-	// overshoot the per-model quota. The slot is handed back unless the
-	// model actually answered.
+	q := quirksFor(providerID)
 	keepReservation := false
-	if providerID == "gemini" && fc.GeminiTracker != nil {
-		release, ok := fc.GeminiTracker.Reserve(modelID, estTokens)
-		if !ok {
-			log.Printf("fallback: gemini %s over local quota — skipping model", modelID)
-			return attemptResult{outcome: outSkipModel}
+	if q.admit != nil {
+		release, skip := q.admit(ctx, fc.quirkEnv(), modelID, estTokens)
+		if skip != nil {
+			return *skip
 		}
-		defer func() {
-			if !keepReservation {
-				release()
-			}
-		}()
+		if release != nil {
+			defer func() {
+				if !keepReservation {
+					release()
+				}
+			}()
+		}
 	}
 
 	resp, err := fc.callProvider(ctx, callCfg, body)
 	calls := 1
-	// HuggingFace 503+loading: wait and retry the same model (cold start).
-	if err == nil && providerID == "huggingface" && resp.StatusCode == http.StatusServiceUnavailable {
-		if waitMs := parseHFLoadingWait(resp.Body); waitMs > 0 {
-			log.Printf("fallback: huggingface model loading, waiting %dms", waitMs)
-			if serr := sleepCtx(ctx, time.Duration(waitMs)*time.Millisecond); serr != nil {
+	if err == nil && q.retryWait != nil {
+		if wait := q.retryWait(resp); wait > 0 {
+			log.Printf("fallback: %s/%s not ready, retrying in %s", providerID, modelID, wait)
+			if serr := sleepCtx(ctx, wait); serr != nil {
 				return attemptResult{calls: calls, err: serr}
 			}
 			resp, err = fc.callProvider(ctx, callCfg, body)
@@ -493,16 +505,9 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 	if err == nil && resp.StatusCode == http.StatusOK {
 		keepReservation = true
 		// Counted per model per day; this is what usage.json persists.
-		recordModel := modelID
-		if providerID == "openrouter" && resp.UsedModel != "" && modelID != "openrouter/free" {
-			recordModel = resp.UsedModel
-		}
-		fc.RateLimiter.Provider(providerID).RecordRequest(recordModel)
-		if providerID == "cerebras" {
-			info := ratelimit.ExtractRateLimitInfo("cerebras", resp.Header, resp.Body)
-			if info.RemainingRequests >= 0 && info.RemainingRequests < 2 {
-				fc.RateLimiter.Provider("cerebras").PreemptiveSlowdown(info.WaitDuration())
-			}
+		fc.RateLimiter.Provider(providerID).RecordRequest(q.usageModelFor(modelID, resp))
+		if q.onSuccess != nil {
+			q.onSuccess(fc.quirkEnv(), resp)
 		}
 		if resp.isEmpty() {
 			// Reasoning models (gpt-oss) can spend a small max_tokens budget on
@@ -515,71 +520,22 @@ func (fc *FallbackChain) callOnce(ctx context.Context, callCfg config.ProviderCo
 		return attemptResult{resp: resp, outcome: outSuccess, calls: calls}
 	}
 
-	status := 0
-	if resp != nil {
-		status = resp.StatusCode
+	v := classifyFailure(resp)
+	if v.modelCooldown > 0 {
+		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(v.modelCooldown))
 	}
-	switch {
-	case resp == nil, isKeyRejection(resp):
-		// Only transport and auth failures mean the provider itself is
-		// unusable, so only they count against its reliability.
-		if status == 0 {
-			log.Printf("fallback: %s/%s transport error — skipping provider%s", providerID, modelID, upstreamErrSnippet(resp, err))
-		}
+	if v.countFailure {
 		fc.ReliabilityTracker.Record(providerID, false)
-		if fc.ReliabilityTracker.ShouldCooldown(providerID) {
-			fc.RateLimiter.SetCooldown(providerID, time.Now().Add(30*time.Second))
+		if v.coolIfUnreliable && fc.ReliabilityTracker.ShouldCooldown(providerID) {
+			fc.RateLimiter.SetCooldown(providerID, time.Now().Add(unreliableProviderCooldown))
 			log.Printf("fallback: %s reliability below 50%% — short cooldown", providerID)
 		}
-		return attemptResult{resp: resp, outcome: outProviderFail, calls: calls}
-	case status == http.StatusForbidden && isConsent403(resp.Body):
-		// Provider: UnoRouter (verified 2026-11-20): a 403 consent_required
-		// means the account has not consented to this model's upstream
-		// provider yet (unorouter.com/consents). The key is fine and models
-		// behind already-consented providers still answer, so this cools the
-		// model only — cooling the key would hide them all.
-		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(consentCooldown))
-		log.Printf("fallback: %s/%s needs upstream consent (403 consent_required) — model cooldown %s, trying next model%s", providerID, modelID, consentCooldown, upstreamErrSnippet(resp, err))
-	case status == http.StatusForbidden && isUpstreamCredit403(resp.Body):
-		// Provider: UnoRouter (verified 2026-11-20): "This provider ran out
-		// of credit on their side. That is on us, not you: retry and the
-		// request goes to another provider." Upstream capacity, not the key
-		// — a short model cooldown like a 5xx instead of cooling the key.
-		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(serverErrorCooldown))
-		fc.ReliabilityTracker.Record(providerID, false)
-		log.Printf("fallback: %s/%s status 403 — upstream out of credit, model cooldown %s, trying next model%s", providerID, modelID, serverErrorCooldown, upstreamErrSnippet(resp, err))
-	case status == http.StatusBadRequest && isModelSpecific400(resp.Body):
-		// The 400 blames the model (decommissioned, "only supports
-		// Interactions API"): it sits out, and the provider's next model can
-		// answer this very request.
-		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(badRequestCooldown))
-		log.Printf("fallback: %s/%s unusable (400) — model cooldown %s, trying next model%s", providerID, modelID, badRequestCooldown, upstreamErrSnippet(resp, err))
-	case isRequestRejection(resp):
-		// The provider rejects this request's shape, size or content (a
-		// moderation 403); its other models most likely will too, so skip the
-		// provider for this request. Not a health problem: no reliability
-		// penalty, no cooldown.
-		log.Printf("fallback: %s/%s status %d — provider rejects this request, skipping provider%s", providerID, modelID, status, upstreamErrSnippet(resp, err))
-		return attemptResult{resp: resp, outcome: outProviderFail, calls: calls}
-	case status == 404:
-		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(missingModelCooldown))
-		log.Printf("fallback: %s model %s not found — model cooldown %s", providerID, modelID, missingModelCooldown)
-	case status >= 500:
-		// An overloaded or failing model: let it rest briefly so concurrent
-		// requests stop spending attempts on it, and count it against the
-		// provider (a provider failing every model gets a short cooldown).
-		fc.RateLimiter.SetCooldown(providerID+"/"+modelID, time.Now().Add(serverErrorCooldown))
-		fc.ReliabilityTracker.Record(providerID, false)
-		if fc.ReliabilityTracker.ShouldCooldown(providerID) {
-			fc.RateLimiter.SetCooldown(providerID, time.Now().Add(30*time.Second))
-		}
-		log.Printf("fallback: %s/%s status %d — model cooldown %s, trying next model%s", providerID, modelID, status, serverErrorCooldown, upstreamErrSnippet(resp, err))
-	case status != http.StatusTooManyRequests:
-		// Free tiers often fail one model (quota, retired, overloaded) while
-		// the provider's other models still answer.
-		log.Printf("fallback: %s/%s status %d — trying next model%s", providerID, modelID, status, upstreamErrSnippet(resp, err))
 	}
-	return attemptResult{resp: resp, outcome: outModelFail, calls: calls}
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		// A 429 is logged by cooldown429 once its cooldown is known.
+		log.Printf("fallback: %s/%s %s%s", providerID, modelID, v.reason, upstreamErrSnippet(resp, err))
+	}
+	return attemptResult{resp: resp, outcome: v.outcome, calls: calls}
 }
 
 func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderConfig, body map[string]any) (*Response, error) {
@@ -661,6 +617,11 @@ func (fc *FallbackChain) callProvider(ctx context.Context, cfg config.ProviderCo
 
 	if cfg.ID == "gemini" && resp.StatusCode == http.StatusOK {
 		respBody = StripGeminiThoughts(respBody)
+		// Remember tool-call thought signatures so later turns of the same
+		// session can replay them even if the client strips extra_content.
+		if n := captureGeminiThoughtSignatures(respBody, fc.Signatures); n > 0 {
+			log.Printf("gemini: captured %d thought signature(s) from response", n)
+		}
 	}
 
 	out := &Response{
@@ -748,6 +709,16 @@ func (fc *FallbackChain) buildBody(providerID string, raw map[string]any, modelI
 	if pc := fc.findProvider(providerID); pc != nil && pc.NativeFeatures.ServiceTier != "" {
 		body["service_tier"] = pc.NativeFeatures.ServiceTier
 	}
+
+	// Gemini 3.x rejects replayed tool-call history that lacks thought
+	// signatures (opencode and other OpenAI clients strip them). Re-inject
+	// what earlier Gemini responses carried; see gemini_signatures.go.
+	if providerID == "gemini" {
+		fromCache, sentinel := injectGeminiThoughtSignatures(body, fc.Signatures)
+		if fromCache+sentinel > 0 {
+			log.Printf("gemini thought signatures: %d from cache, %d sentinel", fromCache, sentinel)
+		}
+	}
 	return body
 }
 
@@ -760,6 +731,14 @@ const (
 	// request tries after model-level errors (anything but auth/transport), so a large catalog
 	// such as NVIDIA NIM cannot use up every attempt.
 	maxModelsPerProvider = 3
+	// openRouterModelsArrayLimit caps the native-fallback models[] array:
+	// the OpenRouter free tier rejects more with 400 ("'models' array must
+	// have 3 items or fewer"). Verified 2026-11-20.
+	openRouterModelsArrayLimit = 3
+	// transportModelCooldown cools a model whose request failed at the
+	// transport level (timeout, conn refused) so one hung model costs its
+	// timeout once per window instead of stalling every walk.
+	transportModelCooldown = 5 * time.Minute
 	// zeroQuotaCooldown applies when a 429 reports a quota "limit: 0": the
 	// model is listed but not on the free tier, so retrying soon is pointless.
 	zeroQuotaCooldown = 24 * time.Hour
@@ -779,94 +758,6 @@ const (
 	serverErrorCooldown = 30 * time.Second
 )
 
-// isRequestRejection reports whether the provider rejected this request
-// itself (its shape, size or content) rather than being unavailable: a 400
-// that does not name the model, 413, 422, or a moderation 403.
-func isRequestRejection(resp *Response) bool {
-	if resp == nil {
-		return false
-	}
-	switch resp.StatusCode {
-	case http.StatusBadRequest:
-		return !isModelSpecific400(resp.Body)
-	case http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
-		return true
-	case http.StatusForbidden:
-		return isModeration403(resp.Body)
-	}
-	return false
-}
-
-// isKeyRejection reports whether a response rejects the API key (401, or a
-// 403 that is not about the request's content, its consent gate, or the
-// upstream provider's own credit).
-func isKeyRejection(resp *Response) bool {
-	if resp == nil {
-		return false
-	}
-	return resp.StatusCode == http.StatusUnauthorized ||
-		(resp.StatusCode == http.StatusForbidden && !isModeration403(resp.Body) && !isConsent403(resp.Body) && !isUpstreamCredit403(resp.Body))
-}
-
-// isConsent403 reports whether a 403 asks for the account's consent to an
-// upstream provider (Provider: UnoRouter, verified 2026-11-20:
-// `{"error":{"code":"consent_required","message":"…needs your consent for
-// these providers: …"}}`). The key is valid — cooling it down would hide
-// every model behind already-consented providers.
-func isConsent403(body []byte) bool {
-	return bytes.Contains(body, []byte("consent_required"))
-}
-
-// isUpstreamCredit403 reports whether a 403 says the upstream provider ran
-// out of credit (Provider: UnoRouter, verified 2026-11-20: "This provider
-// ran out of credit on their side. That is on us, not you"). The key is
-// valid and the failure is upstream capacity, so it is transient like a 5xx.
-func isUpstreamCredit403(body []byte) bool {
-	return bytes.Contains(body, []byte("ran out of credit"))
-}
-
-// isModeration403 reports whether a 403 blocks the request's content
-// (OpenRouter: "…requires moderation and your input was flagged") rather than
-// the key. Retrying it on the next key or cooling keys down cannot help.
-func isModeration403(body []byte) bool {
-	b := strings.ToLower(string(body))
-	return strings.Contains(b, "moderation") || strings.Contains(b, "flagged")
-}
-
-// modelSpecific400 are phrases in a 400 body that blame the model itself, not
-// the request. Most 400s blame the request (context too long, tools or images
-// the model can't take, a bad parameter); cooling the model down for those
-// would let one client's request take the model from everyone for an hour.
-// So the list is deliberately narrow: a missed phrase costs one wasted call on
-// a later request, a wrong one costs an hour of capacity.
-var modelSpecific400 = []string{
-	"decommissioned",
-	"model_not_found",
-	"model not found",
-	"does not exist or you do not have access",
-	"is not a valid model",
-	"unknown model",
-	"interactions api",            // Gemini: "This model only supports Interactions API."
-	"only supported in v1/responses", // OpenAI: model needs the Responses API
-	"not a chat model",
-}
-
-func isModelSpecific400(body []byte) bool {
-	b := strings.ToLower(string(body))
-	for _, p := range modelSpecific400 {
-		if strings.Contains(b, p) {
-			return true
-		}
-	}
-	return false
-}
-
-// isZeroQuota reports whether a 429 body says the quota for this model is zero
-// (Gemini returns "limit: 0" for models outside the free tier).
-func isZeroQuota(body []byte) bool {
-	return bytes.Contains(body, []byte("limit: 0,"))
-}
-
 // upstreamErrSnippet returns a short " (...)" suffix describing why an upstream
 // call failed, for logging. It never includes request data or API keys.
 func upstreamErrSnippet(resp *Response, err error) string {
@@ -881,25 +772,6 @@ func upstreamErrSnippet(resp *Response, err error) string {
 		msg = msg[:200] + "…"
 	}
 	return " (" + msg + ")"
-}
-
-// parseHFLoadingWait extracts the estimated_time from a HuggingFace 503 body.
-// Returns 0 if not a loading response.
-func parseHFLoadingWait(body []byte) int64 {
-	if !strings.Contains(string(body), "loading") {
-		return 0
-	}
-	var hfErr struct {
-		EstimatedTime float64 `json:"estimated_time"`
-	}
-	if json.Unmarshal(body, &hfErr) == nil && hfErr.EstimatedTime > 0 {
-		ms := int64(hfErr.EstimatedTime * 1000)
-		if ms > 60_000 {
-			ms = 60_000 // cap at 60s
-		}
-		return ms
-	}
-	return 30_000 // default 30s if not specified
 }
 
 // estimateTokens gives a rough token count for a message list (4 chars ≈ 1 token).

@@ -12,7 +12,7 @@ import (
 )
 
 func TestHandleModels_StrategiesProfilesDedupe(t *testing.T) {
-	s := &Server{strategyReg: strategy.NewRegistry(nil, nil, "", "", 0, 0)}
+	s := &Server{strategyReg: strategy.NewRegistry(nil, nil, "", "", 0, 0, strategy.LongContextOptions{})}
 	cfg := &config.Config{}
 	cfg.Proxy.Agents = map[string]config.AgentProfile{"my-agent": {}}
 	if err := s.UpdateConfig(cfg); err != nil {

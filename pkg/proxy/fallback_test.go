@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -289,6 +290,93 @@ func TestStripGeminiThoughts(t *testing.T) {
 	plain := []byte(`{"choices":[{"message":{"content":"no thoughts here"}}]}`)
 	if string(StripGeminiThoughts(plain)) != string(plain) {
 		t.Error("body without <thought> must be returned unchanged")
+	}
+}
+
+// Provider: OpenRouter — the free tier rejects a models[] array with more
+// than 3 items (400 "'models' array must have 3 items or fewer"). The
+// native fallback must cap the array to the best-ranked models.
+func TestFallbackChain_OpenRouterModelsArrayCappedAtThree(t *testing.T) {
+	// Handler goroutines can outlive the request that spawned them, so the
+	// capture is synchronized (run with -race).
+	var mu sync.Mutex
+	var gotModels []any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if arr, ok := body["models"].([]any); ok {
+			mu.Lock()
+			gotModels = arr
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	fc, _, _ := newTestChain(srv.URL, "openrouter", "m0")
+	fc.Cfg.Fallback.MaxAttempts = 50
+	var ranked listStrategy
+	for i := 0; i < 5; i++ {
+		ranked = append(ranked, strategy.RankedEntry{ProviderID: "openrouter", ModelID: fmt.Sprintf("m%d", i)})
+	}
+	fc.Strategy = ranked
+	_, _ = fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	mu.Lock()
+	got := len(gotModels)
+	mu.Unlock()
+	if got != openRouterModelsArrayLimit {
+		t.Errorf("models[] array has %d items, want capped at %d", got, openRouterModelsArrayLimit)
+	}
+}
+
+// A transport timeout on one model must not stop the walk (nor kill the
+// whole provider): the model cools down and its siblings are tried.
+func TestFallbackChain_TransportTimeoutWalksOn(t *testing.T) {
+	// The slow handler goroutines are still finishing when Execute returns
+	// (the proxy cancels its side at the provider timeout), so plain counters
+	// race with the assertions — sync/atomic and a short wait keep -race happy.
+	var slowCalls, goodCalls atomic.Int64
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slowCalls.Add(1)
+		select {
+		case <-time.After(2 * time.Second):
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodCalls.Add(1)
+		w.Write([]byte(`{"model":"good-model","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer good.Close()
+
+	fc, rl, _ := newTestChain(slow.URL, "slowprovider", "m0")
+	fc.Cfg.Providers[0].Timeout = "80ms"
+	fc.Cfg.Providers = append(fc.Cfg.Providers, config.ProviderConfig{
+		ID: "good", BaseURL: good.URL, Enabled: true,
+	})
+	fc.Cfg.Fallback.MaxAttempts = 50
+	fc.Strategy = listStrategy{
+		{ProviderID: "slowprovider", ModelID: "m0"},
+		{ProviderID: "slowprovider", ModelID: "m1"},
+		{ProviderID: "good", ModelID: "good-model"},
+	}
+	resp, err := fc.Execute(context.Background(), Request{Messages: []map[string]any{{"role": "user", "content": "hi"}}})
+	if err != nil || resp.UsedModel != "good-model" {
+		t.Fatalf("expected good-model after the slow provider timed out, got resp=%v err=%v", resp, err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for slowCalls.Load() != 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := slowCalls.Load(); got != 2 {
+		t.Errorf("slow provider called %d times, want 2 (both its models tried)", got)
+	}
+	if got := goodCalls.Load(); got != 1 {
+		t.Errorf("good provider called %d times, want 1", got)
+	}
+	if !rl.IsOnCooldown("slowprovider/m0") {
+		t.Error("timed-out model was not cooled down")
 	}
 }
 

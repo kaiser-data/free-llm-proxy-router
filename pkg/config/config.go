@@ -41,6 +41,12 @@ type ProxyConfig struct {
 	Host      string `mapstructure:"host"`
 	Port      int    `mapstructure:"port"`
 	AuthToken string `mapstructure:"auth_token"`
+	// AllowNoAuth lets the proxy listen on a non-loopback host without
+	// auth_token. Off by default: an exposed, tokenless proxy lets anyone who
+	// can reach the port spend your provider quotas. The Docker image sets it
+	// via --allow-no-auth because 0.0.0.0 there is the container's own
+	// interface; exposure is decided by how the port is published.
+	AllowNoAuth bool `mapstructure:"allow_no_auth"`
 	CacheTTL  int    `mapstructure:"cache_ttl"`
 	LogLevel  string `mapstructure:"log_level"`
 	Strategy  string `mapstructure:"strategy"`

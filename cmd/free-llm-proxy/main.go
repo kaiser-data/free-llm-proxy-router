@@ -28,6 +28,7 @@ var (
 	host     string
 	port     int
 	stratName string
+	allowNoAuth bool
 )
 
 func main() {
@@ -39,6 +40,7 @@ func main() {
 	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and ~/.config/free-llm-proxy-router/)")
 	root.Flags().StringVar(&host, "host", "", "override listen address (default from config: 127.0.0.1; use 0.0.0.0 to expose)")
 	root.Flags().IntVarP(&port, "port", "p", 0, "override proxy port (default from config: 8080)")
+	root.Flags().BoolVar(&allowNoAuth, "allow-no-auth", false, "allow a non-loopback --host without proxy.auth_token (access must be restricted some other way)")
 	root.Flags().StringVarP(&stratName, "strategy", "s", "", "override strategy name")
 
 	if err := root.Execute(); err != nil {
@@ -61,6 +63,9 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 	if stratName != "" {
 		cfg.Proxy.Strategy = stratName
+	}
+	if allowNoAuth {
+		cfg.Proxy.AllowNoAuth = true
 	}
 
 	// Load model catalog (bundled catalog.json until the first scan writes cfg.Catalog.Path)
@@ -140,15 +145,24 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		}
 	}
 	fanOut := 3
+	var longContextOpts strategy.LongContextOptions
 	if cfg.Proxy.StrategyOverrides != nil {
 		if pOv, ok := cfg.Proxy.StrategyOverrides["parallel"]; ok {
 			if fo, ok := pOv["fan_out"].(int); ok {
 				fanOut = fo
 			}
 		}
+		if lcOv, ok := cfg.Proxy.StrategyOverrides["long_context"]; ok {
+			if qf, ok := lcOv["small_prompt_quality_first"].(bool); ok {
+				longContextOpts.SmallPromptQualityFirst = qf
+			}
+			if th, ok := lcOv["small_prompt_threshold"].(int); ok {
+				longContextOpts.SmallPromptThreshold = th
+			}
+		}
 	}
 
-	stratReg := strategy.NewRegistry(reliabilityTracker, rateLimiter, similarFamily, geminiPreferred, fanOut, 5)
+	stratReg := strategy.NewRegistry(reliabilityTracker, rateLimiter, similarFamily, geminiPreferred, fanOut, 5, longContextOpts)
 
 	// Create server
 	srv, err := proxy.NewServer(cfg, cat, stratReg, rateLimiter, geminiTracker, reliabilityTracker)
