@@ -49,7 +49,7 @@ func main() {
 		Short: "OpenAI-compatible proxy for free LLM providers",
 		RunE:  runProxy,
 	}
-	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and ~/.config/free-llm-proxy-router/)")
+	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and $XDG_CONFIG_HOME/free-llm-proxy-router/)")
 	root.Flags().StringVar(&host, "host", "", "override listen address (default from config: 127.0.0.1; use 0.0.0.0 to expose)")
 	root.Flags().IntVarP(&port, "port", "p", 0, "override proxy port (default from config: 8080)")
 	root.Flags().BoolVar(&allowNoAuth, "allow-no-auth", false, "allow a non-loopback --host without proxy.auth_token (access must be restricted some other way)")
@@ -230,7 +230,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 
 	// Persist daily usage and reliability stats periodically and on shutdown,
 	// so a crash or kill -9 loses at most a few minutes of quota tracking.
-	// Always write to the new location (~/.config/free-llm-proxy-router/).
+	// Always write to the new location ($XDG_CONFIG_HOME/free-llm-proxy-router/).
 	newUsagePath := filepath.Join(config.NewConfigDir(), "usage.json")
 	newRelPath := filepath.Join(config.NewConfigDir(), "reliability.json")
 	saveState := func() {

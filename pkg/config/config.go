@@ -149,8 +149,8 @@ func Load(path string) (*Config, error) {
 		v.SetConfigName("config")
 		v.SetConfigType("yaml")
 		v.AddConfigPath(".")
-		v.AddConfigPath(expandHome("~/.config/free-llm-proxy-router"))
-		v.AddConfigPath(expandHome("~/.free-llm-proxy-router"))
+		v.AddConfigPath(NewConfigDir())
+		v.AddConfigPath(OldConfigDir())
 		v.AddConfigPath("configs")
 	}
 
@@ -266,8 +266,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.cache_ttl", 300)
 	v.SetDefault("proxy.log_level", "info")
 	v.SetDefault("proxy.strategy", "adaptive")
-	v.SetDefault("catalog.path", expandHome("~/.config/free-llm-proxy-router/catalog.json"))
-	v.SetDefault("catalog.enriched_path", expandHome("~/.config/free-llm-proxy-router/enriched.json"))
+	v.SetDefault("catalog.path", filepath.Join(NewConfigDir(), "catalog.json"))
+	v.SetDefault("catalog.enriched_path", filepath.Join(NewConfigDir(), "enriched.json"))
 	v.SetDefault("catalog.max_age_hours", 24)
 	v.SetDefault("fallback.retry_on_429", true)
 	v.SetDefault("fallback.retry_on_5xx", true)
@@ -305,9 +305,17 @@ func OldConfigDir() string {
 	return expandHome("~/.free-llm-proxy-router")
 }
 
-// NewConfigDir returns the current config directory (~/.config/free-llm-proxy-router).
+// NewConfigDir returns the current config directory, respecting XDG_CONFIG_HOME.
+// On Linux: $XDG_CONFIG_HOME/free-llm-proxy-router (default ~/.config/free-llm-proxy-router)
+// On macOS: ~/Library/Application Support/free-llm-proxy-router
+// On Windows: %APPDATA%/free-llm-proxy-router
 func NewConfigDir() string {
-	return expandHome("~/.config/free-llm-proxy-router")
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		// Fallback to the old hardcoded path if UserConfigDir fails
+		return expandHome("~/.config/free-llm-proxy-router")
+	}
+	return filepath.Join(configDir, "free-llm-proxy-router")
 }
 
 // checkLegacyConfig logs a one-time hint if only the legacy config directory exists.
@@ -320,7 +328,7 @@ func checkLegacyConfig(configDir string) {
 	oldExists := fileExists(filepath.Join(oldDir, "config.yaml"))
 	newExists := fileExists(filepath.Join(newDir, "config.yaml"))
 	if oldExists && !newExists {
-		log.Printf("config: found legacy ~/.free-llm-proxy-router/config.yaml — consider moving it to ~/.config/free-llm-proxy-router/")
+		log.Printf("config: found legacy %s/config.yaml — consider moving it to %s/", oldDir, newDir)
 	}
 }
 

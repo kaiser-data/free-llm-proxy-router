@@ -4,11 +4,15 @@
 # Example cron: 0 9 * * 1 /path/to/free-llm-proxy-router/scripts/cron-refresh.sh
 set -euo pipefail
 
+# Respect XDG_CONFIG_HOME (fallback to ~/.config)
+XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+CONFIG_DIR="$XDG_CONFIG_HOME/free-llm-proxy-router"
+
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCAN_BIN="$REPO_DIR/bin/free-llm-scan"
-CATALOG_SRC="$HOME/.config/free-llm-proxy-router/catalog.json"
+CATALOG_SRC="$CONFIG_DIR/catalog.json"
 CATALOG_DEST="$REPO_DIR/configs/catalog.json"
-LOG_FILE="$HOME/.config/free-llm-proxy-router/refresh.log"
+LOG_FILE="$CONFIG_DIR/refresh.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 

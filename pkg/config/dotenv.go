@@ -95,9 +95,8 @@ func dotenvLookup(key string) string {
 // defaultEnvPaths returns the standard search locations for env files.
 // configDir is the directory of the loaded config file (may be "").
 func defaultEnvPaths(configDir string) []string {
-	home, _ := os.UserHomeDir()
-	newDir := filepath.Join(home, ".config", "free-llm-proxy-router")
-	oldDir := filepath.Join(home, ".free-llm-proxy-router")
+	newDir := NewConfigDir()
+	oldDir := OldConfigDir()
 
 	paths := []string{
 		// Project-local (highest priority among files)

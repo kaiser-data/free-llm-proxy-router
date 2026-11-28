@@ -11,7 +11,7 @@ import (
 // Search order, first existing file wins:
 //  1. ./configs/<name>              (running from a source checkout)
 //  2. <configPath dir>/<name>       (next to an explicit --config file)
-//  3. ~/.config/free-llm-proxy-router/<name>
+//  3. $XDG_CONFIG_HOME/free-llm-proxy-router/<name> (or platform equivalent)
 //  4. ~/.free-llm-proxy-router/<name> (legacy)
 //  5. <executable dir>/configs/<name> (release archive layout)
 //
@@ -22,8 +22,8 @@ func FindDataFile(name, configPath string) string {
 	if configPath != "" {
 		candidates = append(candidates, filepath.Join(filepath.Dir(configPath), name))
 	}
-	candidates = append(candidates, filepath.Join(expandHome("~/.config/free-llm-proxy-router"), name))
-	candidates = append(candidates, filepath.Join(expandHome("~/.free-llm-proxy-router"), name))
+	candidates = append(candidates, filepath.Join(NewConfigDir(), name))
+	candidates = append(candidates, filepath.Join(OldConfigDir(), name))
 	if exe, err := os.Executable(); err == nil {
 		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = resolved
