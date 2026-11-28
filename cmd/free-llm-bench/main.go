@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -17,6 +18,17 @@ import (
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/ratelimit"
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
 )
+
+// stateFilePath returns the path to a state file, checking the new location
+// first, then falling back to the legacy ~/.free-llm-proxy-router location.
+func stateFilePath(filename string) string {
+	newPath := filepath.Join(config.NewConfigDir(), filename)
+	if _, err := os.Stat(newPath); err == nil {
+		return newPath
+	}
+	oldPath := filepath.Join(config.OldConfigDir(), filename)
+	return oldPath
+}
 
 var (
 	cfgFile    string
@@ -52,7 +64,7 @@ func runBench(cmd *cobra.Command, args []string) error {
 
 	// Build all strategies
 	relTracker := reliability.New()
-	reliability.Load(relTracker, "~/.config/free-llm-proxy-router/reliability.json")
+	reliability.Load(relTracker, stateFilePath("reliability.json"))
 	rateLimiter := ratelimit.NewGlobalTracker()
 	stratReg := strategy.NewRegistry(relTracker, rateLimiter, "", "gemini-2.0-flash-lite", 3, 5, strategy.LongContextOptions{})
 

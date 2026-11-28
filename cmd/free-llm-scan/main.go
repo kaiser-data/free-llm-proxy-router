@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -16,12 +17,24 @@ import (
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/scan"
 )
 
+// stateFilePath returns the path to a state file, checking the new location
+// first, then falling back to the legacy ~/.free-llm-proxy-router location.
+func stateFilePath(filename string) string {
+	newPath := filepath.Join(config.NewConfigDir(), filename)
+	if _, err := os.Stat(newPath); err == nil {
+		return newPath
+	}
+	oldPath := filepath.Join(config.OldConfigDir(), filename)
+	return oldPath
+}
+
 var (
 	cfgFile     string
 	catalogPath string
 )
 
 // loadConfig loads the config and applies the --catalog override.
+// If the configured catalog path doesn't exist, check the legacy location.
 func loadConfig() (*config.Config, error) {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -29,6 +42,14 @@ func loadConfig() (*config.Config, error) {
 	}
 	if catalogPath != "" {
 		cfg.Catalog.Path = catalogPath
+	}
+	// Fallback to legacy catalog location if new one doesn't exist.
+	if expanded := config.ExpandHome(cfg.Catalog.Path); !config.FileExists(expanded) {
+		legacyPath := filepath.Join(config.OldConfigDir(), "catalog.json")
+		if config.FileExists(legacyPath) {
+			cfg.Catalog.Path = legacyPath
+			log.Printf("catalog: using legacy catalog at %s", legacyPath)
+		}
 	}
 	return cfg, nil
 }

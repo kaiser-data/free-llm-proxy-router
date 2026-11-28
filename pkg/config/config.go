@@ -150,8 +150,12 @@ func Load(path string) (*Config, error) {
 		v.SetConfigType("yaml")
 		v.AddConfigPath(".")
 		v.AddConfigPath(expandHome("~/.config/free-llm-proxy-router"))
+		v.AddConfigPath(expandHome("~/.free-llm-proxy-router"))
 		v.AddConfigPath("configs")
 	}
+
+	// Log a hint if only the legacy config directory exists.
+	checkLegacyConfig(configDir)
 
 	// Load .env / .secrets files before AutomaticEnv so real env vars win.
 	loadDotenv(defaultEnvPaths(configDir)...)
@@ -284,6 +288,40 @@ func expandHome(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
+}
+
+// ExpandHome is the public version of expandHome for use by other packages.
+func ExpandHome(path string) string {
+	return expandHome(path)
+}
+
+// FileExists reports whether the given path exists and is not a directory.
+func FileExists(path string) bool {
+	return fileExists(path)
+}
+
+// OldConfigDir returns the legacy config directory (~/.free-llm-proxy-router).
+func OldConfigDir() string {
+	return expandHome("~/.free-llm-proxy-router")
+}
+
+// NewConfigDir returns the current config directory (~/.config/free-llm-proxy-router).
+func NewConfigDir() string {
+	return expandHome("~/.config/free-llm-proxy-router")
+}
+
+// checkLegacyConfig logs a one-time hint if only the legacy config directory exists.
+func checkLegacyConfig(configDir string) {
+	if configDir != "" {
+		return // explicit config file given, no hint needed
+	}
+	oldDir := OldConfigDir()
+	newDir := NewConfigDir()
+	oldExists := fileExists(filepath.Join(oldDir, "config.yaml"))
+	newExists := fileExists(filepath.Join(newDir, "config.yaml"))
+	if oldExists && !newExists {
+		log.Printf("config: found legacy ~/.free-llm-proxy-router/config.yaml — consider moving it to ~/.config/free-llm-proxy-router/")
+	}
 }
 
 // lookupEnv returns the value for key, checking real env vars first,
