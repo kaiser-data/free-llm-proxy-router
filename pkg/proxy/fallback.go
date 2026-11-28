@@ -152,9 +152,10 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 
 	ranked := fc.Strategy.Rank(stratReq, candidates, nil)
 	maxAttempts := fc.Cfg.Fallback.MaxAttempts
-	if maxAttempts <= 0 {
+	if maxAttempts < 0 {
 		maxAttempts = 5
 	}
+	// maxAttempts == 0 means infinite (no limit)
 
 	// Try one model per provider in ranked order.
 	//
@@ -193,7 +194,7 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 		}
 	}
 	for _, r := range ranked {
-		if attempts >= maxAttempts {
+		if maxAttempts > 0 && attempts >= maxAttempts {
 			break
 		}
 		if failedProviders[r.ProviderID] {
@@ -284,6 +285,9 @@ func (fc *FallbackChain) execute(ctx context.Context, req Request) (*Response, e
 	}
 	if filteredOut {
 		return nil, fmt.Errorf("%w (filters: %v)", strategy.ErrNoCandidates, fc.Filters.Names())
+	}
+	if fc.Cfg.Fallback.MaxAttempts == 0 {
+		return nil, fmt.Errorf("all providers exhausted (unlimited attempts)")
 	}
 	return nil, fmt.Errorf("all providers exhausted after %d attempts", attempts)
 }
