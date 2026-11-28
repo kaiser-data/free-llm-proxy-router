@@ -2,21 +2,23 @@
 # setup.sh — Initial setup for free-llm-proxy-router
 set -euo pipefail
 
-PICOCLAW_DIR="$HOME/.free-llm-proxy-router"
-CONFIG_DIR="$(cd "$(dirname "$0")/.." && pwd)/configs"
+# Respect XDG_CONFIG_HOME (fallback to ~/.config)
+XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+CONFIG_DIR="$XDG_CONFIG_HOME/free-llm-proxy-router"
+EXAMPLE_CONFIG_DIR="$(cd "$(dirname "$0")/.." && pwd)/configs"
 
 echo "=== free-llm-proxy-router setup ==="
 
 # Create data directory
-mkdir -p "$PICOCLAW_DIR"
-echo "Created: $PICOCLAW_DIR"
+mkdir -p "$CONFIG_DIR"
+echo "Created: $CONFIG_DIR"
 
 # Copy example config if none exists
-if [ ! -f "$PICOCLAW_DIR/config.yaml" ]; then
-  cp "$CONFIG_DIR/config.example.yaml" "$PICOCLAW_DIR/config.yaml"
-  echo "Created: $PICOCLAW_DIR/config.yaml (from example)"
+if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
+  cp "$EXAMPLE_CONFIG_DIR/config.example.yaml" "$CONFIG_DIR/config.yaml"
+  echo "Created: $CONFIG_DIR/config.yaml (from example)"
 else
-  echo "Config already exists: $PICOCLAW_DIR/config.yaml"
+  echo "Config already exists: $CONFIG_DIR/config.yaml"
 fi
 
 echo ""

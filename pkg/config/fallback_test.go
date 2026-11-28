@@ -53,7 +53,10 @@ func TestCatalogReadPath(t *testing.T) {
 	chdir(t, t.TempDir())
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	userPath := "~/.free-llm-proxy-router/catalog.json"
+	// Use XDG_CONFIG_HOME to control the config directory in tests
+	xdgConfig := filepath.Join(home, ".config")
+	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+	userPath := filepath.Join(xdgConfig, "free-llm-proxy-router", "catalog.json")
 
 	// Neither exists: configured path is returned unchanged.
 	if got := CatalogReadPath(userPath, ""); got != userPath {
@@ -68,7 +71,7 @@ func TestCatalogReadPath(t *testing.T) {
 	}
 
 	// User catalog exists (after a scan): it wins over the bundled one.
-	writeFile(t, filepath.Join(home, ".free-llm-proxy-router", "catalog.json"), "{}")
+	writeFile(t, filepath.Join(xdgConfig, "free-llm-proxy-router", "catalog.json"), "{}")
 	if got := CatalogReadPath(userPath, ""); got != userPath {
 		t.Errorf("user catalog present: got %q, want %q", got, userPath)
 	}

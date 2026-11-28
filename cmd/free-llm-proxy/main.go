@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +24,17 @@ import (
 	"github.com/kaiser-data/free-llm-proxy-router/pkg/strategy"
 )
 
+// stateFilePath returns the path to a state file, checking the new location
+// first, then falling back to the legacy ~/.free-llm-proxy-router location.
+func stateFilePath(filename string) string {
+	newPath := filepath.Join(config.NewConfigDir(), filename)
+	if _, err := os.Stat(newPath); err == nil {
+		return newPath
+	}
+	oldPath := filepath.Join(config.OldConfigDir(), filename)
+	return oldPath
+}
+
 var (
 	cfgFile  string
 	host     string
@@ -37,7 +49,7 @@ func main() {
 		Short: "OpenAI-compatible proxy for free LLM providers",
 		RunE:  runProxy,
 	}
-	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and ~/.free-llm-proxy-router/)")
+	root.Flags().StringVarP(&cfgFile, "config", "c", "", "config file path (default: search in . and $XDG_CONFIG_HOME/free-llm-proxy-router/)")
 	root.Flags().StringVar(&host, "host", "", "override listen address (default from config: 127.0.0.1; use 0.0.0.0 to expose)")
 	root.Flags().IntVarP(&port, "port", "p", 0, "override proxy port (default from config: 8080)")
 	root.Flags().BoolVar(&allowNoAuth, "allow-no-auth", false, "allow a non-loopback --host without proxy.auth_token (access must be restricted some other way)")
@@ -68,8 +80,17 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		cfg.Proxy.AllowNoAuth = true
 	}
 
-	// Load model catalog (bundled catalog.json until the first scan writes cfg.Catalog.Path)
-	catPath := config.CatalogReadPath(cfg.Catalog.Path, cfgFile)
+	// Load model catalog (bundled catalog.json until the first scan writes cfg.Catalog.Path).
+	// If the configured path doesn't exist, check the legacy location.
+	catPath := cfg.Catalog.Path
+	if expanded := config.ExpandHome(catPath); !config.FileExists(expanded) {
+		legacyPath := filepath.Join(config.OldConfigDir(), "catalog.json")
+		if config.FileExists(legacyPath) {
+			catPath = legacyPath
+			log.Printf("catalog: using legacy catalog at %s", legacyPath)
+		}
+	}
+	catPath = config.CatalogReadPath(catPath, cfgFile)
 	cat, err := catalog.Load(catPath)
 	if err != nil {
 		return fmt.Errorf("loading catalog: %w", err)
@@ -118,7 +139,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	geminiTracker := ratelimit.NewGeminiTracker()
 
 	// Load persisted rate-limit usage
-	usagePath := "~/.free-llm-proxy-router/usage.json"
+	usagePath := stateFilePath("usage.json")
 	if usage, err := ratelimit.LoadUsage(usagePath); err != nil {
 		log.Printf("usage.json unreadable (starting fresh): %v", err)
 	} else {
@@ -128,7 +149,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 
 	// Set up reliability tracker
 	reliabilityTracker := reliability.New()
-	relPath := "~/.free-llm-proxy-router/reliability.json"
+	relPath := stateFilePath("reliability.json")
 	if err := reliability.Load(reliabilityTracker, relPath); err != nil {
 		log.Printf("reliability.json not found (starting fresh): %v", err)
 	}
@@ -209,13 +230,16 @@ func runProxy(cmd *cobra.Command, args []string) error {
 
 	// Persist daily usage and reliability stats periodically and on shutdown,
 	// so a crash or kill -9 loses at most a few minutes of quota tracking.
+	// Always write to the new location ($XDG_CONFIG_HOME/free-llm-proxy-router/).
+	newUsagePath := filepath.Join(config.NewConfigDir(), "usage.json")
+	newRelPath := filepath.Join(config.NewConfigDir(), "reliability.json")
 	saveState := func() {
 		usage := rateLimiter.Snapshot()
 		usage.Gemini = geminiTracker.Snapshot()
-		if err := ratelimit.SaveUsage(usage, usagePath); err != nil {
+		if err := ratelimit.SaveUsage(usage, newUsagePath); err != nil {
 			log.Printf("saving usage: %v", err)
 		}
-		if err := reliability.Save(reliabilityTracker, relPath); err != nil {
+		if err := reliability.Save(reliabilityTracker, newRelPath); err != nil {
 			log.Printf("saving reliability: %v", err)
 		}
 	}

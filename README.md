@@ -167,7 +167,7 @@ The [install script](#install) picks the right archive on the board itself. For 
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=mipsle go build -ldflags="-s -w" -o free-llm-proxy ./cmd/free-llm-proxy
-scp -r free-llm-proxy configs/ user@board.local:~/free-llm-proxy-router/   # keep configs/ next to the binary
+scp -r free-llm-proxy configs/ user@board.local:$XDG_CONFIG_HOME/free-llm-proxy-router/   # keep configs/ next to the binary
 ```
 
 On an SD card, `proxy.log_level: "warn"` drops the per-request log lines.
@@ -282,9 +282,9 @@ Keys are read from, first match wins:
 
 1. environment variables (`export GROQ_API_KEY=...`)
 2. `.env` in the working directory (see [`.env.example`](.env.example) for every supported key)
-3. `~/.free-llm-proxy-router/.env` or `.secrets`, which work from any directory
+3. `$XDG_CONFIG_HOME/free-llm-proxy-router/.env` or `.secrets`, which work from any directory
 
-Config is read from `-c path`, `./config.yaml` or `~/.free-llm-proxy-router/config.yaml`, and falls back to the bundled [`configs/config.example.yaml`](configs/config.example.yaml). Start it with `-c path/to/config.yaml` and most edits apply without a restart (`auth_token` and `host` need one). `bash scripts/setup.sh` writes a starter config to `~/.free-llm-proxy-router/`.
+Config is read from `-c path`, `./config.yaml` or `$XDG_CONFIG_HOME/free-llm-proxy-router/config.yaml`, and falls back to the bundled [`configs/config.example.yaml`](configs/config.example.yaml). Start it with `-c path/to/config.yaml` and most edits apply without a restart (`auth_token` and `host` need one). `bash scripts/setup.sh` writes a starter config to `$XDG_CONFIG_HOME/free-llm-proxy-router/`.
 
 ```yaml
 proxy:
