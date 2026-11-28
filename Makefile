@@ -35,6 +35,9 @@ test-verbose: ## Run unit tests with verbose output
 test-integration: ## Run integration tests (requires API keys)
 	$(GOCMD) test -tags=integration ./... -count=1
 
+bench-failover: ## End-to-end failover benchmark: TTFT when the first provider 429s or stalls (FAILOVER_BENCH_N, _CONC, _TIMEOUT, _OUT)
+	FAILOVER_BENCH=1 $(GOCMD) test ./pkg/proxy -run '^TestFailoverBenchmark$$' -count=1 -v
+
 vet: ## Run go vet
 	$(GOCMD) vet ./...
 

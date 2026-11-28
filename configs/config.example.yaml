@@ -30,7 +30,8 @@
 proxy:
   host: "127.0.0.1"    # Listen address. Use "0.0.0.0" to expose on your network (set auth_token too)
   port: 8080
-  auth_token: ""       # Set to require a Bearer token on incoming requests
+  auth_token: ""       # Set to require a Bearer token on incoming requests. Required when
+                       # host is not loopback, unless allow_no_auth: true (or --allow-no-auth)
   cache_ttl: 300       # Response cache TTL in seconds (0 to disable). Requests with tools,
                        # temperature > 0 or n > 1 are never cached. The cache holds at most
                        # 16 MB (answers over 1 MB are not cached).
@@ -44,6 +45,15 @@ proxy:
     tiny:          { max_tokens_cap: 128 }
     speed:         { max_tokens_cap: 512 }
     parallel:      { fan_out: 3 }
+    # long_context ranks largest context window first. The two knobs below
+    # opt small prompts into quality-first ranking: a request up to
+    # small_prompt_threshold input tokens is served by the best small/mid
+    # model, saving the 1M-context models for requests only they can hold.
+    # Off by default — with it on, a conversation can change models as it
+    # grows past the threshold.
+    # long_context:
+    #   small_prompt_quality_first: true
+    #   small_prompt_threshold: 4096   # input tokens
 
   similar:
     model_family: "llama-3.1-70b"
@@ -469,6 +479,7 @@ providers:
     # one-time per-provider consent (unorouter.com/consents). Until it is
     # given, the model answers 403 consent_required — key is fine.
     rate_limit_notes: "Sign-up (Google/Discord/GitHub), no card. :free models: ~1 req/min per model per account (429 + Retry-After); each model has its own allowance, so rotating models is allowed."
+
   # ===========================================================================
   # Added from free-llm.com: recharging allowances (tokens / credits / units).
   # tier_type "credit" so the `economical` strategy ranks them after request-limited tiers.

@@ -15,5 +15,6 @@ USER nonroot:nonroot
 EXPOSE 8080
 # The binary defaults to 127.0.0.1; inside a container that would be unreachable
 # through -p, so the image listens on all interfaces. Publish the port only on
-# localhost (-p 127.0.0.1:8080:8080) or set proxy.auth_token.
-ENTRYPOINT ["/app/free-llm-proxy", "--host", "0.0.0.0"]
+# localhost (-p 127.0.0.1:8080:8080) or set proxy.auth_token. --allow-no-auth
+# is needed because the proxy otherwise refuses 0.0.0.0 without a token.
+ENTRYPOINT ["/app/free-llm-proxy", "--host", "0.0.0.0", "--allow-no-auth"]

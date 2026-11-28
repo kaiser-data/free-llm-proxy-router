@@ -54,7 +54,7 @@ func runBench(cmd *cobra.Command, args []string) error {
 	relTracker := reliability.New()
 	reliability.Load(relTracker, "~/.free-llm-proxy-router/reliability.json")
 	rateLimiter := ratelimit.NewGlobalTracker()
-	stratReg := strategy.NewRegistry(relTracker, rateLimiter, "", "gemini-2.0-flash-lite", 3, 5)
+	stratReg := strategy.NewRegistry(relTracker, rateLimiter, "", "gemini-2.0-flash-lite", 3, 5, strategy.LongContextOptions{})
 
 	var strategies []strategy.Strategy
 	for _, name := range stratReg.Names() {

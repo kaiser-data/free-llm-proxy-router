@@ -138,7 +138,7 @@ func TestServer_ShutdownDrainsInFlightRequests(t *testing.T) {
 	cfg.Proxy.Strategy, cfg.Proxy.Host, cfg.Proxy.Port = "adaptive", "127.0.0.1", port
 	cat := &catalog.Catalog{Entries: []catalog.CatalogEntry{{ProviderID: "alpha", ModelID: "m", IsFree: true}}}
 	rl, rel := ratelimit.NewGlobalTracker(), reliability.New()
-	s, err := NewServer(cfg, cat, strategy.NewRegistry(rel, rl, "", "", 3, 5), rl, nil, rel)
+	s, err := NewServer(cfg, cat, strategy.NewRegistry(rel, rl, "", "", 3, 5, strategy.LongContextOptions{}), rl, nil, rel)
 	if err != nil {
 		t.Fatal(err)
 	}

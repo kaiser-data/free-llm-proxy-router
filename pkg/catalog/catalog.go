@@ -23,8 +23,10 @@ type CatalogEntry struct {
 	// Metadata holds provider-specific fields (e.g. pricing, max_tokens).
 	Metadata map[string]any `json:"metadata,omitempty"`
 
-	// params caches models.ExtractParams(ModelID) once PrecomputeParams ran.
+	// params and caps cache models.ExtractParams(ModelID) and
+	// models.DetectCapabilities(ModelID) once PrecomputeParams ran.
 	params    models.ParamScale
+	caps     []models.Capability
 	hasParams bool
 }
 
@@ -39,11 +41,22 @@ func (e *CatalogEntry) ParamScale() models.ParamScale {
 	return models.ExtractParams(e.ModelID)
 }
 
-// PrecomputeParams parses every entry's parameter size once, so ParamScale
-// is a field read. Call it on a slice before sharing it between goroutines.
+// Capabilities returns the capabilities inferred from the model ID:
+// precomputed by PrecomputeParams, otherwise detected on each call.
+func (e *CatalogEntry) Capabilities() []models.Capability {
+	if e.hasParams {
+		return e.caps
+	}
+	return models.DetectCapabilities(e.ModelID)
+}
+
+// PrecomputeParams parses every entry's parameter size and capabilities once,
+// so ParamScale and Capabilities are field reads. Call it on a slice before
+// sharing it between goroutines.
 func PrecomputeParams(entries []CatalogEntry) {
 	for i := range entries {
 		entries[i].params = models.ExtractParams(entries[i].ModelID)
+		entries[i].caps = models.DetectCapabilities(entries[i].ModelID)
 		entries[i].hasParams = true
 	}
 }

@@ -21,6 +21,7 @@ func NewRegistry(
 	geminiPreferredModel string,
 	parallelFanOut int,
 	orFallbackN int,
+	longContext LongContextOptions,
 ) *Registry {
 	r := &Registry{strategies: make(map[string]Strategy)}
 
@@ -32,7 +33,7 @@ func NewRegistry(
 		&StrategySmall{GlobalTracker: globalRateTracker},
 		&StrategyTiny{},
 		&StrategyCoding{},
-		&StrategyLongContext{},
+		&StrategyLongContext{LongContextOptions: longContext},
 		&StrategySimilar{TargetFamily: similarFamily},
 		&StrategyParallel{FanOut: parallelFanOut},
 		&StrategyReliable{Tracker: reliabilityTracker},

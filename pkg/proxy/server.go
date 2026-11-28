@@ -24,14 +24,17 @@ import (
 
 // Server is the OpenAI-compatible proxy server.
 type Server struct {
-	conf            atomic.Pointer[configState]
-	catalog         atomic.Pointer[catalogSnapshot]
-	strategyReg     *strategy.Registry
-	rateLimiter     *ratelimit.GlobalTracker
-	geminiTracker   *ratelimit.GeminiTracker
+	conf               atomic.Pointer[configState]
+	catalog            atomic.Pointer[catalogSnapshot]
+	strategyReg        *strategy.Registry
+	rateLimiter        *ratelimit.GlobalTracker
+	geminiTracker      *ratelimit.GeminiTracker
 	reliabilityTracker *reliability.Tracker
-	cache           *ResponseCache
-	httpServer      *http.Server
+	cache              *ResponseCache
+	httpServer         *http.Server
+	// signatures caches Gemini tool-call thought signatures across requests;
+	// see gemini_signatures.go.
+	signatures *thoughtSignatureCache
 }
 
 // configState pairs a config with the filters built from it. They are stored
@@ -100,6 +103,7 @@ func NewServer(
 		rateLimiter:        rateLimiter,
 		geminiTracker:      geminiTracker,
 		reliabilityTracker: reliabilityTracker,
+		signatures:         newThoughtSignatureCache(),
 	}
 	if err := s.UpdateConfig(cfg); err != nil {
 		return nil, err
@@ -125,9 +129,21 @@ func (s *Server) UpdateCatalog(cat *catalog.Catalog) {
 	s.catalog.Store(newCatalogSnapshot(cat))
 }
 
+// checkExposure refuses a non-loopback listen address without an auth token,
+// unless proxy.allow_no_auth opts out.
+func checkExposure(p config.ProxyConfig) error {
+	if p.AuthToken != "" || isLoopbackHost(p.Host) || p.AllowNoAuth {
+		return nil
+	}
+	return fmt.Errorf("refusing to listen on %q without proxy.auth_token: anyone who can reach this port could spend your provider quotas. Set auth_token (or PROXY_AUTH_TOKEN), listen on 127.0.0.1, or pass --allow-no-auth if access is already restricted", p.Host)
+}
+
 // Start begins listening on the configured port.
 func (s *Server) Start(ctx context.Context) error {
 	cfg := s.config()
+	if err := checkExposure(cfg.Proxy); err != nil {
+		return err
+	}
 	mux := http.NewServeMux()
 
 	// OpenAI-compatible routes
@@ -157,7 +173,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	log.Printf("free-llm-proxy listening on %s (strategy: %s)", s.httpServer.Addr, cfg.Proxy.Strategy)
 	if cfg.Proxy.AuthToken == "" && !isLoopbackHost(cfg.Proxy.Host) {
-		log.Printf("warning: listening on %q without proxy.auth_token — anyone who can reach this port can spend your provider quotas", cfg.Proxy.Host)
+		log.Printf("warning: listening on %q without proxy.auth_token (--allow-no-auth) — anyone who can reach this port can spend your provider quotas", cfg.Proxy.Host)
 	}
 
 	// ListenAndServe returns as soon as Shutdown starts; wait for Shutdown to
@@ -381,6 +397,7 @@ func (s *Server) serveDirectModel(w http.ResponseWriter, r *http.Request, conf *
 		ReliabilityTracker: s.reliabilityTracker,
 		HTTPClient:         upstreamClient,
 		Stream:             req.Stream,
+		Signatures:         s.signatures,
 	}
 
 	found := false
@@ -484,6 +501,7 @@ func (s *Server) executeStrategyChain(w http.ResponseWriter, r *http.Request, co
 		HTTPClient:         upstreamClient,
 		Filters:            conf.filters,
 		Stream:             req.Stream,
+		Signatures:         s.signatures,
 	}
 
 	// Streaming requests go upstream as SSE; the chain still falls back on
@@ -629,4 +647,3 @@ func findProviderCfg(cfg *config.Config, providerID string) *config.ProviderConf
 	}
 	return nil
 }
-
